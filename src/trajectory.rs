@@ -1,9 +1,4 @@
-use std::{rc::Rc, sync::Arc, hash::Hash};
-
-use crate::{
-    observation::Observation,
-    observer::{Observer},
-};
+use crate::observation::Observation;
 
 pub struct Trajectory {
     pub id: u64,
