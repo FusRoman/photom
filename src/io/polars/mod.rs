@@ -1,3 +1,4 @@
+#![cfg(feature = "polars")]
 //! Polars-based ingestion of astronomical observation data.
 //!
 //! This module provides [`load_observation_from_polars`], the primary entry

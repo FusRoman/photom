@@ -32,14 +32,18 @@
 use std::{num::NonZeroUsize, sync::OnceLock};
 
 use lru::LruCache;
+
+#[cfg(feature = "polars")]
 use polars::{frame::DataFrame, lazy::frame::LazyFrame};
+#[cfg(feature = "polars")]
+use crate::io::polars::{error::PolarsError, load_observation_from_polars};
+
 use std::time::Duration;
 use thiserror::Error;
 use ureq::Agent;
 
 use crate::{
     astrometry::EquCoord,
-    io::polars::{error::PolarsError, load_observation_from_polars},
     observer::{
         error_model::{ErrorModelParseError, ObsErrorModel},
         mpc::{init_observatories, MPCError, MpcCode, MpcCodeObs},
@@ -132,6 +136,7 @@ pub enum ObsDatasetError {
     ErrorModelError(#[from] ErrorModelParseError),
 
     /// A Polars I/O or schema error occurred while loading observations.
+    #[cfg(feature = "polars")]
     #[error(transparent)]
     PolarIoError(#[from] PolarsError),
 }
@@ -195,6 +200,7 @@ impl ObsDataset {
     /// Returns a [`PolarsError`] if the frame fails schema validation, if a
     /// Polars-internal operation fails, or if any observer column violates
     /// the resolution rules (e.g. a partially-null geodetic triplet).
+    #[cfg(feature = "polars")]
     pub fn from_polars(
         df: &DataFrame,
         error_model: ObsErrorModel,
@@ -220,6 +226,7 @@ impl ObsDataset {
     ///
     /// Returns [`PolarsError::Polars`] if the lazy plan fails to execute, plus
     /// all errors documented on [`ObsDataset::from_polars`].
+    #[cfg(feature = "polars")]
     pub fn from_lazy(
         lf: LazyFrame,
         error_model: ObsErrorModel,

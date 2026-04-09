@@ -50,10 +50,13 @@
 use std::num::NonZeroUsize;
 
 use lru::LruCache;
+
+#[cfg(feature = "polars")]
 use polars::{frame::DataFrame, lazy::frame::LazyFrame};
+#[cfg(feature = "polars")]
+use crate::io::polars::{error::PolarsError, load_traj_from_polars};
 
 use crate::{
-    io::polars::{error::PolarsError, load_traj_from_polars},
     observation::{ObsDataset, ObsId, Observation},
     observer::error_model::ObsErrorModel,
 };
@@ -166,6 +169,7 @@ impl TrajDataset {
     /// Returns a [`PolarsError`] if the base-column schema is violated, if any
     /// observer column rule is broken, or if the `traj_id` column has an
     /// unsupported type.
+    #[cfg(feature = "polars")]
     pub fn from_polars(
         df: &DataFrame,
         error_model: ObsErrorModel,
@@ -191,6 +195,7 @@ impl TrajDataset {
     ///
     /// Returns [`PolarsError::Polars`] if the lazy plan fails to execute, plus
     /// all errors documented on [`TrajDataset::from_polars`].
+    #[cfg(feature = "polars")]
     pub fn from_lazy(
         lf: LazyFrame,
         error_model: ObsErrorModel,
@@ -291,8 +296,9 @@ impl TrajDataset {
 
 // ── unit tests ────────────────────────────────────────────────────────────────
 
+#[cfg(feature = "polars")]
 #[cfg(test)]
-mod tests {
+mod trajectory_tests {
     use super::*;
     use crate::io::polars::error::PolarsError;
     use polars::frame::DataFrame;
