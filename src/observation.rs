@@ -32,21 +32,21 @@
 use std::{num::NonZeroUsize, sync::OnceLock};
 
 use lru::LruCache;
-use polars::frame::DataFrame;
+use polars::{frame::DataFrame, lazy::frame::LazyFrame};
 use std::time::Duration;
 use thiserror::Error;
 use ureq::Agent;
 
 use crate::{
-    MJDTT,
     astrometry::EquCoord,
     io::polars::{error::PolarsError, load_observation_from_polars},
     observer::{
-        Observer,
         error_model::{ErrorModelParseError, ObsErrorModel},
-        mpc::{MPCError, MpcCode, MpcCodeObs, init_observatories},
+        mpc::{init_observatories, MPCError, MpcCode, MpcCodeObs},
+        Observer,
     },
     photometry::Photometry,
+    MJDTT,
 };
 
 /// Unique numeric identifier for a single observation.
@@ -181,13 +181,13 @@ impl ObsDataset {
     /// observation columns, and assembles the dataset.  See
     /// [`crate::io::polars`] for the full column specification and
     /// observer-resolution rules.
-    /// 
+    ///
     /// # Arguments
-    /// 
+    ///
     /// - `df` — the source Polars [`DataFrame`] containing the observation data.
-    /// - `error_model` — the [`ObsErrorModel`] used to assign astrometric accuracies to 
+    /// - `error_model` — the [`ObsErrorModel`] used to assign astrometric accuracies to
     ///     MPC-coded observers during MPC table initialisation.
-    /// - `lru_cache_size` — optional capacity for the LRU cache used to speed up repeated observation lookups; 
+    /// - `lru_cache_size` — optional capacity for the LRU cache used to speed up repeated observation lookups;
     ///     if `None`, the cache size is set to 1 000.
     ///
     /// # Errors
@@ -195,8 +195,37 @@ impl ObsDataset {
     /// Returns a [`PolarsError`] if the frame fails schema validation, if a
     /// Polars-internal operation fails, or if any observer column violates
     /// the resolution rules (e.g. a partially-null geodetic triplet).
-    pub fn from_polars(df: &DataFrame, error_model: ObsErrorModel, lru_cache_size: Option<usize>) -> Result<Self, PolarsError> {
+    pub fn from_polars(
+        df: &DataFrame,
+        error_model: ObsErrorModel,
+        lru_cache_size: Option<usize>,
+    ) -> Result<Self, PolarsError> {
         load_observation_from_polars(df, error_model, lru_cache_size)
+    }
+
+    /// Construct an [`ObsDataset`] from a Polars [`LazyFrame`].
+    ///
+    /// The lazy computation plan is executed (via [`LazyFrame::collect`]) before
+    /// ingestion begins.  Once collected, the same validation and assembly
+    /// pipeline as [`ObsDataset::from_polars`] is applied.
+    ///
+    /// # Arguments
+    ///
+    /// - `lf` — the source Polars [`LazyFrame`].
+    /// - `error_model` — the [`ObsErrorModel`] used to assign astrometric
+    ///   accuracies to MPC-coded observers during MPC table initialisation.
+    /// - `lru_cache_size` — optional LRU cache capacity; `None` defaults to 1 000.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PolarsError::Polars`] if the lazy plan fails to execute, plus
+    /// all errors documented on [`ObsDataset::from_polars`].
+    pub fn from_lazy(
+        lf: LazyFrame,
+        error_model: ObsErrorModel,
+        lru_cache_size: Option<usize>,
+    ) -> Result<Self, PolarsError> {
+        load_observation_from_polars(lf, error_model, lru_cache_size)
     }
 
     /// Look up a single observation by its [`ObsId`].

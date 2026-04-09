@@ -73,7 +73,7 @@
 
 use ahash::AHashMap;
 use itertools::{izip, Either};
-use polars::{frame::DataFrame, prelude::Column};
+use polars::{frame::DataFrame, lazy::frame::LazyFrame, prelude::Column};
 
 use crate::{
     astrometry::EquCoord,
@@ -91,6 +91,65 @@ use crate::{
 pub(crate) mod base_field;
 pub mod error;
 pub(crate) mod observer_field;
+
+// ── sealed trait for DataFrame / LazyFrame ───────────────────────────────────
+
+mod sealed {
+    pub trait Sealed {}
+}
+
+/// A type that can be materialised into a Polars [`DataFrame`].
+///
+/// This trait is implemented for:
+///
+/// - [`DataFrame`] — the frame is already collected; transferred by value with
+///   no data copy.
+/// - [`&DataFrame`] — performs a cheap Arc-level clone of the frame's columns
+///   (O(number of columns), not O(number of rows)); the underlying column
+///   buffers are shared and not duplicated.
+/// - [`LazyFrame`] — the logical plan is executed via
+///   [`LazyFrame::collect`] before ingestion begins.
+///
+/// The trait is *sealed*: it cannot be implemented outside this crate.
+pub trait IntoFrame: sealed::Sealed {
+    /// Materialise `self` into an owned [`DataFrame`], executing any lazy
+    /// computation plan if necessary.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PolarsError::Polars`] if the lazy execution fails.
+    fn collect_frame(self) -> Result<DataFrame, PolarsError>;
+}
+
+impl sealed::Sealed for DataFrame {}
+impl IntoFrame for DataFrame {
+    #[inline]
+    fn collect_frame(self) -> Result<DataFrame, PolarsError> {
+        Ok(self)
+    }
+}
+
+impl sealed::Sealed for &DataFrame {}
+impl IntoFrame for &DataFrame {
+    /// Clone the [`DataFrame`] at the Arc level.
+    ///
+    /// Each [`Column`] inside a Polars [`DataFrame`] is backed by an
+    /// `Arc<dyn SeriesTrait>`, so this clone increments a reference counter
+    /// per column — it does **not** copy the underlying data buffers.  The
+    /// cost is O(number of columns), independent of the number of rows.
+    #[inline]
+    fn collect_frame(self) -> Result<DataFrame, PolarsError> {
+        Ok(self.clone())
+    }
+}
+
+impl sealed::Sealed for LazyFrame {}
+impl IntoFrame for LazyFrame {
+    #[inline]
+    fn collect_frame(self) -> Result<DataFrame, PolarsError> {
+        Ok(self.collect()?)
+    }
+}
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -198,18 +257,44 @@ fn iter_opt_str<'df>(
 
 // ── internal entry point ────────────────────────────────────────────────────────
 
-/// Load observations from a Polars [`DataFrame`] into an [`ObsDataset`].
+/// Load observations from a Polars [`DataFrame`] or [`LazyFrame`] into an
+/// [`ObsDataset`].
 ///
-/// The `DataFrame` is first validated against `schema`.  If validation
-/// passes, the function extracts all base observation columns in a zero-copy
-/// manner (numeric columns are borrowed as contiguous slices), collects the
-/// optional observer columns into per-row `Option` buffers, and assembles one
-/// [`Observation`] per row.
+/// This is the generic entry point that accepts any type implementing
+/// [`IntoFrame`] — concretely either a [`DataFrame`] (already materialised)
+/// or a [`LazyFrame`] (whose plan is executed before ingestion).  After
+/// materialisation the function delegates to the same ingestion pipeline
+/// regardless of the input type.
 ///
-/// Custom geodetic observers are **interned**: if multiple rows describe the
-/// same site (identical longitude, latitude, and altitude), they are stored
-/// once in the returned dataset's `custom_observers` list and referenced by
-/// index, avoiding redundant allocations.
+/// See [`load_observation_from_frame`] for the full documentation of the
+/// ingestion rules, column requirements, and error conditions.
+///
+/// # Arguments
+///
+/// - `frame`          — a [`DataFrame`] or [`LazyFrame`] containing at minimum
+///   all columns required by the schema.
+/// - `error_model`    — the [`ObsErrorModel`] attached to the resulting
+///   [`ObsDataset`].
+/// - `lru_cache_size` — optional LRU cache capacity; `None` disables caching.
+///
+/// # Errors
+///
+/// Returns [`PolarsError::Polars`] if lazy execution fails, plus all errors
+/// documented on [`load_observation_from_frame`].
+pub(crate) fn load_observation_from_polars<T: IntoFrame>(
+    frame: T,
+    error_model: ObsErrorModel,
+    lru_cache_size: Option<usize>,
+) -> Result<ObsDataset, PolarsError> {
+    let df = frame.collect_frame()?;
+    load_observation_from_frame(&df, error_model, lru_cache_size)
+}
+
+/// Internal ingestion logic that operates on an already-materialised
+/// [`DataFrame`].
+///
+/// This is the single implementation shared by both the [`DataFrame`] and
+/// [`LazyFrame`] paths exposed through [`load_observation_from_polars`].
 ///
 /// # Observer field rules
 ///
@@ -225,41 +310,20 @@ fn iter_opt_str<'df>(
 /// | `obs_ra_acc` / `obs_dec_acc` null while geodetic triplet is fully set | **Error** |
 /// | `obs_ra_acc` / `obs_dec_acc` null while `mpc_code_obs` is set | OK — accuracy comes from the error model at query time |
 ///
-/// # Arguments
-///
-/// - `df`          — a Polars [`DataFrame`] containing at minimum all columns
-///   required by `schema`.  Observer columns (`obs_lon`, `obs_lat`, `obs_alt`,
-///   `obs_ra_acc`, `obs_dec_acc`, `mpc_code_obs`) may be absent or nullable.
-/// - `schema`      — the [`ObsSchema`] variant that defines which columns are
-///   mandatory and their expected Polars types.
-/// - `error_model` — the [`ObsErrorModel`] attached to the resulting
-///   [`ObsDataset`]; used to resolve astrometric accuracy for MPC-coded
-///   observers at query time.
-/// - `lru_cache_size` — optional capacity for the LRU cache used to speed up
-///  repeated observation lookups; if `None`, the cache is disabled.
-///
-/// # Returns
-///
-/// An [`ObsDataset`] containing all observations assembled from `df`, the
-/// de-duplicated list of custom geodetic [`Observer`]s, and the provided
-/// `error_model`.
-///
 /// # Errors
 ///
 /// Returns a [`PolarsError`] in any of the following situations:
 ///
-/// - [`PolarsError::SchemaValidationError`] — `df` does not satisfy `schema`.
-/// - [`PolarsError::Polars`] — a Polars-internal operation failed (e.g. a
-///   column could not be cast to the expected type).
+/// - [`PolarsError::Polars`] — a Polars-internal operation failed.
 /// - [`PolarsError::PartialTripletNull`] — one or two geodetic columns were
 ///   non-null while the remaining one was null.
 /// - [`PolarsError::MissingAccuracyForGeodesic`] — the geodetic triplet was
 ///   fully set but `obs_ra_acc` or `obs_dec_acc` was null.
-/// - [`PolarsError::InvalidMpcCode`] — an `mpc_code_obs` cell was non-null
-///   but did not parse as a valid three-byte ASCII MPC code.
+/// - [`PolarsError::InvalidMpcCode`] — an `mpc_code_obs` cell did not parse as
+///   a valid three-byte ASCII MPC code.
 /// - [`PolarsError::DataConversionError`] — [`Observer::new`] rejected the
-///   coordinate values (e.g. a `NaN` was present in a geodetic column).
-pub(crate) fn load_observation_from_polars(
+///   coordinate values.
+fn load_observation_from_frame(
     df: &DataFrame,
     error_model: ObsErrorModel,
     lru_cache_size: Option<usize>,
@@ -357,14 +421,36 @@ pub(crate) fn load_observation_from_polars(
 
 // ── trajectory ingestion ──────────────────────────────────────────────────────
 
-/// Load observations and trajectory groupings from a Polars [`DataFrame`] into
-/// a [`TrajDataset`].
+/// Load observations and trajectory groupings from a Polars [`DataFrame`] or
+/// [`LazyFrame`] into a [`TrajDataset`].
 ///
-/// This function is the trajectory-aware counterpart of
-/// [`load_observation_from_polars`].  It performs the full observation
-/// ingestion (base columns, observer resolution, LRU cache construction) and
-/// then reads the optional `traj_id` column to group observations into
-/// [`Trajectory`] values.
+/// This is the generic entry point that accepts any type implementing
+/// [`IntoFrame`] — concretely either a [`DataFrame`] (already materialised)
+/// or a [`LazyFrame`] (whose plan is executed before ingestion).  After
+/// materialisation the function delegates to the same grouping pipeline
+/// regardless of the input type.
+///
+/// See [`load_traj_from_frame`] for the full documentation of the `traj_id`
+/// column rules and grouping semantics.
+///
+/// # Errors
+///
+/// Returns [`PolarsError::Polars`] if lazy execution fails, plus all errors
+/// documented on [`load_traj_from_frame`].
+pub(crate) fn load_traj_from_polars<T: IntoFrame>(
+    frame: T,
+    error_model: ObsErrorModel,
+    lru_cache_size: Option<usize>,
+) -> Result<TrajDataset, PolarsError> {
+    let df = frame.collect_frame()?;
+    load_traj_from_frame(&df, error_model, lru_cache_size)
+}
+
+/// Internal trajectory ingestion logic that operates on an
+/// already-materialised [`DataFrame`].
+///
+/// This is the single implementation shared by both the [`DataFrame`] and
+/// [`LazyFrame`] paths exposed through [`load_traj_from_polars`].
 ///
 /// ## `traj_id` column rules
 ///
@@ -387,21 +473,13 @@ pub(crate) fn load_observation_from_polars(
 /// the same value are appended to the same [`Trajectory`]'s `obs_ids` list in
 /// source-row order.
 ///
-/// # Arguments
-///
-/// - `df`             — source Polars [`DataFrame`].
-/// - `error_model`    — astrometric error model forwarded to [`ObsDataset`].
-/// - `lru_cache_size` — shared capacity for **both** the observation LRU cache
-///   (inside [`ObsDataset`]) and the trajectory LRU cache.  Defaults to
-///   1 000 when `None`.
-///
 /// # Errors
 ///
 /// Returns a [`PolarsError`] for any of the reasons documented on
-/// [`load_observation_from_polars`], plus
+/// [`load_observation_from_frame`], plus
 /// [`PolarsError::TrajIdColumnTypeError`] when the `traj_id` column is
 /// present but has an unsupported Polars type.
-pub(crate) fn load_traj_from_polars(
+fn load_traj_from_frame(
     df: &DataFrame,
     error_model: ObsErrorModel,
     lru_cache_size: Option<usize>,
@@ -409,7 +487,7 @@ pub(crate) fn load_traj_from_polars(
     use polars::prelude::DataType;
 
     // ── Step 1: full observation ingestion ────────────────────────────────────
-    let obs_dataset = load_observation_from_polars(df, error_model, lru_cache_size)?;
+    let obs_dataset = load_observation_from_frame(df, error_model, lru_cache_size)?;
 
     // ── Step 2: read the optional traj_id column ──────────────────────────────
     //
@@ -1236,5 +1314,148 @@ mod polars_reader_prop_tests {
                 "Expected MpcCode to win over geodetic, got: {:?}", obs[0].observer
             );
         }
+    }
+}
+
+// ── LazyFrame tests ───────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod lazy_frame_tests {
+    use super::*;
+    use polars::{frame::DataFrame, lazy::frame::IntoLazy as _};
+
+    /// Build a minimal single-row [`DataFrame`] with only the nine mandatory
+    /// base columns.
+    fn base_df_single_row() -> DataFrame {
+        DataFrame::new_infer_height(vec![
+            Column::new("id".into(), &[1u64]),
+            Column::new("ra".into(), &[10.0f64]),
+            Column::new("ra_err".into(), &[0.001f64]),
+            Column::new("dec".into(), &[-5.0f64]),
+            Column::new("dec_err".into(), &[0.001f64]),
+            Column::new("magnitude".into(), &[15.0f64]),
+            Column::new("mag_err".into(), &[0.05f64]),
+            Column::new("filter".into(), &["G"]),
+            Column::new("mjd_tt".into(), &[60000.0f64]),
+        ])
+        .expect("DataFrame construction must succeed")
+    }
+
+    // ── ObsDataset::from_lazy ─────────────────────────────────────────────────
+
+    /// A [`LazyFrame`] built from a valid base [`DataFrame`] produces the same
+    /// single-observation dataset as the eager path.
+    #[test]
+    fn test_lazy_obs_same_result_as_eager() {
+        let df = base_df_single_row();
+        let lf = df.clone().lazy();
+
+        let eager = load_observation_from_polars(df, ObsErrorModel::FCCT14, Some(10))
+            .expect("eager path must succeed");
+        let lazy = load_observation_from_polars(lf, ObsErrorModel::FCCT14, Some(10))
+            .expect("lazy path must succeed");
+
+        let eager_obs: Vec<&Observation> = eager.iter_observations().collect();
+        let lazy_obs: Vec<&Observation> = lazy.iter_observations().collect();
+
+        assert_eq!(eager_obs.len(), lazy_obs.len(), "row counts must match");
+        assert_eq!(
+            eager_obs[0].id, lazy_obs[0].id,
+            "observation ids must match"
+        );
+        assert_eq!(eager_obs[0].mjd_tt, lazy_obs[0].mjd_tt, "mjd_tt must match");
+    }
+
+    /// A [`LazyFrame`] with an MPC code column produces an observation with
+    /// `Some(ObserverId::MpcCode(_))`, identical to the eager path.
+    #[test]
+    fn test_lazy_obs_mpc_code() {
+        let mut df = base_df_single_row();
+        let mpc_col: Vec<Option<&str>> = vec![Some("I41")];
+        df.with_column(Column::new("mpc_code_obs".into(), mpc_col))
+            .expect("column addition must succeed");
+
+        let result = load_observation_from_polars(df.lazy(), ObsErrorModel::FCCT14, Some(10));
+
+        assert!(result.is_ok(), "expected Ok, got: {:?}", result.err());
+        let dataset = result.unwrap();
+        let obs: Vec<&Observation> = dataset.iter_observations().collect();
+        assert_eq!(obs.len(), 1);
+        assert!(
+            matches!(obs[0].observer, Some(ObserverId::MpcCode(_))),
+            "expected MpcCode observer, got: {:?}",
+            obs[0].observer
+        );
+    }
+
+    // ── TrajDataset::from_lazy ────────────────────────────────────────────────
+
+    /// A [`LazyFrame`] with a `traj_id` `UInt64` column produces the same
+    /// trajectory grouping as the eager path.
+    #[test]
+    fn test_lazy_traj_uint64_grouping() {
+        let df = DataFrame::new_infer_height(vec![
+            Column::new("id".into(), &[10u64, 20u64, 30u64]),
+            Column::new("ra".into(), &[1.0f64, 2.0f64, 3.0f64]),
+            Column::new("ra_err".into(), &[0.001f64, 0.001f64, 0.001f64]),
+            Column::new("dec".into(), &[0.0f64, 0.0f64, 0.0f64]),
+            Column::new("dec_err".into(), &[0.001f64, 0.001f64, 0.001f64]),
+            Column::new("magnitude".into(), &[15.0f64, 16.0f64, 17.0f64]),
+            Column::new("mag_err".into(), &[0.05f64, 0.05f64, 0.05f64]),
+            Column::new("filter".into(), &["G", "G", "G"]),
+            Column::new("mjd_tt".into(), &[60000.0f64, 60001.0f64, 60002.0f64]),
+            Column::new("traj_id".into(), &[1u64, 2u64, 1u64]),
+        ])
+        .expect("DataFrame construction must succeed");
+
+        let eager = load_traj_from_polars(&df, ObsErrorModel::FCCT14, Some(10))
+            .expect("eager traj path must succeed");
+        let lazy = load_traj_from_polars(df.lazy(), ObsErrorModel::FCCT14, Some(10))
+            .expect("lazy traj path must succeed");
+
+        let eager_trajs: Vec<&Trajectory> = eager.iter_trajectories().collect();
+        let lazy_trajs: Vec<&Trajectory> = lazy.iter_trajectories().collect();
+
+        assert_eq!(
+            eager_trajs.len(),
+            lazy_trajs.len(),
+            "trajectory counts must match"
+        );
+        for (e, l) in eager_trajs.iter().zip(lazy_trajs.iter()) {
+            assert_eq!(e.id, l.id, "trajectory ids must match");
+            assert_eq!(e.obs_ids, l.obs_ids, "obs_ids must match");
+        }
+    }
+
+    /// A [`LazyFrame`] with a `traj_id` `String` column produces the same
+    /// trajectory grouping as the eager path.
+    #[test]
+    fn test_lazy_traj_string_grouping() {
+        let traj_ids: Vec<Option<&str>> = vec![Some("alpha"), Some("beta"), Some("alpha")];
+        let df = DataFrame::new_infer_height(vec![
+            Column::new("id".into(), &[10u64, 20u64, 30u64]),
+            Column::new("ra".into(), &[1.0f64, 2.0f64, 3.0f64]),
+            Column::new("ra_err".into(), &[0.001f64, 0.001f64, 0.001f64]),
+            Column::new("dec".into(), &[0.0f64, 0.0f64, 0.0f64]),
+            Column::new("dec_err".into(), &[0.001f64, 0.001f64, 0.001f64]),
+            Column::new("magnitude".into(), &[15.0f64, 16.0f64, 17.0f64]),
+            Column::new("mag_err".into(), &[0.05f64, 0.05f64, 0.05f64]),
+            Column::new("filter".into(), &["G", "G", "G"]),
+            Column::new("mjd_tt".into(), &[60000.0f64, 60001.0f64, 60002.0f64]),
+            Column::new("traj_id".into(), traj_ids),
+        ])
+        .expect("DataFrame construction must succeed");
+
+        let result = load_traj_from_polars(df.lazy(), ObsErrorModel::FCCT14, Some(10));
+
+        assert!(result.is_ok(), "expected Ok, got: {:?}", result.err());
+        let dataset = result.unwrap();
+        let trajs: Vec<&Trajectory> = dataset.iter_trajectories().collect();
+
+        assert_eq!(trajs.len(), 2, "expected 2 trajectories");
+        assert_eq!(trajs[0].id, TrajId::Str("alpha".to_owned()));
+        assert_eq!(trajs[0].obs_ids, vec![10u64, 30u64]);
+        assert_eq!(trajs[1].id, TrajId::Str("beta".to_owned()));
+        assert_eq!(trajs[1].obs_ids, vec![20u64]);
     }
 }

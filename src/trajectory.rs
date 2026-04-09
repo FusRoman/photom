@@ -50,7 +50,7 @@
 use std::num::NonZeroUsize;
 
 use lru::LruCache;
-use polars::frame::DataFrame;
+use polars::{frame::DataFrame, lazy::frame::LazyFrame};
 
 use crate::{
     io::polars::{error::PolarsError, load_traj_from_polars},
@@ -172,6 +172,31 @@ impl TrajDataset {
         lru_cache_size: Option<usize>,
     ) -> Result<Self, PolarsError> {
         load_traj_from_polars(df, error_model, lru_cache_size)
+    }
+
+    /// Construct a [`TrajDataset`] from a Polars [`LazyFrame`].
+    ///
+    /// The lazy computation plan is executed (via [`LazyFrame::collect`]) before
+    /// ingestion begins.  Once collected, the same validation and assembly
+    /// pipeline as [`TrajDataset::from_polars`] is applied.
+    ///
+    /// # Arguments
+    ///
+    /// - `lf`             — source Polars [`LazyFrame`].
+    /// - `error_model`    — astrometric error model forwarded to [`ObsDataset`].
+    /// - `lru_cache_size` — shared capacity for **both** the observation LRU
+    ///   cache and the trajectory LRU cache.  Defaults to 1 000 when `None`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PolarsError::Polars`] if the lazy plan fails to execute, plus
+    /// all errors documented on [`TrajDataset::from_polars`].
+    pub fn from_lazy(
+        lf: LazyFrame,
+        error_model: ObsErrorModel,
+        lru_cache_size: Option<usize>,
+    ) -> Result<Self, PolarsError> {
+        load_traj_from_polars(lf, error_model, lru_cache_size)
     }
 
     /// Build a [`TrajDataset`] from pre-parsed components.
