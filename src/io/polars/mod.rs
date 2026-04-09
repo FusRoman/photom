@@ -85,6 +85,7 @@ use crate::{
     observation::{ObsDataset, Observation, ObserverId},
     observer::{error_model::ObsErrorModel, Observer},
     photometry::{Filter, Photometry},
+    trajectory::{TrajDataset, TrajId, Trajectory},
 };
 
 pub(crate) mod base_field;
@@ -352,6 +353,157 @@ pub(crate) fn load_observation_from_polars(
         error_model,
         lru_cache_size,
     ))
+}
+
+// ── trajectory ingestion ──────────────────────────────────────────────────────
+
+/// Load observations and trajectory groupings from a Polars [`DataFrame`] into
+/// a [`TrajDataset`].
+///
+/// This function is the trajectory-aware counterpart of
+/// [`load_observation_from_polars`].  It performs the full observation
+/// ingestion (base columns, observer resolution, LRU cache construction) and
+/// then reads the optional `traj_id` column to group observations into
+/// [`Trajectory`] values.
+///
+/// ## `traj_id` column rules
+///
+/// The `traj_id` column is **optional** (the column may be absent from the
+/// frame) and **nullable** (individual cells may be `null`).
+///
+/// | Situation | Outcome |
+/// |-----------|---------|
+/// | Column absent | All observations loaded, no trajectories created. |
+/// | Column present, type `UInt64` | Non-null cells → [`TrajId::Int`]. |
+/// | Column present, type `String` | Non-null cells → [`TrajId::Str`]. |
+/// | Column present, other type | [`PolarsError::TrajIdColumnTypeError`]. |
+/// | Cell `null` | Row belongs to no trajectory (still in [`ObsDataset`]). |
+///
+/// ## Grouping semantics
+///
+/// Trajectories are assembled in **first-appearance order**: the first row
+/// that carries a given `traj_id` value defines the position of that
+/// trajectory in [`TrajDataset::iter_trajectories`].  Subsequent rows with
+/// the same value are appended to the same [`Trajectory`]'s `obs_ids` list in
+/// source-row order.
+///
+/// # Arguments
+///
+/// - `df`             — source Polars [`DataFrame`].
+/// - `error_model`    — astrometric error model forwarded to [`ObsDataset`].
+/// - `lru_cache_size` — shared capacity for **both** the observation LRU cache
+///   (inside [`ObsDataset`]) and the trajectory LRU cache.  Defaults to
+///   1 000 when `None`.
+///
+/// # Errors
+///
+/// Returns a [`PolarsError`] for any of the reasons documented on
+/// [`load_observation_from_polars`], plus
+/// [`PolarsError::TrajIdColumnTypeError`] when the `traj_id` column is
+/// present but has an unsupported Polars type.
+pub(crate) fn load_traj_from_polars(
+    df: &DataFrame,
+    error_model: ObsErrorModel,
+    lru_cache_size: Option<usize>,
+) -> Result<TrajDataset, PolarsError> {
+    use polars::prelude::DataType;
+
+    // ── Step 1: full observation ingestion ────────────────────────────────────
+    let obs_dataset = load_observation_from_polars(df, error_model, lru_cache_size)?;
+
+    // ── Step 2: read the optional traj_id column ──────────────────────────────
+    //
+    // We need the row → ObsId mapping, which we reconstruct by reading the
+    // `id` base column directly (same zero-copy slice used during ingestion).
+    // The `traj_id` column drives the grouping; the `id` column provides the
+    // ObsId for each row.
+    let id_col = df.column("id")?;
+    let obs_ids_slice = u64_slice(id_col)?;
+    let n = obs_ids_slice.len();
+
+    let trajectories: Vec<Trajectory> = match df.column("traj_id") {
+        // Column absent → no trajectories.
+        Err(_) => Vec::new(),
+
+        Ok(traj_col) => {
+            let series = traj_col.as_materialized_series();
+            match series.dtype() {
+                DataType::UInt64 => {
+                    // Build trajectories keyed by TrajId::Int.
+                    // zip obs_ids_slice with the ChunkedArray iterator, skip
+                    // null cells via filter_map, then fold into a Vec<Trajectory>
+                    // and a temporary AHashMap for O(1) look-up.
+                    let ca = series.u64()?;
+                    let (trajectories, _) = obs_ids_slice
+                        .iter()
+                        .copied()
+                        .zip(ca.iter())
+                        .filter_map(|(obs_id, opt_tid)| opt_tid.map(|tid| (obs_id, tid)))
+                        .fold(
+                            (
+                                Vec::<Trajectory>::new(),
+                                AHashMap::<u64, usize>::with_capacity(n.min(64)),
+                            ),
+                            |(mut trajs, mut idx_map), (obs_id, tid)| {
+                                match idx_map.get(&tid) {
+                                    Some(&i) => trajs[i].obs_ids.push(obs_id),
+                                    None => {
+                                        let i = trajs.len();
+                                        idx_map.insert(tid, i);
+                                        trajs.push(Trajectory {
+                                            id: TrajId::Int(tid),
+                                            obs_ids: vec![obs_id],
+                                        });
+                                    }
+                                }
+                                (trajs, idx_map)
+                            },
+                        );
+                    trajectories
+                }
+
+                DataType::String => {
+                    // Build trajectories keyed by TrajId::Str.
+                    // Clone the key string only on first insertion (to_owned()
+                    // is called at most once per unique traj_id value).
+                    let ca = series.str()?;
+                    let (trajectories, _) = obs_ids_slice
+                        .iter()
+                        .copied()
+                        .zip(ca.iter())
+                        .filter_map(|(obs_id, opt_tid)| opt_tid.map(|tid| (obs_id, tid)))
+                        .fold(
+                            (
+                                Vec::<Trajectory>::new(),
+                                AHashMap::<String, usize>::with_capacity(n.min(64)),
+                            ),
+                            |(mut trajs, mut idx_map), (obs_id, tid_str)| {
+                                match idx_map.get(tid_str) {
+                                    Some(&i) => trajs[i].obs_ids.push(obs_id),
+                                    None => {
+                                        let key = tid_str.to_owned();
+                                        let i = trajs.len();
+                                        idx_map.insert(key.clone(), i);
+                                        trajs.push(Trajectory {
+                                            id: TrajId::Str(key),
+                                            obs_ids: vec![obs_id],
+                                        });
+                                    }
+                                }
+                                (trajs, idx_map)
+                            },
+                        );
+                    trajectories
+                }
+
+                other => {
+                    return Err(PolarsError::TrajIdColumnTypeError(format!("{other:?}")));
+                }
+            }
+        }
+    };
+
+    Ok(TrajDataset::new(obs_dataset, trajectories, lru_cache_size))
 }
 
 // ── unit tests ────────────────────────────────────────────────────────────────

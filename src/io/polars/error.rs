@@ -73,6 +73,19 @@ pub enum PolarsError {
     #[error("Invalid MPC code '{0}' at row {1}: must be exactly 3 ASCII bytes")]
     InvalidMpcCode(String, usize),
 
+    /// The `traj_id` column is present in the [`DataFrame`] but its Polars
+    /// type is neither `UInt64` nor `String`.
+    ///
+    /// Only these two column types are accepted: `UInt64` cells are mapped to
+    /// [`crate::trajectory::TrajId::Int`] and `String` cells are mapped to
+    /// [`crate::trajectory::TrajId::Str`].  Any other type (e.g. `Int32`,
+    /// `Float64`) must be cast by the caller before ingestion.
+    ///
+    /// The inner `String` is a human-readable description of the actual type
+    /// that was found.
+    #[error("traj_id column has unsupported type: {0} (expected UInt64 or String)")]
+    TrajIdColumnTypeError(String),
+
     /// A Polars-internal error propagated transparently from the underlying
     /// [`polars`] crate.
     #[error(transparent)]
