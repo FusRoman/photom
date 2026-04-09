@@ -55,7 +55,7 @@ use polars::{
     series::Series,
 };
 
-use crate::io::polars::{f64_slice, u64_slice, PolarsError};
+use crate::io::polars::{PolarsError, f64_slice, u64_slice};
 
 /// Returns an iterator over the name–type pairs that form the base observation schema.
 ///
@@ -183,11 +183,9 @@ impl<'a> BaseFields<'a> {
         let filter_pool: AHashMap<String, Arc<str>> = {
             let ca = filter_series.str()?;
             let mut pool = AHashMap::new();
-            for opt in ca.iter() {
-                if let Some(s) = opt {
-                    if !pool.contains_key(s) {
-                        pool.insert(s.to_string(), Arc::from(s));
-                    }
+            for s in ca.iter().flatten() {
+                if !pool.contains_key(s) {
+                    pool.insert(s.to_string(), Arc::from(s));
                 }
             }
             pool

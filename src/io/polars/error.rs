@@ -2,13 +2,13 @@ use thiserror::Error;
 
 // ── error type ───────────────────────────────────────────────────────────────
 
-/// Errors that can arise while loading observations from a Polars [`DataFrame`].
+/// Errors that can arise while loading observations from a Polars `DataFrame`.
 ///
 /// Every variant carries enough context to identify the offending row or
 /// column so that callers can produce actionable diagnostics.
 #[derive(Debug, Error)]
 pub enum PolarsError {
-    /// The [`DataFrame`] did not satisfy the required [`ObsSchema`].
+    /// The `DataFrame` did not satisfy the required schema.
     ///
     /// The inner `String` contains a human-readable description of which
     /// schema constraint was violated (e.g. a missing column or a type
@@ -73,7 +73,7 @@ pub enum PolarsError {
     #[error("Invalid MPC code '{0}' at row {1}: must be exactly 3 ASCII bytes")]
     InvalidMpcCode(String, usize),
 
-    /// The `traj_id` column is present in the [`DataFrame`] but its Polars
+    /// The `traj_id` column is present in the `DataFrame` but its Polars
     /// type is neither `UInt64` nor `String`.
     ///
     /// Only these two column types are accepted: `UInt64` cells are mapped to

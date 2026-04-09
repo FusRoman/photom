@@ -20,8 +20,8 @@ use thiserror::Error;
 use ureq::Agent;
 
 use crate::observer::{
-    error_model::{get_bias_rms, ErrorModelData},
     Observer,
+    error_model::{ErrorModelData, get_bias_rms},
 };
 
 /// Three-byte ASCII MPC observatory code (e.g. `b"I41"`, `b"500"`, `b"G96"`).

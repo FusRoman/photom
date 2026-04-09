@@ -31,8 +31,8 @@ use thiserror::Error;
 use ordered_float::NotNan;
 
 use crate::{
-    constants::{EARTH_MAJOR_AXIS, EARTH_MINOR_AXIS},
     Degrees, Meters, Radians,
+    constants::{EARTH_MAJOR_AXIS, EARTH_MINOR_AXIS},
 };
 
 /// A ground-based observatory site represented by its geocentric parallax constants.

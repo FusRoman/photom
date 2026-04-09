@@ -33,7 +33,7 @@
 //!
 //! ### Nullable `traj_id` column
 //!
-//! When loading from a Polars [`DataFrame`], the `traj_id` column is optional
+//! When loading from a Polars `DataFrame`, the `traj_id` column is optional
 //! and nullable.  Rows whose `traj_id` cell is `null` are ingested into the
 //! [`ObsDataset`] normally but are not assigned to any trajectory; they remain
 //! accessible via [`TrajDataset::get_observation`] and
@@ -52,9 +52,9 @@ use std::num::NonZeroUsize;
 use lru::LruCache;
 
 #[cfg(feature = "polars")]
-use polars::{frame::DataFrame, lazy::frame::LazyFrame};
-#[cfg(feature = "polars")]
 use crate::io::polars::{error::PolarsError, load_traj_from_polars};
+#[cfg(feature = "polars")]
+use polars::{frame::DataFrame, lazy::frame::LazyFrame};
 
 use crate::{
     observation::{ObsDataset, ObsId, Observation},
@@ -70,7 +70,7 @@ use crate::{
 /// Minor Planet Center provisional designation such as `"2020 AV2"`, or a
 /// proper name such as `"Ceres"`).
 ///
-/// The column type of `traj_id` in the source [`DataFrame`] determines which
+/// The column type of `traj_id` in the source `DataFrame` determines which
 /// variant is used: a `UInt64` column produces [`TrajId::Int`] keys and a
 /// `String` column produces [`TrajId::Str`] keys.  Mixing both types in a
 /// single dataset is not supported; the column must be uniformly one type.
@@ -92,7 +92,7 @@ pub enum TrajId {
 /// Resolve an ID to a full observation via [`TrajDataset::get_observation`].
 ///
 /// The observation IDs are stored in the order they were encountered while
-/// reading the source [`DataFrame`] (i.e. row order), which typically
+/// reading the source `DataFrame` (i.e. row order), which typically
 /// corresponds to ascending epoch order if the frame was pre-sorted.
 #[derive(Clone, Debug)]
 pub struct Trajectory {
@@ -102,7 +102,7 @@ pub struct Trajectory {
     /// Ordered list of observation IDs that belong to this trajectory.
     ///
     /// Each value is a key into the parent [`TrajDataset`]'s [`ObsDataset`].
-    /// The order matches the source [`DataFrame`] row order.
+    /// The order matches the source `DataFrame` row order.
     pub obs_ids: Vec<ObsId>,
 }
 
@@ -114,7 +114,7 @@ pub struct Trajectory {
 /// geodetic observers, MPC lazy table, and the per-observation LRU cache) and
 /// adds a layer of trajectory grouping on top of it.
 ///
-/// Observations whose `traj_id` was `null` in the source [`DataFrame`] are
+/// Observations whose `traj_id` was `null` in the source `DataFrame` are
 /// present in the embedded [`ObsDataset`] but do not belong to any trajectory.
 /// They can still be accessed via [`TrajDataset::get_observation`] or by
 /// iterating [`TrajDataset::obs_dataset`].
@@ -127,7 +127,7 @@ pub struct TrajDataset {
     obs_dataset: ObsDataset,
 
     /// All trajectories in insertion order (i.e. order of first appearance of
-    /// each `traj_id` value in the source [`DataFrame`]).
+    /// each `traj_id` value in the source `DataFrame`).
     trajectories: Vec<Trajectory>,
 
     /// LRU cache keyed by [`TrajId`].
@@ -283,7 +283,7 @@ impl TrajDataset {
     ///
     /// The iterator yields shared references and does not clone any data.
     /// Trajectories are returned in the order their `traj_id` first appeared
-    /// in the source [`DataFrame`].
+    /// in the source `DataFrame`.
     pub fn iter_trajectories(&self) -> impl Iterator<Item = &Trajectory> {
         self.trajectories.iter()
     }

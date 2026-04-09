@@ -34,30 +34,30 @@ use std::{num::NonZeroUsize, sync::OnceLock};
 use lru::LruCache;
 
 #[cfg(feature = "polars")]
-use polars::{frame::DataFrame, lazy::frame::LazyFrame};
-#[cfg(feature = "polars")]
 use crate::io::polars::{error::PolarsError, load_observation_from_polars};
+#[cfg(feature = "polars")]
+use polars::{frame::DataFrame, lazy::frame::LazyFrame};
 
 use std::time::Duration;
 use thiserror::Error;
 use ureq::Agent;
 
 use crate::{
+    MJDTT,
     astrometry::EquCoord,
     observer::{
-        error_model::{ErrorModelParseError, ObsErrorModel},
-        mpc::{init_observatories, MPCError, MpcCode, MpcCodeObs},
         Observer,
+        error_model::{ErrorModelParseError, ObsErrorModel},
+        mpc::{MPCError, MpcCode, MpcCodeObs, init_observatories},
     },
     photometry::Photometry,
-    MJDTT,
 };
 
 /// Unique numeric identifier for a single observation.
 ///
 /// Observations are keyed by this value inside [`ObsDataset`] and its
 /// internal LRU cache.  The identifier is assigned by the data source (e.g.
-/// the `id` column of a Polars [`DataFrame`]) and must be unique within a
+/// the `id` column of a Polars `DataFrame`) and must be unique within a
 /// dataset.
 pub type ObsId = u64;
 
@@ -96,7 +96,7 @@ pub enum ObserverId {
 pub struct Observation {
     /// Unique identifier for this observation within its dataset.
     ///
-    /// Corresponds to the `id` column of the source [`DataFrame`].
+    /// Corresponds to the `id` column of the source `DataFrame`.
     pub id: ObsId,
 
     /// Night during which the observation was recorded, if known.
@@ -191,9 +191,9 @@ impl ObsDataset {
     ///
     /// - `df` — the source Polars [`DataFrame`] containing the observation data.
     /// - `error_model` — the [`ObsErrorModel`] used to assign astrometric accuracies to
-    ///     MPC-coded observers during MPC table initialisation.
+    ///   MPC-coded observers during MPC table initialisation.
     /// - `lru_cache_size` — optional capacity for the LRU cache used to speed up repeated observation lookups;
-    ///     if `None`, the cache size is set to 1 000.
+    ///   if `None`, the cache size is set to 1 000.
     ///
     /// # Errors
     ///
@@ -269,7 +269,7 @@ impl ObsDataset {
     /// Return an iterator over all observations in insertion order.
     ///
     /// The iterator yields shared references and does not clone any data.
-    /// The order matches the order of the source [`DataFrame`] rows.
+    /// The order matches the order of the source `DataFrame` rows.
     pub fn iter_observations(&self) -> impl Iterator<Item = &Observation> {
         self.observations.iter()
     }

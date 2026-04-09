@@ -1,8 +1,8 @@
 #![cfg(feature = "polars")]
 //! Polars-based ingestion of astronomical observation data.
 //!
-//! This module provides [`load_observation_from_polars`], the primary entry
-//! point for converting a validated Polars [`DataFrame`] into an
+//! This module provides `load_observation_from_polars`, the primary entry
+//! point for converting a validated Polars `DataFrame` into an
 //! [`ObsDataset`].  It handles all three observer representations supported
 //! by the library:
 //!
@@ -17,17 +17,17 @@
 //! | Item | Kind | Description |
 //! |------|------|-------------|
 //! | [`PolarsError`] | enum | All error conditions that can arise during ingestion |
-//! | [`load_observation_from_polars`] | fn | Convert a `DataFrame` into an [`ObsDataset`] |
+//! | `load_observation_from_polars` | fn | Convert a `DataFrame` into an [`ObsDataset`] |
 //!
 //! ## Sub-modules
 //!
-//! - [`base_field`] — zero-copy materialization of the nine mandatory base columns.
+//! - `base_field` — zero-copy materialization of the nine mandatory base columns.
 //!
 //! ## DataFrame schema
 //!
 //! ### Mandatory base columns
 //!
-//! Every `DataFrame` passed to [`load_observation_from_polars`] must contain
+//! Every `DataFrame` passed to `load_observation_from_polars` must contain
 //! the following nine columns.  All are non-nullable; a `null` cell or a
 //! missing column is a schema validation error.
 //!
@@ -61,7 +61,7 @@
 //! ## Observer column rules
 //!
 //! The resolution rules applied per row are documented on
-//! [`load_observation_from_polars`] and enforced by [`resolve_observer`].
+//! `load_observation_from_polars` and enforced by `resolve_observer`.
 //! In summary:
 //!
 //! - `mpc_code_obs` takes precedence over the geodetic triplet when both are
@@ -73,7 +73,7 @@
 //!   is fully specified.
 
 use ahash::AHashMap;
-use itertools::{izip, Either};
+use itertools::{Either, izip};
 use polars::{frame::DataFrame, lazy::frame::LazyFrame, prelude::Column};
 
 use crate::{
@@ -81,10 +81,10 @@ use crate::{
     io::polars::{
         base_field::BaseFields,
         error::PolarsError,
-        observer_field::{resolve_observer, RawObsRow, ResolvedObserver},
+        observer_field::{RawObsRow, ResolvedObserver, resolve_observer},
     },
     observation::{ObsDataset, Observation, ObserverId},
-    observer::{error_model::ObsErrorModel, Observer},
+    observer::{Observer, error_model::ObsErrorModel},
     photometry::{Filter, Photometry},
     trajectory::{TrajDataset, TrajId, Trajectory},
 };
@@ -105,7 +105,7 @@ mod sealed {
 ///
 /// - [`DataFrame`] — the frame is already collected; transferred by value with
 ///   no data copy.
-/// - [`&DataFrame`] — performs a cheap Arc-level clone of the frame's columns
+/// - `&DataFrame` — performs a cheap Arc-level clone of the frame's columns
 ///   (O(number of columns), not O(number of rows)); the underlying column
 ///   buffers are shared and not duplicated.
 /// - [`LazyFrame`] — the logical plan is executed via
@@ -226,7 +226,7 @@ fn iter_opt_f64<'df>(
 ) -> Result<impl Iterator<Item = Option<f64>> + 'df, PolarsError> {
     match df.column(name) {
         Ok(col) => Ok(Either::Left(col.as_materialized_series().f64()?.iter())),
-        Err(_) => Ok(Either::Right(std::iter::repeat(None).take(n))),
+        Err(_) => Ok(Either::Right(std::iter::repeat_n(None, n))),
     }
 }
 
@@ -252,7 +252,7 @@ fn iter_opt_str<'df>(
 ) -> Result<impl Iterator<Item = Option<&'df str>> + 'df, PolarsError> {
     match df.column(name) {
         Ok(col) => Ok(Either::Left(col.as_materialized_series().str()?.iter())),
-        Err(_) => Ok(Either::Right(std::iter::repeat(None).take(n))),
+        Err(_) => Ok(Either::Right(std::iter::repeat_n(None, n))),
     }
 }
 

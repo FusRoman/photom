@@ -40,12 +40,12 @@ mod vfcc17;
 use std::{collections::HashMap, str::FromStr};
 
 use nom::{
+    IResult, Parser,
     bytes::complete::{tag, take_while1},
     character::complete::{char, multispace0},
     combinator::{map, opt},
     number::complete::float,
     sequence::{preceded, separated_pair, terminated},
-    IResult, Parser,
 };
 
 use thiserror::Error;

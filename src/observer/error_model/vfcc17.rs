@@ -14,12 +14,12 @@
 //! point is [`parse_vfcc17_line`].
 
 use nom::{
+    IResult, Parser,
     bytes::complete::{tag, take_until, take_while1},
     character::complete::{char, multispace0},
     combinator::{map, opt},
     number::complete::float,
     sequence::{preceded, separated_pair},
-    IResult, Parser,
 };
 
 use crate::observer::error_model::ParseResult;
@@ -139,22 +139,20 @@ mod test_vfcc17_parser {
 
     #[test]
     fn test_vfcc17_parser() {
-        let input =
-            "ALL t=cBCVn c=*          p=    >            <            @  1.00,  1.00 ! Unknown catalog";
+        let input = "ALL t=cBCVn c=*          p=    >            <            @  1.00,  1.00 ! Unknown catalog";
         let (_, parsed) = parse_vfcc17_line(input).unwrap();
         assert_eq!(parsed.len(), 1);
-        assert_eq!(parsed[0].0 .0, "ALL");
-        assert_eq!(parsed[0].0 .1, "*");
-        assert_eq!(parsed[0].1 .0, 1.0);
-        assert_eq!(parsed[0].1 .1, 1.0);
+        assert_eq!(parsed[0].0.0, "ALL");
+        assert_eq!(parsed[0].0.1, "*");
+        assert_eq!(parsed[0].1.0, 1.0);
+        assert_eq!(parsed[0].1.1, 1.0);
 
-        let input =
-            "568 t=cC    c=t          p=_   >            <            @  0.20,  0.20  ! Micheli updated ";
+        let input = "568 t=cC    c=t          p=_   >            <            @  0.20,  0.20  ! Micheli updated ";
         let (_, parsed) = parse_vfcc17_line(input).unwrap();
         assert_eq!(parsed.len(), 1);
-        assert_eq!(parsed[0].0 .0, "568");
-        assert_eq!(parsed[0].0 .1, "t");
-        assert_eq!(parsed[0].1 .0, 0.2);
-        assert_eq!(parsed[0].1 .1, 0.2);
+        assert_eq!(parsed[0].0.0, "568");
+        assert_eq!(parsed[0].0.1, "t");
+        assert_eq!(parsed[0].1.0, 0.2);
+        assert_eq!(parsed[0].1.1, 0.2);
     }
 }

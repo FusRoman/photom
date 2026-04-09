@@ -1,10 +1,10 @@
 pub mod astrometry;
-pub mod photometry;
-pub mod observation;
-pub mod observer;
-pub mod trajectory;
 pub mod constants;
 pub mod io;
+pub mod observation;
+pub mod observer;
+pub mod photometry;
+pub mod trajectory;
 
 /// Radians.
 pub type Radians = f64;

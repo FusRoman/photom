@@ -3,7 +3,7 @@
 use crate::{
     io::polars::error::PolarsError,
     observation::ObserverId,
-    observer::{mpc::MpcCode, Observer},
+    observer::{Observer, mpc::MpcCode},
 };
 
 /// All nullable observer inputs for one row, already extracted from the
