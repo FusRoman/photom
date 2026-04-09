@@ -1,0 +1,18 @@
+[package]
+name = "photom"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ahash = { version = "0.8.12", default-features = false, features = ["std"] }
+itertools = "0.14.0"
+lru = "0.16.3"
+nom = { version = "8.0.0", default-features = false }
+ordered-float = { version = "5.3.0", default-features = false }
+polars = { version = "0.53.0", default-features = false }
+thiserror = { version = "2.0.18" }
+ureq = { version = "3.3.0", default-features = false, features = ["rustls"] }
+
+[dev-dependencies]
+approx = "0.5.1"
+proptest = "1.11.0"
