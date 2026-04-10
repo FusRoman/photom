@@ -117,6 +117,7 @@ pub struct Trajectory {
 /// present in the embedded [`ObsDataset`] but do not belong to any trajectory.
 /// They can still be accessed via [`TrajDataset::get_observation`] or by
 /// iterating [`TrajDataset::obs_dataset`].
+#[derive(Debug)]
 pub struct TrajDataset {
     /// The underlying observation dataset.
     ///

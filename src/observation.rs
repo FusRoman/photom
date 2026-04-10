@@ -4,7 +4,7 @@
 //! pipeline: individual astrometric/photometric measurements ([`Observation`]),
 //! the dataset that holds a collection of them ([`ObsDataset`]), the
 //! identifier types that label observations, nights, and observatories
-//! ([`ObsId`], [`NightId`], [`ObserverId`]), and the error type that covers
+//! ([`ObsId`], [`crate::nightly::NightId`], [`ObserverId`]), and the error type that covers
 //! all failure modes arising during dataset construction ([`ObsDatasetError`]).
 //!
 //! ## Key design notes
@@ -23,7 +23,7 @@
 //! | Item | Kind | Description |
 //! |------|------|-------------|
 //! | [`ObsId`] | type alias | Unique numeric identifier for a single observation |
-//! | [`NightId`] | struct | Logical identifier for a night of observation |
+//! | [`crate::nightly::NightId`] | struct | Logical identifier for a night of observation |
 //! | [`ObserverId`] | enum | Reference to either a custom or an MPC-coded observer |
 //! | [`Observation`] | struct | A single astrometric/photometric measurement |
 //! | [`ObsDataset`] | struct | Collection of observations with lazy observer resolution |
@@ -61,14 +61,6 @@ use crate::{
 /// dataset.
 pub type ObsId = u64;
 
-/// Logical identifier for a night of observation.
-///
-/// Wraps a `u32` that typically represents an integer MJD day number
-/// (e.g. `60312`).  The value must be stable across runs because it is used
-/// as a directory name in on-disk outputs.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct NightId(pub u32);
-
 /// Reference to the observer associated with an [`Observation`].
 ///
 /// An observer can be identified in one of two ways:
@@ -98,12 +90,6 @@ pub struct Observation {
     ///
     /// Corresponds to the `id` column of the source `DataFrame`.
     pub id: ObsId,
-
-    /// Night during which the observation was recorded, if known.
-    ///
-    /// `None` when the night assignment has not yet been computed or is not
-    /// available in the source data.
-    pub night_id: Option<NightId>,
 
     /// Equatorial sky coordinates (right ascension and declination) with
     /// their associated measurement uncertainties, all in **radians**.
@@ -153,6 +139,7 @@ pub enum ObsDatasetError {
 ///   on the first access and cached for the lifetime of the dataset.
 /// - An **LRU cache** of up to 1 000 [`Observation`] values so that repeated
 ///   look-ups by [`ObsId`] avoid a full linear scan.
+#[derive(Debug)]
 pub struct ObsDataset {
     /// Full list of observations in insertion order.
     observations: Vec<Observation>,
@@ -388,7 +375,6 @@ mod observation_tests {
     fn make_observation(id: u64, observer: Option<ObserverId>) -> Observation {
         Observation {
             id,
-            night_id: Some(NightId(60000)),
             equ_coord: make_equ_coord(),
             photometry: make_photometry(),
             mjd_tt: 60000.5,
@@ -406,76 +392,6 @@ mod observation_tests {
     /// Build an ObsDataset with an LRU cache capacity of 100.
     fn make_dataset(obs: Vec<Observation>, observers: Vec<Observer>) -> ObsDataset {
         ObsDataset::new(obs, observers, ObsErrorModel::FCCT14, Some(100))
-    }
-
-    // -----------------------------------------------------------------------
-    // NightId — ordering, Copy, Debug, Hash
-    // -----------------------------------------------------------------------
-
-    mod night_id {
-        use super::*;
-
-        /// Verifies that two NightIds with the same value compare as equal.
-        #[test]
-        fn night_id_equal_values_are_eq() {
-            let a = NightId(60000);
-            let b = NightId(60000);
-            assert_eq!(a, b);
-        }
-
-        /// Verifies that a smaller NightId is less than a larger one.
-        #[test]
-        fn night_id_ordering_less_than() {
-            let a = NightId(59999);
-            let b = NightId(60000);
-            assert!(a < b);
-        }
-
-        /// Verifies that a larger NightId is greater than a smaller one.
-        #[test]
-        fn night_id_ordering_greater_than() {
-            let a = NightId(60001);
-            let b = NightId(60000);
-            assert!(a > b);
-        }
-
-        /// Verifies that NightId is Copy: the original is still usable after a copy.
-        #[test]
-        fn night_id_is_copy() {
-            let original = NightId(60000);
-            let copy = original; // Copy, not move
-            assert_eq!(original, copy);
-        }
-
-        /// Verifies that the Debug output contains the inner value.
-        #[test]
-        fn night_id_debug_contains_inner_value() {
-            let id = NightId(60312);
-            let debug_str = format!("{id:?}");
-            assert!(
-                debug_str.contains("60312"),
-                "Debug output should contain '60312', got: {debug_str}"
-            );
-        }
-
-        /// Verifies that NightId can be inserted into a HashSet (requires Hash + Eq).
-        #[test]
-        fn night_id_can_be_inserted_into_hash_set() {
-            let mut set: HashSet<NightId> = HashSet::new();
-            set.insert(NightId(60000));
-            set.insert(NightId(60001));
-            set.insert(NightId(60000)); // duplicate
-            assert_eq!(set.len(), 2);
-        }
-
-        /// Verifies that HashSet membership lookup works correctly for NightId.
-        #[test]
-        fn night_id_hash_set_contains() {
-            let mut set: HashSet<NightId> = HashSet::new();
-            set.insert(NightId(60000));
-            assert!(set.contains(&NightId(60000)));
-            assert!(!set.contains(&NightId(99999)));
-        }
     }
 
     // -----------------------------------------------------------------------
@@ -699,14 +615,6 @@ mod observation_tests {
                 ds.get_observation(1).is_some(),
                 "id=1 should still be findable after LRU eviction"
             );
-        }
-
-        /// Verifies that the night_id field is correctly stored in the returned observation.
-        #[test]
-        fn get_observation_night_id_matches() {
-            let mut ds = make_dataset(vec![make_observation(5, None)], vec![]);
-            let obs = ds.get_observation(5).unwrap(); // safe: we just inserted id=5
-            assert_eq!(obs.night_id, Some(NightId(60000)));
         }
     }
 

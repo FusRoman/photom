@@ -79,11 +79,12 @@
 //! | `obs_dec_acc` | `Float64` | Dec accuracy (radians) — required when the geodetic triplet is set |
 //! | `mpc_code_obs` | `String` | Three-byte ASCII MPC code (takes precedence over geodetic columns) |
 //!
-//! ## Optional trajectory column
+//! ## Optional grouping columns
 //!
 //! | Column | Polars type | Description |
 //! |--------|-------------|-------------|
-//! | `traj_id` | `UInt64` or `String` | Trajectory identifier; nullable — null rows are loaded into the [`observation::ObsDataset`] but are not assigned to any trajectory |
+//! | `traj_id` | `UInt64` or `String` | Trajectory identifier; nullable — null rows are loaded into the `ObsDataset` but are not assigned to any trajectory |
+//! | `night_id` | `UInt32` | Night identifier; nullable — null rows are included in the `ObsDataset` but are not assigned to any night |
 //!
 //! ## Observer resolution (per row, in precedence order)
 //!
@@ -97,15 +98,85 @@
 //!
 //! # Usage Examples
 //!
-//! ## Load observations from a `DataFrame`
+//! ## Build a minimal `DataFrame` and load observations
 //!
 //! ```rust,ignore
+//! use polars::prelude::*;
 //! use photom::observation::ObsDataset;
 //! use photom::observer::error_model::ObsErrorModel;
+//!
+//! // Construct a two-row DataFrame matching the required schema.
+//! // RA and Dec are in degrees; accuracies are in degrees (base columns)
+//! // or radians (observer accuracy columns).
+//! let df = df! {
+//!     "id"        => &[1_u64, 2_u64],
+//!     "ra"        => &[83.82_f64, 84.10_f64],   // degrees
+//!     "ra_err"    => &[0.001_f64, 0.001_f64],   // degrees
+//!     "dec"       => &[22.01_f64, 22.05_f64],   // degrees
+//!     "dec_err"   => &[0.001_f64, 0.001_f64],   // degrees
+//!     "magnitude" => &[19.3_f64, 19.5_f64],
+//!     "mag_err"   => &[0.05_f64, 0.05_f64],
+//!     "filter"    => &["r", "r"],
+//!     "mjd_tt"    => &[60000.0_f64, 60000.03_f64],
+//! }?;
 //!
 //! let dataset = ObsDataset::from_polars(&df, ObsErrorModel::FCCT14, Some(1000))?;
 //! for obs in dataset.iter_observations() {
 //!     println!("{} {:?}", obs.id, obs.equ_coord);
+//! }
+//! ```
+//!
+//! ## Use an MPC observatory code
+//!
+//! Add an optional `mpc_code_obs` column (`String`, nullable) to associate each
+//! observation with an MPC-registered observatory.  The accuracy values for MPC
+//! sites are derived from the chosen `ObsErrorModel`.
+//!
+//! ```rust,ignore
+//! use polars::prelude::*;
+//! use photom::observation::ObsDataset;
+//! use photom::observer::error_model::ObsErrorModel;
+//!
+//! let df = df! {
+//!     "id"           => &[1_u64],
+//!     "ra"           => &[83.82_f64],
+//!     "ra_err"       => &[0.001_f64],
+//!     "dec"          => &[22.01_f64],
+//!     "dec_err"      => &[0.001_f64],
+//!     "magnitude"    => &[19.3_f64],
+//!     "mag_err"      => &[0.05_f64],
+//!     "filter"       => &["r"],
+//!     "mjd_tt"       => &[60000.0_f64],
+//!     "mpc_code_obs" => &[Some("F51")],   // Haleakalā Pan-STARRS 1
+//! }?;
+//!
+//! let dataset = ObsDataset::from_polars(&df, ObsErrorModel::FCCT14, None)?;
+//! ```
+//!
+//! ## Group observations by trajectory
+//!
+//! ```rust,ignore
+//! use polars::prelude::*;
+//! use photom::trajectory::{TrajDataset, TrajId};
+//! use photom::observer::error_model::ObsErrorModel;
+//!
+//! // traj_id can be UInt64 or String; null rows are loaded but not grouped.
+//! let df = df! {
+//!     "id"        => &[1_u64, 2_u64, 3_u64],
+//!     "ra"        => &[83.82_f64, 84.10_f64, 10.0_f64],
+//!     "ra_err"    => &[0.001_f64; 3],
+//!     "dec"       => &[22.01_f64, 22.05_f64, 5.0_f64],
+//!     "dec_err"   => &[0.001_f64; 3],
+//!     "magnitude" => &[19.3_f64, 19.5_f64, 18.0_f64],
+//!     "mag_err"   => &[0.05_f64; 3],
+//!     "filter"    => &["r", "r", "g"],
+//!     "mjd_tt"    => &[60000.0_f64, 60000.03_f64, 60001.0_f64],
+//!     "traj_id"   => &[Some("2020 AV2"), Some("2020 AV2"), None],
+//! }?;
+//!
+//! let mut dataset = TrajDataset::from_polars(&df, ObsErrorModel::FCCT14, Some(1000))?;
+//! if let Some(traj) = dataset.get_trajectory(&TrajId::Str("2020 AV2".to_string())) {
+//!     println!("{} observations in trajectory", traj.obs_ids.len());
 //! }
 //! ```
 //!
@@ -115,19 +186,8 @@
 //! use photom::observation::ObsDataset;
 //! use photom::observer::error_model::ObsErrorModel;
 //!
+//! // Any DataFrame can be turned into a LazyFrame with .lazy().
 //! let dataset = ObsDataset::from_lazy(df.lazy(), ObsErrorModel::VFCC17, None)?;
-//! ```
-//!
-//! ## Load and query trajectories
-//!
-//! ```rust,ignore
-//! use photom::trajectory::{TrajDataset, TrajId};
-//! use photom::observer::error_model::ObsErrorModel;
-//!
-//! let mut dataset = TrajDataset::from_polars(&df, ObsErrorModel::FCCT14, Some(1000))?;
-//! if let Some(traj) = dataset.get_trajectory(&TrajId::Str("2020 AV2".to_string())) {
-//!     println!("{} observations in trajectory", traj.obs_ids.len());
-//! }
 //! ```
 //!
 //! ## Compute angular separation between two sky positions
@@ -161,6 +221,7 @@
 pub mod astrometry;
 pub mod constants;
 pub mod io;
+pub mod nightly;
 pub mod observation;
 pub mod observer;
 pub mod photometry;

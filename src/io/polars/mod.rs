@@ -1,10 +1,11 @@
 #![cfg(feature = "polars")]
 //! Polars-based ingestion of astronomical observation data.
 //!
-//! This module provides `load_observation_from_polars`, the primary entry
-//! point for converting a validated Polars `DataFrame` into an
-//! [`ObsDataset`].  It handles all three observer representations supported
-//! by the library:
+//! This module provides `load_observation_from_polars`, the primary internal
+//! entry point for converting a validated Polars `DataFrame` into an
+//! `ObsDataset`, and `load_traj_from_polars`, which additionally groups
+//! observations into a `TrajDataset`.  It handles all three observer
+//! representations supported by the library:
 //!
 //! - **Geodetic** — a custom ground-based site described by longitude,
 //!   latitude, altitude, and astrometric accuracy values.
@@ -17,19 +18,25 @@
 //! | Item | Kind | Description |
 //! |------|------|-------------|
 //! | [`PolarsError`] | enum | All error conditions that can arise during ingestion |
-//! | `load_observation_from_polars` | fn | Convert a `DataFrame` into an [`ObsDataset`] |
+//! | `IntoFrame` | trait | Sealed trait implemented by `DataFrame`, `&DataFrame`, and `LazyFrame` |
+//! | `load_observation_from_polars` | fn (pub crate) | Internal entry point — convert a `DataFrame` or `LazyFrame` into an `ObsDataset` |
+//! | `load_traj_from_polars` | fn (pub crate) | Internal entry point — convert a `DataFrame` or `LazyFrame` into a `TrajDataset` |
+//! | `load_night_from_polars` | fn (pub crate) | Internal entry point — convert a `DataFrame` or `LazyFrame` into a `NightDataset` |
 //!
 //! ## Sub-modules
 //!
 //! - `base_field` — zero-copy materialization of the nine mandatory base columns.
+//! - `error` — the [`PolarsError`] enum.
+//! - `observer_field` — per-row observer resolution logic.
 //!
 //! ## DataFrame schema
 //!
 //! ### Mandatory base columns
 //!
-//! Every `DataFrame` passed to `load_observation_from_polars` must contain
-//! the following nine columns.  All are non-nullable; a `null` cell or a
-//! missing column is a schema validation error.
+//! Every `DataFrame` passed to `load_observation_from_polars` or
+//! `load_traj_from_polars` must contain the following nine columns.  All are
+//! non-nullable; a `null` cell or a missing column is a schema validation
+//! error.
 //!
 //! | Column | Polars type | Description |
 //! |-------------|-------------|----------------------------------------------|
@@ -50,13 +57,23 @@
 //! is absent, every row in that column is treated as `null`.
 //!
 //! | Column | Polars type | Nullable | Description |
-//! |---------------|-------------|----------|------------------------------------------------------------|
+//! |----------------|-------------|----------|------------------------------------------------------------|
 //! | `obs_lon` | `Float64` | yes | Geodetic longitude in degrees east of Greenwich |
 //! | `obs_lat` | `Float64` | yes | Geodetic latitude in degrees |
 //! | `obs_alt` | `Float64` | yes | Altitude above the reference ellipsoid in metres |
 //! | `obs_ra_acc` | `Float64` | yes | RA measurement accuracy in radians (required when geodetic triplet is set) |
 //! | `obs_dec_acc` | `Float64` | yes | Dec measurement accuracy in radians (required when geodetic triplet is set) |
 //! | `mpc_code_obs` | `String` | yes | Three-byte ASCII MPC observatory code (takes precedence over geodetic triplet) |
+//!
+//! ### Optional trajectory column
+//!
+//! The `traj_id` column is used exclusively by `load_traj_from_polars`.  It
+//! is *optional* (the column may be absent) and *nullable* (individual cells
+//! may be `null`).  Two Polars types are accepted:
+//!
+//! | Column | Polars type | Nullable | Description |
+//! |----------|----------------------|----------|----------------------------------------------------|
+//! | `traj_id` | `UInt64` or `String` | yes | Trajectory identifier; groups observations into trajectories |
 //!
 //! ## Observer column rules
 //!
@@ -71,10 +88,38 @@
 //!   always an error.
 //! - `obs_ra_acc` and `obs_dec_acc` are required whenever the geodetic triplet
 //!   is fully specified.
+//!
+//! ## TrajDataset ingestion
+//!
+//! `load_traj_from_polars` builds a `TrajDataset` from the same `DataFrame`
+//! schema described above.  A `TrajDataset` bundles an `ObsDataset` with
+//! trajectory groupings derived from the `traj_id` column.
+//!
+//! ### `traj_id` column rules
+//!
+//! | Situation | Outcome |
+//! |-----------|---------|
+//! | Column absent | All observations loaded; no trajectories created. |
+//! | Column present, type `UInt64` | Non-null cells map to `TrajId::Int`. |
+//! | Column present, type `String` | Non-null cells map to `TrajId::Str`. |
+//! | Column present, any other type | [`PolarsError::TrajIdColumnTypeError`]. |
+//! | Cell `null` | Row belongs to no trajectory but is still included in the `ObsDataset`. |
+//!
+//! ### First-appearance ordering
+//!
+//! Trajectories are assembled in **first-appearance order**: the first row
+//! that introduces a given `traj_id` value defines the position of that
+//! trajectory in `TrajDataset::iter_trajectories`.  Subsequent rows with the
+//! same value are appended to the same trajectory's `obs_ids` list in
+//! source-row order.
 
 use ahash::AHashMap;
 use itertools::{Either, izip};
-use polars::{frame::DataFrame, lazy::frame::LazyFrame, prelude::Column};
+use polars::{
+    frame::DataFrame,
+    lazy::frame::LazyFrame,
+    prelude::{Column, DataType},
+};
 
 use crate::{
     astrometry::EquCoord,
@@ -83,6 +128,7 @@ use crate::{
         error::PolarsError,
         observer_field::{RawObsRow, ResolvedObserver, resolve_observer},
     },
+    nightly::{NightDataset, NightObs},
     observation::{ObsDataset, Observation, ObserverId},
     observer::{Observer, error_model::ObsErrorModel},
     photometry::{Filter, Photometry},
@@ -256,7 +302,7 @@ fn iter_opt_str<'df>(
     }
 }
 
-// ── internal entry point ────────────────────────────────────────────────────────
+// ── observation ingestion ────────────────────────────────────────────────────────
 
 /// Load observations from a Polars [`DataFrame`] or [`LazyFrame`] into an
 /// [`ObsDataset`].
@@ -398,7 +444,6 @@ fn load_observation_from_frame(
 
             Ok(Observation {
                 id,
-                night_id: None,
                 equ_coord: EquCoord::new(ra, ra_err, dec, dec_err),
                 photometry: Photometry {
                     magnitude: mag,
@@ -485,8 +530,6 @@ fn load_traj_from_frame(
     error_model: ObsErrorModel,
     lru_cache_size: Option<usize>,
 ) -> Result<TrajDataset, PolarsError> {
-    use polars::prelude::DataType;
-
     // ── Step 1: full observation ingestion ────────────────────────────────────
     let obs_dataset = load_observation_from_frame(df, error_model, lru_cache_size)?;
 
@@ -583,6 +626,83 @@ fn load_traj_from_frame(
     };
 
     Ok(TrajDataset::new(obs_dataset, trajectories, lru_cache_size))
+}
+
+// ── night ingestion ──────────────────────────────────────────────────────
+
+pub(crate) fn load_night_from_polars<T: IntoFrame>(
+    frame: T,
+    error_model: ObsErrorModel,
+    lru_cache_size: Option<usize>,
+) -> Result<NightDataset, PolarsError> {
+    let df = frame.collect_frame()?;
+    load_night_from_frame(&df, error_model, lru_cache_size)
+}
+
+fn load_night_from_frame(
+    df: &DataFrame,
+    error_model: ObsErrorModel,
+    lru_cache_size: Option<usize>,
+) -> Result<NightDataset, PolarsError> {
+    // ── Step 1: full observation ingestion ────────────────────────────────────
+    let obs_dataset = load_observation_from_frame(df, error_model, lru_cache_size)?;
+
+    // ── Step 2: read the optional traj_id column ──────────────────────────────
+    //
+    // We need the row → ObsId mapping, which we reconstruct by reading the
+    // `id` base column directly (same zero-copy slice used during ingestion).
+    // The `traj_id` column drives the grouping; the `id` column provides the
+    // ObsId for each row.
+    let id_col = df.column("id")?;
+    let obs_ids_slice = u64_slice(id_col)?;
+    let n = obs_ids_slice.len();
+
+    let nights: Vec<NightObs> = match df.column("night_id") {
+        // Column absent → no nights.
+        Err(_) => Vec::new(),
+
+        Ok(night_col) => {
+            let series = night_col.as_materialized_series();
+            match series.dtype() {
+                DataType::UInt32 => {
+                    // Build nights keyed by the integer night ID.
+                    let ca = night_col.u32()?;
+                    let (nights, _) = obs_ids_slice
+                        .iter()
+                        .copied()
+                        .zip(ca.iter())
+                        .filter_map(|(obs_id, opt_nid)| opt_nid.map(|nid| (obs_id, nid)))
+                        .fold(
+                            (
+                                Vec::<NightObs>::new(),
+                                AHashMap::<u32, usize>::with_capacity(n.min(64)),
+                            ),
+                            |(mut nights, mut idx_map), (obs_id, nid)| {
+                                match idx_map.get(&nid) {
+                                    Some(&i) => nights[i].obs_ids.push(obs_id),
+                                    None => {
+                                        let i = nights.len();
+                                        idx_map.insert(nid, i);
+                                        nights.push(NightObs {
+                                            night_id: nid.into(),
+                                            obs_ids: vec![obs_id],
+                                        });
+                                    }
+                                }
+                                (nights, idx_map)
+                            },
+                        );
+                    nights
+                }
+
+                other => {
+                    return Err(PolarsError::TrajIdColumnTypeError(format!("{other:?}")));
+                }
+            }
+        }
+    };
+
+    Ok(NightDataset::new(obs_dataset, nights, lru_cache_size))
 }
 
 // ── unit tests ────────────────────────────────────────────────────────────────
