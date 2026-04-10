@@ -56,10 +56,9 @@ use crate::io::polars::{error::PolarsError, load_traj_from_polars};
 #[cfg(feature = "polars")]
 use polars::{frame::DataFrame, lazy::frame::LazyFrame};
 
-use crate::{
-    observation::{ObsDataset, ObsId, Observation},
-    observer::error_model::ObsErrorModel,
-};
+use crate::observation::{ObsDataset, ObsId, Observation};
+#[cfg(feature = "polars")]
+use crate::observer::error_model::ObsErrorModel;
 
 // ── TrajId ────────────────────────────────────────────────────────────────────
 
