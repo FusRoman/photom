@@ -2,6 +2,20 @@
 name = "photom"
 version = "0.1.0"
 edition = "2024"
+license-file = "LICENSE"
+rust-version = "1.94.0"
+description = "Rust library for loading, structuring and querying astronomical observation datasets — with trajectory grouping, multi-observer support, and efficient lookups."
+repository = "https://github.com/FusRoman/photom"
+homepage = "https://github.com/FusRoman/photom"
+documentation = "https://docs.rs/photom"
+keywords = [
+    "astronomy",
+    "observations",
+    "photometry",
+    "astrometry",
+    "trajectory",
+]
+categories = ["science", "parsing", "data-structures"]
 
 [dependencies]
 ahash = { version = "0.8.12", default-features = false, features = ["std"] }
@@ -24,3 +38,8 @@ proptest = "1.11.0"
 
 [features]
 polars = ["dep:polars"]
+
+
+[package.metadata.docs.rs]
+features = ["polars"]
+rustdoc-args = ["--cfg", "docsrs"]
