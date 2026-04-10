@@ -27,7 +27,7 @@
 //! internally.  On first access via [`NightDataset::get_night`], the
 //! [`NightObs`] for a given [`NightId`] is cloned into the cache and evicted
 //! in least-recently-used order when the cache is full.  The cache capacity is
-//! set by the `lru_cache_size` parameter of [`NightDataset::new`] and defaults
+//! set by the `lru_cache_size` parameter of `NightDataset::new` and defaults
 //! to **1 000** entries.
 //!
 //! ## `polars` feature
@@ -103,7 +103,7 @@ pub struct NightObs {
 ///
 /// Repeated look-ups by [`NightId`] are accelerated by a dedicated LRU cache
 /// (see [`NightDataset::get_night`] for the caching strategy).  The same
-/// `lru_cache_size` parameter passed to [`NightDataset::new`] controls the
+/// `lru_cache_size` parameter passed to `NightDataset::new` controls the
 /// capacity of this cache; it defaults to **1 000** entries.
 #[derive(Debug)]
 pub struct NightDataset {
@@ -129,7 +129,7 @@ pub struct NightDataset {
     /// A [`NightObs`] is cloned into the cache on the first successful call
     /// to [`NightDataset::get_night`] and evicted in least-recently-used order
     /// when the cache is full.  The capacity is set at construction time by
-    /// [`NightDataset::new`] and defaults to **1 000** entries.
+    /// `NightDataset::new` and defaults to **1 000** entries.
     pub lru_cache_night: LruCache<NightId, NightObs>,
 }
 
@@ -148,7 +148,7 @@ impl NightDataset {
     ///   order.
     /// - `lru_cache_size`  — optional capacity for the night LRU cache;
     ///   `None` defaults to 1 000.
-    pub fn new(
+    pub(crate) fn new(
         obs_dataset: ObsDataset,
         nights: Vec<NightObs>,
         lru_cache_size: Option<usize>,
