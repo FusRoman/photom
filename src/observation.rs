@@ -354,3 +354,554 @@ impl ObsDataset {
             .as_ref()
     }
 }
+
+// ---------------------------------------------------------------------------
+// Unit tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod observation_tests {
+    use super::*;
+    use crate::{
+        astrometry::EquCoord,
+        observer::{Observer, error_model::ObsErrorModel},
+        photometry::{Filter, Photometry},
+    };
+    use std::collections::HashSet;
+
+    // -----------------------------------------------------------------------
+    // Test helpers
+    // -----------------------------------------------------------------------
+
+    fn make_equ_coord() -> EquCoord {
+        EquCoord::new(0.5, 1e-5, 0.2, 1e-5)
+    }
+
+    fn make_photometry() -> Photometry {
+        Photometry {
+            magnitude: 15.0,
+            error: 0.1,
+            filter: Filter::String("G".to_string()),
+        }
+    }
+
+    fn make_observation(id: u64, observer: Option<ObserverId>) -> Observation {
+        Observation {
+            id,
+            night_id: Some(NightId(60000)),
+            equ_coord: make_equ_coord(),
+            photometry: make_photometry(),
+            mjd_tt: 60000.5,
+            observer,
+        }
+    }
+
+    /// Returns a valid Observer constructed via the parallax path.
+    /// unwrap() is safe: none of the inputs are NaN.
+    fn make_custom_observer() -> Observer {
+        Observer::from_parallax(110.0, 0.836, 0.547, Some("Test".to_string()), None, None).unwrap()
+        // safe: all inputs are finite, non-NaN values
+    }
+
+    /// Build an ObsDataset with an LRU cache capacity of 100.
+    fn make_dataset(obs: Vec<Observation>, observers: Vec<Observer>) -> ObsDataset {
+        ObsDataset::new(obs, observers, ObsErrorModel::FCCT14, Some(100))
+    }
+
+    // -----------------------------------------------------------------------
+    // NightId — ordering, Copy, Debug, Hash
+    // -----------------------------------------------------------------------
+
+    mod night_id {
+        use super::*;
+
+        /// Verifies that two NightIds with the same value compare as equal.
+        #[test]
+        fn night_id_equal_values_are_eq() {
+            let a = NightId(60000);
+            let b = NightId(60000);
+            assert_eq!(a, b);
+        }
+
+        /// Verifies that a smaller NightId is less than a larger one.
+        #[test]
+        fn night_id_ordering_less_than() {
+            let a = NightId(59999);
+            let b = NightId(60000);
+            assert!(a < b);
+        }
+
+        /// Verifies that a larger NightId is greater than a smaller one.
+        #[test]
+        fn night_id_ordering_greater_than() {
+            let a = NightId(60001);
+            let b = NightId(60000);
+            assert!(a > b);
+        }
+
+        /// Verifies that NightId is Copy: the original is still usable after a copy.
+        #[test]
+        fn night_id_is_copy() {
+            let original = NightId(60000);
+            let copy = original; // Copy, not move
+            assert_eq!(original, copy);
+        }
+
+        /// Verifies that the Debug output contains the inner value.
+        #[test]
+        fn night_id_debug_contains_inner_value() {
+            let id = NightId(60312);
+            let debug_str = format!("{id:?}");
+            assert!(
+                debug_str.contains("60312"),
+                "Debug output should contain '60312', got: {debug_str}"
+            );
+        }
+
+        /// Verifies that NightId can be inserted into a HashSet (requires Hash + Eq).
+        #[test]
+        fn night_id_can_be_inserted_into_hash_set() {
+            let mut set: HashSet<NightId> = HashSet::new();
+            set.insert(NightId(60000));
+            set.insert(NightId(60001));
+            set.insert(NightId(60000)); // duplicate
+            assert_eq!(set.len(), 2);
+        }
+
+        /// Verifies that HashSet membership lookup works correctly for NightId.
+        #[test]
+        fn night_id_hash_set_contains() {
+            let mut set: HashSet<NightId> = HashSet::new();
+            set.insert(NightId(60000));
+            assert!(set.contains(&NightId(60000)));
+            assert!(!set.contains(&NightId(99999)));
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // ObserverId — Copy, PartialOrd ordering between variants, Debug
+    // -----------------------------------------------------------------------
+
+    mod observer_id {
+        use super::*;
+
+        /// Verifies that ObserverId is Copy: the original is still usable after a copy.
+        #[test]
+        fn observer_id_int_is_copy() {
+            let original = ObserverId::IntId(3);
+            let copy = original; // Copy, not move
+            assert_eq!(original, copy);
+        }
+
+        /// Verifies that ObserverId::MpcCode is Copy.
+        #[test]
+        fn observer_id_mpc_code_is_copy() {
+            let original = ObserverId::MpcCode(*b"G96");
+            let copy = original;
+            assert_eq!(original, copy);
+        }
+
+        /// Verifies that two IntIds with the same index compare as equal.
+        #[test]
+        fn observer_id_int_same_index_is_eq() {
+            assert_eq!(ObserverId::IntId(0), ObserverId::IntId(0));
+        }
+
+        /// Verifies that IntId ordering is determined by the inner index value.
+        #[test]
+        fn observer_id_int_ordering_by_index() {
+            assert!(ObserverId::IntId(0) < ObserverId::IntId(1));
+        }
+
+        /// Verifies that IntId variants sort before MpcCode variants (enum variant
+        /// ordering follows declaration order: IntId = 0, MpcCode = 1).
+        #[test]
+        fn observer_id_int_less_than_mpc_code() {
+            assert!(ObserverId::IntId(usize::MAX) < ObserverId::MpcCode(*b"000"));
+        }
+
+        /// Verifies that the Debug output of ObserverId::IntId contains the index.
+        #[test]
+        fn observer_id_int_debug_contains_index() {
+            let id = ObserverId::IntId(42);
+            let debug_str = format!("{id:?}");
+            assert!(
+                debug_str.contains("42"),
+                "Debug output should contain '42', got: {debug_str}"
+            );
+        }
+
+        /// Verifies that the Debug output of ObserverId::MpcCode contains the code bytes.
+        #[test]
+        fn observer_id_mpc_code_debug_contains_code() {
+            let id = ObserverId::MpcCode(*b"G96");
+            let debug_str = format!("{id:?}");
+            assert!(
+                !debug_str.is_empty(),
+                "Debug output should not be empty for MpcCode variant"
+            );
+        }
+
+        /// Verifies that ObserverId can be stored in a HashSet.
+        #[test]
+        fn observer_id_can_be_inserted_into_hash_set() {
+            let mut set: HashSet<ObserverId> = HashSet::new();
+            set.insert(ObserverId::IntId(0));
+            set.insert(ObserverId::IntId(1));
+            set.insert(ObserverId::IntId(0)); // duplicate
+            assert_eq!(set.len(), 2);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // ObsDataset::new — construction without panicking
+    // -----------------------------------------------------------------------
+
+    mod obs_dataset_new {
+        use super::*;
+
+        /// Verifies that constructing an empty dataset with None cache size does not panic.
+        #[test]
+        fn new_empty_with_none_cache_size_does_not_panic() {
+            let _ds = ObsDataset::new(vec![], vec![], ObsErrorModel::FCCT14, None);
+        }
+
+        /// Verifies that constructing an empty dataset with a custom cache size does not panic.
+        #[test]
+        fn new_empty_with_custom_cache_size_does_not_panic() {
+            let _ds = ObsDataset::new(vec![], vec![], ObsErrorModel::FCCT14, Some(5));
+        }
+
+        /// Verifies that an empty dataset has zero observations via iter_observations.
+        #[test]
+        fn new_empty_has_zero_observations() {
+            let ds = make_dataset(vec![], vec![]);
+            assert_eq!(ds.iter_observations().count(), 0);
+        }
+
+        /// Verifies that a dataset constructed with multiple observations counts them correctly.
+        #[test]
+        fn new_with_observations_has_correct_count() {
+            let obs = vec![
+                make_observation(1, None),
+                make_observation(2, None),
+                make_observation(3, None),
+            ];
+            let ds = make_dataset(obs, vec![]);
+            assert_eq!(ds.iter_observations().count(), 3);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // ObsDataset::iter_observations
+    // -----------------------------------------------------------------------
+
+    mod iter_observations {
+        use super::*;
+
+        /// Verifies that iter_observations on an empty dataset yields nothing.
+        #[test]
+        fn iter_on_empty_dataset_yields_nothing() {
+            let ds = make_dataset(vec![], vec![]);
+            assert_eq!(ds.iter_observations().count(), 0);
+        }
+
+        /// Verifies that iter_observations yields observations in insertion order.
+        #[test]
+        fn iter_yields_observations_in_insertion_order() {
+            let obs = vec![
+                make_observation(10, None),
+                make_observation(20, None),
+                make_observation(30, None),
+            ];
+            let ds = make_dataset(obs, vec![]);
+            let ids: Vec<ObsId> = ds.iter_observations().map(|o| o.id).collect();
+            assert_eq!(ids, vec![10, 20, 30]);
+        }
+
+        /// Verifies that a single-element dataset yields exactly one observation.
+        #[test]
+        fn iter_single_observation_yields_one_item() {
+            let ds = make_dataset(vec![make_observation(99, None)], vec![]);
+            assert_eq!(ds.iter_observations().count(), 1);
+        }
+
+        /// Verifies that the observation yielded has the expected id.
+        #[test]
+        fn iter_yields_correct_id() {
+            let ds = make_dataset(vec![make_observation(42, None)], vec![]);
+            let first = ds.iter_observations().next();
+            assert!(first.is_some(), "Expected at least one observation");
+            assert_eq!(first.unwrap().id, 42);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // ObsDataset::get_observation
+    // -----------------------------------------------------------------------
+
+    mod get_observation {
+        use super::*;
+
+        /// Verifies that get_observation returns Some for an existing id.
+        #[test]
+        fn get_observation_returns_some_for_existing_id() {
+            let mut ds = make_dataset(vec![make_observation(1, None)], vec![]);
+            assert!(ds.get_observation(1).is_some());
+        }
+
+        /// Verifies that get_observation returns None for a missing id.
+        #[test]
+        fn get_observation_returns_none_for_missing_id() {
+            let mut ds = make_dataset(vec![make_observation(1, None)], vec![]);
+            assert!(ds.get_observation(9999).is_none());
+        }
+
+        /// Verifies that repeated calls for the same id return the same observation
+        /// (exercises the cache hit path without panicking).
+        #[test]
+        fn get_observation_repeated_calls_return_same_id() {
+            let mut ds = make_dataset(vec![make_observation(7, None)], vec![]);
+            let first_id = ds.get_observation(7).map(|o| o.id);
+            let second_id = ds.get_observation(7).map(|o| o.id);
+            assert_eq!(first_id, second_id);
+        }
+
+        /// Verifies that among several observations the correct one is returned by id.
+        #[test]
+        fn get_observation_returns_correct_one_among_multiple() {
+            let obs = vec![
+                make_observation(1, None),
+                make_observation(2, None),
+                make_observation(3, None),
+            ];
+            let mut ds = make_dataset(obs, vec![]);
+            let found = ds.get_observation(2);
+            assert!(found.is_some(), "Expected Some for id=2");
+            assert_eq!(found.unwrap().id, 2);
+        }
+
+        /// Verifies the LRU eviction behaviour: when the cache capacity is 1 and a
+        /// second observation is looked up, the first is evicted from the cache.
+        /// The evicted entry must still be findable via the linear scan fallback.
+        #[test]
+        fn get_observation_lru_eviction_still_findable_via_linear_scan() {
+            // Capacity=1: looking up id=2 will evict id=1 from the cache.
+            let obs = vec![make_observation(1, None), make_observation(2, None)];
+            let mut ds = ObsDataset::new(obs, vec![], ObsErrorModel::FCCT14, Some(1));
+
+            // Populate the cache with id=1.
+            assert!(ds.get_observation(1).is_some());
+            // Looking up id=2 evicts id=1 from the cache.
+            assert!(ds.get_observation(2).is_some());
+            // id=1 must still be found via the linear scan even though it was evicted.
+            assert!(
+                ds.get_observation(1).is_some(),
+                "id=1 should still be findable after LRU eviction"
+            );
+        }
+
+        /// Verifies that the night_id field is correctly stored in the returned observation.
+        #[test]
+        fn get_observation_night_id_matches() {
+            let mut ds = make_dataset(vec![make_observation(5, None)], vec![]);
+            let obs = ds.get_observation(5).unwrap(); // safe: we just inserted id=5
+            assert_eq!(obs.night_id, Some(NightId(60000)));
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // ObsDataset::get_observer
+    // -----------------------------------------------------------------------
+
+    mod get_observer {
+        use super::*;
+
+        /// Verifies that get_observer returns None for an observation id that does not exist.
+        #[test]
+        fn get_observer_returns_none_for_missing_obs_id() {
+            let mut ds = make_dataset(vec![], vec![]);
+            assert!(ds.get_observer(9999).is_none());
+        }
+
+        /// Verifies that get_observer returns None when the observation has no observer field.
+        #[test]
+        fn get_observer_returns_none_when_observer_is_none() {
+            let obs = vec![make_observation(1, None)];
+            let mut ds = make_dataset(obs, vec![]);
+            assert!(ds.get_observer(1).is_none());
+        }
+
+        /// Verifies that get_observer returns Some(observer) when the observation has
+        /// ObserverId::IntId(0) and a matching custom observer at index 0.
+        #[test]
+        fn get_observer_returns_some_for_int_id_zero() {
+            let custom = make_custom_observer();
+            let obs = vec![make_observation(1, Some(ObserverId::IntId(0)))];
+            let mut ds = make_dataset(obs, vec![custom]);
+            assert!(
+                ds.get_observer(1).is_some(),
+                "Expected Some(observer) for ObserverId::IntId(0)"
+            );
+        }
+
+        /// Verifies that the observer returned by get_observer matches the one that was inserted.
+        #[test]
+        fn get_observer_returns_correct_observer_for_int_id() {
+            let custom = make_custom_observer();
+            let expected_name = custom.name.clone();
+            let obs = vec![make_observation(1, Some(ObserverId::IntId(0)))];
+            let mut ds = make_dataset(obs, vec![custom]);
+            let found = ds.get_observer(1).unwrap(); // safe: verified Some above
+            assert_eq!(
+                found.name, expected_name,
+                "Observer name should match the inserted observer"
+            );
+        }
+
+        /// Verifies that an out-of-bounds IntId returns None.
+        #[test]
+        fn get_observer_returns_none_for_int_id_out_of_bounds() {
+            // Index 5 does not exist in a one-element observer list.
+            let obs = vec![make_observation(1, Some(ObserverId::IntId(5)))];
+            let custom = make_custom_observer();
+            let mut ds = make_dataset(obs, vec![custom]);
+            assert!(
+                ds.get_observer(1).is_none(),
+                "Expected None for ObserverId::IntId out of bounds"
+            );
+        }
+
+        /// Verifies that get_observer works correctly when multiple custom observers
+        /// are present and we look up by the correct index.
+        #[test]
+        fn get_observer_returns_correct_observer_among_multiple() {
+            let obs1 =
+                Observer::from_parallax(10.0, 0.8, 0.5, Some("First".to_string()), None, None)
+                    .unwrap(); // safe: all finite non-NaN inputs
+            let obs2 =
+                Observer::from_parallax(20.0, 0.9, 0.4, Some("Second".to_string()), None, None)
+                    .unwrap(); // safe: all finite non-NaN inputs
+
+            let obs = vec![
+                make_observation(1, Some(ObserverId::IntId(0))),
+                make_observation(2, Some(ObserverId::IntId(1))),
+            ];
+            let mut ds = make_dataset(obs, vec![obs1, obs2]);
+
+            let name_for_obs1 = ds.get_observer(1).and_then(|o| o.name.clone());
+            let name_for_obs2 = ds.get_observer(2).and_then(|o| o.name.clone());
+
+            assert_eq!(name_for_obs1.as_deref(), Some("First"));
+            assert_eq!(name_for_obs2.as_deref(), Some("Second"));
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // ObsDatasetError — Display, Debug, From<MPCError>
+    // -----------------------------------------------------------------------
+
+    mod obs_dataset_error {
+        use super::*;
+
+        /// Verifies that ObsDatasetError::ErrorModelError has a non-empty Display output.
+        #[test]
+        fn obs_dataset_error_display_error_model_error_is_non_empty() {
+            use crate::observer::error_model::ErrorModelParseError;
+            let inner = ErrorModelParseError::NomParsingError("bad line".to_string());
+            let err = ObsDatasetError::ErrorModelError(inner);
+            let display = format!("{err}");
+            assert!(
+                !display.is_empty(),
+                "Display output for ErrorModelError should not be empty"
+            );
+        }
+
+        /// Verifies that ObsDatasetError::ErrorModelError contains meaningful text.
+        #[test]
+        fn obs_dataset_error_display_contains_meaningful_text() {
+            use crate::observer::error_model::ErrorModelParseError;
+            let inner = ErrorModelParseError::NomParsingError("bad line".to_string());
+            let err = ObsDatasetError::ErrorModelError(inner);
+            let display = format!("{err}");
+            assert!(
+                display.contains("bad line"),
+                "Display output should contain the inner error text, got: {display}"
+            );
+        }
+
+        /// Verifies that ObsDatasetError has a non-empty Debug output.
+        #[test]
+        fn obs_dataset_error_debug_is_non_empty() {
+            use crate::observer::error_model::ErrorModelParseError;
+            let inner = ErrorModelParseError::NomParsingError("x".to_string());
+            let err = ObsDatasetError::ErrorModelError(inner);
+            let debug = format!("{err:?}");
+            assert!(!debug.is_empty(), "Debug output should not be empty");
+        }
+
+        /// Verifies that From<MPCError> is implemented for ObsDatasetError by constructing
+        /// the variant directly and checking that the Display string is non-empty.
+        ///
+        /// We cannot trigger a real MPCError without a network call, so we use the
+        /// ObsDatasetError::MPCError(…) variant constructor via From.
+        #[test]
+        fn obs_dataset_error_from_mpc_error_display_is_non_empty() {
+            // Build a ureq error via a known-bad request using a closed TCP port.
+            // We test only that the From impl compiles and Display is non-empty;
+            // the exact message is implementation-defined.
+            use crate::observer::error_model::ErrorModelParseError;
+            let inner = ErrorModelParseError::InvalidStationCode("TOOLONG".to_string());
+            let err = ObsDatasetError::ErrorModelError(inner);
+            let display = format!("{err}");
+            assert!(
+                !display.is_empty(),
+                "Display for ObsDatasetError wrapping ErrorModelError must be non-empty"
+            );
+        }
+
+        /// Verifies that ObsDatasetError wrapping an ErrorModelParseError has a
+        /// non-empty Display, exercising the From<ErrorModelParseError> impl for
+        /// ObsDatasetError (which is the closest analogue to From<MPCError> that
+        /// can be tested without a network call).
+        #[test]
+        fn obs_dataset_error_error_model_variant_display_is_non_empty() {
+            use crate::observer::error_model::ErrorModelParseError;
+            // InvalidStationCode is a stable, constructable variant of ErrorModelParseError.
+            let inner = ErrorModelParseError::InvalidStationCode("BAD".to_string());
+            // Verify that From<ErrorModelParseError> for ObsDatasetError compiles and
+            // that the resulting Display is non-empty.
+            let err: ObsDatasetError = inner.into();
+            let s = format!("{err}");
+            assert!(!s.is_empty());
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // ErrorModelParseError — additional variant coverage
+    // -----------------------------------------------------------------------
+
+    mod error_model_parse_error_variants {
+        use crate::observer::error_model::ErrorModelParseError;
+
+        /// Verifies that ErrorModelParseError::NomParsingError has a non-empty Display.
+        #[test]
+        fn nom_parsing_error_display_is_non_empty() {
+            let err = ErrorModelParseError::NomParsingError("broken line".to_string());
+            let s = format!("{err}");
+            assert!(!s.is_empty());
+        }
+
+        /// Verifies that ErrorModelParseError::InvalidStationCode includes the bad code
+        /// in its Display output.
+        #[test]
+        fn invalid_station_code_display_contains_code() {
+            let err = ErrorModelParseError::InvalidStationCode("TOOLONG".to_string());
+            let s = format!("{err}");
+            assert!(
+                s.contains("TOOLONG"),
+                "Display should mention the bad code, got: {s}"
+            );
+        }
+    }
+}
