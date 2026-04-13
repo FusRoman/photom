@@ -28,23 +28,39 @@
 //!
 //! ## DataFrame schema
 //!
+//! ### Unit conventions
+//!
+//! **No unit conversion is performed at any point during ingestion.**  Values
+//! are stored exactly as supplied.  The caller is responsible for ensuring that
+//! every column is expressed in the unit listed below before passing the frame
+//! to this function.
+//!
+//! | Quantity | Expected unit |
+//! |----------|---------------|
+//! | Angles (RA, Dec, uncertainties, observer lon/lat) | **radians** |
+//! | Observer astrometric accuracy (RA, Dec) | **radians** |
+//! | Altitude | metres above the reference ellipsoid |
+//! | Magnitude | AB magnitude system |
+//! | Magnitude uncertainty | AB magnitudes (same scale as magnitude) |
+//! | Epoch | Modified Julian Date in the **Terrestrial Time (TT)** scale |
+//!
 //! ### Mandatory base columns
 //!
 //! Every `DataFrame` passed to `load_observation_from_polars` must contain the
 //! following nine columns.  All are non-nullable; a `null` cell or a missing
 //! column is a schema validation error.
 //!
-//! | Column | Polars type | Description |
-//! |-------------|-------------|----------------------------------------------|
-//! | `id` | `UInt64` | Unique observation identifier |
-//! | `ra` | `Float64` | Right ascension (degrees) |
-//! | `ra_err` | `Float64` | Right ascension uncertainty (degrees) |
-//! | `dec` | `Float64` | Declination (degrees) |
-//! | `dec_err` | `Float64` | Declination uncertainty (degrees) |
-//! | `magnitude` | `Float64` | Apparent magnitude |
-//! | `mag_err` | `Float64` | Magnitude uncertainty |
-//! | `filter` | `String` or `UInt32` | Photometric filter label or integer code |
-//! | `mjd_tt` | `Float64` | Epoch (Modified Julian Date, Terrestrial Time) |
+//! | Column | Polars type | Unit | Description |
+//! |-------------|-------------|------|----------------------------------------------|
+//! | `id` | `UInt64` | — | Unique observation identifier |
+//! | `ra` | `Float64` | rad | Right ascension |
+//! | `ra_err` | `Float64` | rad | 1-σ right ascension uncertainty |
+//! | `dec` | `Float64` | rad | Declination |
+//! | `dec_err` | `Float64` | rad | 1-σ declination uncertainty |
+//! | `magnitude` | `Float64` | AB mag | Apparent magnitude |
+//! | `mag_err` | `Float64` | AB mag | 1-σ magnitude uncertainty |
+//! | `filter` | `String`, `UInt8`, `UInt16`, or `UInt32` | — | Photometric filter label or integer code |
+//! | `mjd_tt` | `Float64` | MJD (TT) | Epoch in Modified Julian Date, Terrestrial Time scale |
 //!
 //! ### Optional observer columns
 //!
@@ -52,14 +68,14 @@
 //! entirely) and *nullable* (individual cells may be `null`).  When a column
 //! is absent, every row in that column is treated as `null`.
 //!
-//! | Column | Polars type | Nullable | Description |
-//! |----------------|-------------|----------|------------------------------------------------------------|
-//! | `obs_lon` | `Float64` | yes | Geodetic longitude in degrees east of Greenwich |
-//! | `obs_lat` | `Float64` | yes | Geodetic latitude in degrees |
-//! | `obs_alt` | `Float64` | yes | Altitude above the reference ellipsoid in metres |
-//! | `obs_ra_acc` | `Float64` | yes | RA measurement accuracy in radians (required when geodetic triplet is set) |
-//! | `obs_dec_acc` | `Float64` | yes | Dec measurement accuracy in radians (required when geodetic triplet is set) |
-//! | `mpc_code_obs` | `String` | yes | Three-byte ASCII MPC observatory code (takes precedence over geodetic triplet) |
+//! | Column | Polars type | Unit | Nullable | Description |
+//! |----------------|-------------|------|----------|------------------------------------------------------------|
+//! | `obs_lon` | `Float64` | rad | yes | Geodetic longitude east of Greenwich |
+//! | `obs_lat` | `Float64` | rad | yes | Geodetic latitude |
+//! | `obs_alt` | `Float64` | m | yes | Altitude above the reference ellipsoid |
+//! | `obs_ra_acc` | `Float64` | rad | yes | 1-σ RA measurement accuracy (required when geodetic triplet is set) |
+//! | `obs_dec_acc` | `Float64` | rad | yes | 1-σ Dec measurement accuracy (required when geodetic triplet is set) |
+//! | `mpc_code_obs` | `String` | — | yes | Three-byte ASCII MPC observatory code (takes precedence over geodetic triplet) |
 //!
 //! ### Optional index columns
 //!
@@ -930,6 +946,85 @@ mod polars_reader_tests {
     }
 
     // ── test 10 ───────────────────────────────────────────────────────────────
+
+    /// Verify that a `filter` column of type `UInt8` is accepted and produces
+    /// [`Filter::Int`] values (after upcast to `u32`).
+    #[test]
+    fn test_filter_column_uint8() {
+        use polars::prelude::{Column, IntoSeries, NewChunkedArray, Series, UInt8Chunked};
+        let filter_series: Series = UInt8Chunked::from_slice("filter".into(), &[3u8]).into_series();
+        let cols = vec![
+            Column::new("id".into(), &[42u64]),
+            Column::new("ra".into(), &[10.5f64]),
+            Column::new("ra_err".into(), &[0.001f64]),
+            Column::new("dec".into(), &[-5.0f64]),
+            Column::new("dec_err".into(), &[0.001f64]),
+            Column::new("magnitude".into(), &[15.2f64]),
+            Column::new("mag_err".into(), &[0.05f64]),
+            Column::from(filter_series),
+            Column::new("mjd_tt".into(), &[60000.0f64]),
+        ];
+
+        let df = DataFrame::new_infer_height(cols).expect("DataFrame construction must succeed");
+
+        let result = load_observation_from_polars(&df, ObsErrorModel::FCCT14, Some(10));
+
+        assert!(
+            result.is_ok(),
+            "Expected Ok for a UInt8 filter column, got: {:?}",
+            result.err()
+        );
+        let dataset = result.unwrap();
+        let obs: Vec<&Observation> = dataset.iter_observations().collect();
+        assert_eq!(obs.len(), 1);
+        assert!(
+            matches!(obs[0].photometry.filter, Filter::Int(3)),
+            "Expected Filter::Int(3), got: {:?}",
+            obs[0].photometry.filter
+        );
+    }
+
+    // ── test 11 ───────────────────────────────────────────────────────────────
+
+    /// Verify that a `filter` column of type `UInt16` is accepted and produces
+    /// [`Filter::Int`] values (after upcast to `u32`).
+    #[test]
+    fn test_filter_column_uint16() {
+        use polars::prelude::{Column, IntoSeries, NewChunkedArray, Series, UInt16Chunked};
+        let filter_series: Series =
+            UInt16Chunked::from_slice("filter".into(), &[512u16]).into_series();
+        let cols = vec![
+            Column::new("id".into(), &[42u64]),
+            Column::new("ra".into(), &[10.5f64]),
+            Column::new("ra_err".into(), &[0.001f64]),
+            Column::new("dec".into(), &[-5.0f64]),
+            Column::new("dec_err".into(), &[0.001f64]),
+            Column::new("magnitude".into(), &[15.2f64]),
+            Column::new("mag_err".into(), &[0.05f64]),
+            Column::from(filter_series),
+            Column::new("mjd_tt".into(), &[60000.0f64]),
+        ];
+
+        let df = DataFrame::new_infer_height(cols).expect("DataFrame construction must succeed");
+
+        let result = load_observation_from_polars(&df, ObsErrorModel::FCCT14, Some(10));
+
+        assert!(
+            result.is_ok(),
+            "Expected Ok for a UInt16 filter column, got: {:?}",
+            result.err()
+        );
+        let dataset = result.unwrap();
+        let obs: Vec<&Observation> = dataset.iter_observations().collect();
+        assert_eq!(obs.len(), 1);
+        assert!(
+            matches!(obs[0].photometry.filter, Filter::Int(512)),
+            "Expected Filter::Int(512), got: {:?}",
+            obs[0].photometry.filter
+        );
+    }
+
+    // ── test 12 ───────────────────────────────────────────────────────────────
 
     /// Verify that a `filter` column with an unsupported Polars type (e.g.
     /// `Int64`) is rejected with [`PolarsError::FilterColumnTypeError`].

@@ -115,4 +115,9 @@ pub enum PolarsError {
     /// [`polars`] crate.
     #[error(transparent)]
     Polars(#[from] polars::error::PolarsError),
+
+    /// The `base_fields()` function expected exactly 7 `Float64` columns but
+    /// got a different number.
+    #[error("Expected exactly 7 Float64 columns in base_fields(), but got a different number")]
+    Float64ColumnCountError,
 }

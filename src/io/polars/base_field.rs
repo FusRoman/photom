@@ -12,7 +12,7 @@
 //! | `dec_err` | `Float64` | Declination uncertainty (degrees) |
 //! | `magnitude` | `Float64` | Apparent magnitude |
 //! | `mag_err` | `Float64` | Magnitude uncertainty |
-//! | `filter` | `String` **or** `UInt32` | Photometric filter label or integer code |
+//! | `filter` | `String`, `UInt8`, `UInt16`, or `UInt32` | Photometric filter label or integer code |
 //! | `mjd_tt` | `Float64` | Epoch (Modified Julian Date, Terrestrial Time) |
 //!
 //! ## Design decisions
@@ -27,10 +27,11 @@
 //!
 //! ### Filter column
 //!
-//! The `filter` column may be either a `String` series or a `UInt32` series —
-//! but never a mixture of both within the same `DataFrame`.  The column type is
-//! detected once during [`BaseFields::materialize_fields`] and stored as a
-//! [`FilterData`] variant.  Each call to
+//! The `filter` column may be a `String` series, a `UInt8` series, a `UInt16`
+//! series, or a `UInt32` series — but never a mixture within the same
+//! `DataFrame`.  `UInt8` and `UInt16` columns are upcast to `UInt32` once
+//! during [`BaseFields::materialize_fields`].  The column type is detected once
+//! during that call and stored as a [`FilterData`] variant.  Each call to
 //! [`BaseFields::iter_base_fields`] produces a [`Filter`] value directly from
 //! the underlying series without any interning or shared-pointer overhead.
 
@@ -98,7 +99,8 @@ pub(crate) fn base_fields() -> impl Iterator<Item = (pl::PlSmallStr, pl::DataTyp
 ///
 /// - [`FilterData::Str`] — the column is a `String` series; each row produces a
 ///   [`Filter::String`].
-/// - [`FilterData::Int`] — the column is a `UInt32` series; each row produces a
+/// - [`FilterData::Int`] — the column is a `UInt32` series (possibly upcast from
+///   `UInt8` or `UInt16` at materialisation time); each row produces a
 ///   [`Filter::Int`].
 enum FilterData {
     Str(Series),
@@ -142,16 +144,19 @@ impl<'a> BaseFields<'a> {
     /// Extracts and materializes all base columns from `df` into a [`BaseFields`] struct.
     ///
     /// Column names and types are driven by [`base_fields()`] for all columns
-    /// except `filter`, which accepts either `String` or `UInt32`:
+    /// except `filter`, which accepts `String`, `UInt8`, `UInt16`, or `UInt32`:
     ///
     /// - `UInt64`  → borrowed contiguous `&[u64]` slice (`ids`)
     /// - `Float64` → borrowed contiguous `&[f64]` slice, collected in declaration order:
     ///   `ra`, `ra_err`, `dec`, `dec_err`, `magnitude`, `mag_err`, `mjd_tt`
     /// - `String`  → owned [`Series`] stored as [`FilterData::Str`]
     /// - `UInt32`  → owned [`Series`] stored as [`FilterData::Int`]
+    /// - `UInt8` / `UInt16` → cast to `UInt32` once at materialisation time and
+    ///   stored as [`FilterData::Int`]. The cast allocates a new [`Series`] but is
+    ///   performed only once per call.
     ///
     /// The `filter` column type is detected at construction time.  A column
-    /// that is neither `String` nor `UInt32` is rejected with a
+    /// that is none of the above is rejected with a
     /// [`PolarsError::FilterColumnTypeError`].
     ///
     /// # Errors
@@ -160,27 +165,34 @@ impl<'a> BaseFields<'a> {
     /// if a numeric column cannot be cast to the expected type, or if the
     /// `filter` column is present but has an unsupported type.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics if the layout of [`base_fields()`] has been modified in an inconsistent
-    /// way — specifically if it no longer contains exactly one `UInt64` column or
-    /// exactly seven `Float64` columns. These invariants are checked with `expect`
-    /// at construction time.
+    /// Returns a [`PolarsError::Float64ColumnCountError`] if the layout of [`base_fields()`]
+    /// has been modified in an inconsistent way — specifically if it no longer contains
+    /// exactly one `UInt64` column or exactly seven `Float64` columns. These invariants
+    /// are checked at construction time.
     pub(crate) fn materialize_fields(df: &'a DataFrame) -> Result<Self, PolarsError> {
         let mut ids_slot: Option<&'a [u64]> = None;
         let mut f64_slices: Vec<&'a [f64]> = Vec::new();
         let mut filter_slot: Option<FilterData> = None;
 
         // Process all columns declared by base_fields(), but handle `filter`
-        // separately because it accepts two possible Polars types.
+        // separately because it accepts multiple possible Polars types.
         for (name, dtype) in base_fields() {
             let col = df.column(&name)?;
             if name == "filter" {
-                // Accept String or UInt32; reject everything else.
+                // Accept String, UInt8, UInt16, UInt32; reject everything else.
                 let series = col.as_materialized_series().clone();
                 let filter_data = match col.dtype() {
                     DataType::String => FilterData::Str(series),
                     DataType::UInt32 => FilterData::Int(series),
+                    DataType::UInt8 | DataType::UInt16 => {
+                        // Upcast narrower unsigned integers to UInt32 so that
+                        // iter_base_fields can always call `.u32()` uniformly.
+                        // This allocates a new Series but happens only once per
+                        // materialisation call.
+                        FilterData::Int(series.cast(&DataType::UInt32)?)
+                    }
                     other => {
                         return Err(PolarsError::FilterColumnTypeError(other.to_string()));
                     }
@@ -195,15 +207,15 @@ impl<'a> BaseFields<'a> {
             }
         }
 
-        let ids = ids_slot.expect("base_fields() must contain exactly one UInt64 column (id)");
-        let filter =
-            filter_slot.expect("base_fields() must contain exactly one String column (filter)");
+        let ids = ids_slot.ok_or_else(|| PolarsError::MissingColumnError("id".into()))?;
+        let filter = filter_slot
+            .ok_or_else(|| PolarsError::FilterColumnTypeError("missing filter column".into()))?;
 
         // Float64 columns arrive in declaration order from base_fields():
         // ra, ra_err, dec, dec_err, magnitude, mag_err, mjd_tt  (7 total)
         let [ra, ra_err, dec, dec_err, magnitude, mag_err, mjd_tt]: [&'a [f64]; 7] = f64_slices
             .try_into()
-            .expect("base_fields() must contain exactly 7 Float64 columns");
+            .map_err(|_| PolarsError::Float64ColumnCountError)?;
 
         Ok(BaseFields {
             ids,
