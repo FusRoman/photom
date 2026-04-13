@@ -106,7 +106,11 @@
 
 use ahash::AHashMap;
 use itertools::{Either, izip};
-use polars::{frame::DataFrame, lazy::frame::LazyFrame, prelude::Column};
+use polars::{
+    frame::DataFrame,
+    lazy::frame::LazyFrame,
+    prelude::{ChunkedArray, Column, DataType, StringType, UInt32Type, UInt64Type},
+};
 
 use crate::{
     NightId, TrajId,
@@ -418,67 +422,94 @@ fn load_observation_from_frame(
 
     // ── optional index columns ────────────────────────────────────────────────
     //
-    // We materialise the night_id / traj_id columns up-front (as
-    // `Vec<Option<…>>`) so that they can be zipped with the base-field
-    // iterators in the single assembly pass below.
+    // Instead of pre-collecting night_id / traj_id into a Vec<Option<…>>
+    // (which allocates a full copy of each column), we borrow the
+    // ChunkedArray directly from the DataFrame and iterate over it in the
+    // single assembly pass below.  The ChunkedArray borrows are kept alive
+    // for the duration of the loop by storing them in local `Option` variables
+    // that outlive the iterator.
 
-    // night_id: UInt32 → NightId(u32).  Column absent ⟹ None sentinel vec.
-    let night_ids: Option<Vec<Option<NightId>>> = match df.column("night_id") {
-        Err(_) => None, // column absent — index will be None
-        Ok(col) => {
-            let ca = col
-                .as_materialized_series()
+    // night_id: UInt32 → NightId(u32).  Column absent ⟹ iterator of None.
+    let night_ca: Option<&ChunkedArray<UInt32Type>> = match df.column("night_id") {
+        Err(_) => None, // column absent — night index will be None
+        Ok(col) => Some(
+            col.as_materialized_series()
                 .u32()
-                .map_err(|_| PolarsError::NightIdColumnTypeError(col.dtype().to_string()))?;
-            Some(ca.iter().map(|opt| opt.map(NightId)).collect())
-        }
+                .map_err(|_| PolarsError::NightIdColumnTypeError(col.dtype().to_string()))?,
+        ),
     };
 
-    // traj_id: UInt64 → TrajId::Int  /  String → TrajId::Str.
-    // Column absent ⟹ None sentinel vec.
-    let traj_ids: Option<Vec<Option<TrajId>>> = match df.column("traj_id") {
-        Err(_) => None, // column absent — index will be None
-        Ok(col) => {
-            use polars::prelude::DataType;
-            match col.dtype() {
-                DataType::UInt64 => {
-                    let ca = col.as_materialized_series().u64()?;
-                    Some(ca.iter().map(|opt| opt.map(TrajId::Int)).collect())
-                }
-                DataType::String => {
-                    let ca = col.as_materialized_series().str()?;
-                    Some(
-                        ca.iter()
-                            .map(|opt| opt.map(|s| TrajId::Str(s.to_owned())))
-                            .collect(),
-                    )
-                }
-                other => {
-                    return Err(PolarsError::TrajIdColumnTypeError(other.to_string()));
-                }
-            }
+    // traj_id: UInt64 or String.  Column absent ⟹ iterator of None.
+    // We store the two possible typed borrows in separate Options; exactly one
+    // (or neither) will be Some.
+    let traj_u64_ca: Option<&ChunkedArray<UInt64Type>>;
+    let traj_str_ca: Option<&ChunkedArray<StringType>>;
+    match df.column("traj_id") {
+        Err(_) => {
+            traj_u64_ca = None;
+            traj_str_ca = None;
         }
-    };
+        Ok(col) => match col.dtype() {
+            DataType::UInt64 => {
+                traj_u64_ca = Some(col.as_materialized_series().u64()?);
+                traj_str_ca = None;
+            }
+            DataType::String => {
+                traj_u64_ca = None;
+                traj_str_ca = Some(col.as_materialized_series().str()?);
+            }
+            other => {
+                return Err(PolarsError::TrajIdColumnTypeError(other.to_string()));
+            }
+        },
+    }
+
+    // Build the index map sentinel booleans before entering the loop.
+    let has_night = night_ca.is_some();
+    let has_traj = traj_u64_ca.is_some() || traj_str_ca.is_some();
 
     // ── per-row assembly ───────────────────────────────────────────────────────
     let mut custom_observers: Vec<Observer> = Vec::with_capacity(16);
     let mut observer_lookup: AHashMap<Observer, usize> = AHashMap::with_capacity(16);
 
     // Index maps — only allocated when the corresponding column is present.
-    let mut night_map: Option<NightIndexMap> = night_ids.as_ref().map(|_| NightIndexMap::new());
-    let mut traj_map: Option<TrajIndexMap> = traj_ids.as_ref().map(|_| TrajIndexMap::new());
+    let mut night_map: Option<NightIndexMap> = has_night.then(NightIndexMap::new);
+    let mut traj_map: Option<TrajIndexMap> = has_traj.then(TrajIndexMap::new);
 
-    // Fallback iterators for absent columns: repeat None for each row.
-    let night_iter: Box<dyn Iterator<Item = Option<NightId>>> = match night_ids {
-        Some(v) => Box::new(v.into_iter()),
-        None => Box::new(std::iter::repeat_n(None, n)),
-    };
-    let traj_iter: Box<dyn Iterator<Item = Option<TrajId>>> = match traj_ids {
-        Some(v) => Box::new(v.into_iter()),
-        None => Box::new(std::iter::repeat_n(None, n)),
+    // Inline iterators over the index columns — no intermediate Vec allocation.
+    let night_iter = night_ca
+        .map(|ca| Either::Left(ca.iter().map(|opt| opt.map(NightId))))
+        .unwrap_or_else(|| Either::Right(std::iter::repeat_n(None, n)));
+
+    // Unified traj iterator: yields Option<TrajId> regardless of the column type.
+    // We use nested Either to keep the type monomorphised with no virtual dispatch.
+    let traj_iter = match (traj_u64_ca, traj_str_ca) {
+        (Some(ca), _) => Either::Left(Either::Left(
+            ca.iter().map(|opt: Option<u64>| opt.map(TrajId::Int)),
+        )),
+        (_, Some(ca)) => Either::Left(Either::Right(
+            ca.iter()
+                .map(|opt: Option<&str>| opt.map(|s| TrajId::Str(s.to_owned()))),
+        )),
+        (None, None) => Either::Right(std::iter::repeat_n(None::<TrajId>, n)),
     };
 
-    let observations = izip!(
+    // Pre-allocate the output vector to avoid repeated reallocation.
+    // (Axe 3) We know the exact final size up-front.
+    let mut observations: Vec<Observation> = Vec::with_capacity(n);
+
+    for (
+        row_idx,
+        (&id, &ra, &ra_err, &dec, &dec_err, &mag, &mag_err, &mjd_tt, filter),
+        obs_lon,
+        obs_lat,
+        obs_alt,
+        obs_ra_acc,
+        obs_dec_acc,
+        mpc_code,
+        night_id,
+        traj_id,
+    ) in izip!(
         0usize..,
         base.iter_base_fields()?,
         obs_lon,
@@ -489,70 +520,55 @@ fn load_observation_from_frame(
         mpc_codes,
         night_iter,
         traj_iter,
-    )
-    .map(
-        |(
-            row_idx,
-            (&id, &ra, &ra_err, &dec, &dec_err, &mag, &mag_err, &mjd_tt, filter),
+    ) {
+        let raw = RawObsRow {
             obs_lon,
             obs_lat,
             obs_alt,
             obs_ra_acc,
             obs_dec_acc,
             mpc_code,
-            night_id,
-            traj_id,
-        )| {
-            let raw = RawObsRow {
-                obs_lon,
-                obs_lat,
-                obs_alt,
-                obs_ra_acc,
-                obs_dec_acc,
-                mpc_code,
-            };
+        };
 
-            // Resolve the observer for this row according to the documented precedence
-            let observer_id = match resolve_observer(&raw, row_idx)? {
-                ResolvedObserver::Geodetic(observer) => {
-                    let idx = match observer_lookup.get(&observer) {
-                        Some(&i) => i,
-                        None => {
-                            let i = custom_observers.len();
-                            custom_observers.push(observer.clone());
-                            observer_lookup.insert(observer, i);
-                            i
-                        }
-                    };
-                    Some(ObserverId::IntId(idx))
-                }
-                ResolvedObserver::Mpc(id) => Some(id),
-                ResolvedObserver::None => None,
-            };
-
-            // Populate the optional index maps.
-            if let (Some(map), Some(nid)) = (&mut night_map, night_id) {
-                map.entry(nid).or_insert_with(Vec::new).push(row_idx);
+        // Resolve the observer for this row according to the documented precedence.
+        let observer_id = match resolve_observer(&raw, row_idx)? {
+            ResolvedObserver::Geodetic(observer) => {
+                let idx = match observer_lookup.get(&observer) {
+                    Some(&i) => i,
+                    None => {
+                        let i = custom_observers.len();
+                        custom_observers.push(observer.clone());
+                        observer_lookup.insert(observer, i);
+                        i
+                    }
+                };
+                Some(ObserverId::IntId(idx))
             }
-            if let (Some(map), Some(tid)) = (&mut traj_map, traj_id) {
-                map.entry(tid).or_insert_with(Vec::new).push(row_idx);
-            }
+            ResolvedObserver::Mpc(id) => Some(id),
+            ResolvedObserver::None => None,
+        };
 
-            Ok(Observation {
-                index: row_idx,
-                id,
-                equ_coord: EquCoord::new(ra, ra_err, dec, dec_err),
-                photometry: Photometry {
-                    magnitude: mag,
-                    error: mag_err,
-                    filter,
-                },
-                mjd_tt,
-                observer: observer_id,
-            })
-        },
-    )
-    .collect::<Result<Vec<_>, PolarsError>>()?;
+        // Populate the optional index maps.
+        if let (Some(map), Some(nid)) = (&mut night_map, night_id) {
+            map.entry(nid).or_insert_with(Vec::new).push(row_idx);
+        }
+        if let (Some(map), Some(tid)) = (&mut traj_map, traj_id) {
+            map.entry(tid).or_insert_with(Vec::new).push(row_idx);
+        }
+
+        observations.push(Observation {
+            index: row_idx,
+            id,
+            equ_coord: EquCoord::new(ra, ra_err, dec, dec_err),
+            photometry: Photometry {
+                magnitude: mag,
+                error: mag_err,
+                filter,
+            },
+            mjd_tt,
+            observer: observer_id,
+        });
+    }
 
     Ok(ObsDataset::new(
         observations,

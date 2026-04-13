@@ -46,7 +46,7 @@ use polars::{frame::DataFrame, lazy::frame::LazyFrame};
 use crate::{
     NightId, TrajId,
     observation_dataset::{
-        index::{NightIndexMap, ObsDatasetIndex, ObsIndex, TrajIndexMap},
+        index::{NightIndexMap, ObsDatasetIndex, ObsIndex, ObservationIndexMap, TrajIndexMap},
         observation::Observation,
     },
     observer::{
@@ -530,12 +530,12 @@ impl ObsDataset {
         obs_index_by_trajectory: Option<TrajIndexMap>,
         lru_cache_size: Option<usize>,
     ) -> Self {
-        // Build the ObsId → index mapping for look-up by id.  This is a one-time
-        let obs_index_by_id = observations
-            .iter()
-            .enumerate()
-            .map(|(idx, obs)| (obs.id, idx))
-            .collect();
+        // Build the ObsId → index mapping for look-up by id.  Pre-allocating
+        // with the exact capacity avoids repeated rehashing as the map grows.
+        let mut obs_index_by_id = ObservationIndexMap::with_capacity(observations.len());
+        for (idx, obs) in observations.iter().enumerate() {
+            obs_index_by_id.insert(obs.id, idx);
+        }
 
         Self {
             observations,
