@@ -1,17 +1,18 @@
 //! Core observation data types for the photom crate.
 //!
 //! This module defines the fundamental building blocks used throughout the
-//! pipeline: individual astrometric/photometric measurements ([`Observation`]),
-//! the dataset that holds a collection of them ([`ObsDataset`]), the
-//! identifier types that label observations, nights, and observatories
-//! ([`ObsId`], [`crate::NightId`], `ObserverId`), and the error type that covers
-//! all failure modes arising during dataset construction ([`ObsDatasetError`]).
+//! pipeline: individual astrometric/photometric measurements
+//! ([`observation::Observation`]), the dataset that holds a collection of them
+//! ([`ObsDataset`]), the identifier types that label observations, nights, and
+//! observatories ([`ObsId`], [`crate::NightId`], `ObserverId`), and the error
+//! type that covers all failure modes arising during dataset construction
+//! ([`ObsDatasetError`]).
 //!
 //! ## Key design notes
 //!
 //! - **LRU cache** — [`ObsDataset`] keeps a least-recently-used cache of up
-//!   to 1 000 [`Observation`] values so that repeated look-ups by [`ObsId`]
-//!   do not scan the full observation list on every call.
+//!   to 1 000 [`observation::Observation`] values so that repeated look-ups by
+//!   [`ObsId`] do not scan the full observation list on every call.
 //! - **Lazy MPC initialisation** — the Minor Planet Center observatory table
 //!   is fetched from the network only on the first call to
 //!   [`ObsDataset::get_observer`] for an MPC-coded site, and the result
@@ -25,7 +26,7 @@
 //! | [`ObsId`] | type alias | Unique numeric identifier for a single observation |
 //! | [`crate::NightId`] | struct | Logical identifier for a night of observation |
 //! | `ObserverId` | enum | Reference to either a custom or an MPC-coded observer |
-//! | [`Observation`] | struct | A single astrometric/photometric measurement |
+//! | [`observation::Observation`] | struct | A single astrometric/photometric measurement |
 //! | [`ObsDataset`] | struct | Collection of observations with lazy observer resolution |
 //! | [`ObsDatasetError`] | enum | Errors arising from dataset construction |
 
@@ -81,7 +82,7 @@ pub enum ObsDatasetError {
     PolarIoError(#[from] PolarsError),
 }
 
-/// A collection of [`Observation`]s with associated observer metadata.
+/// A collection of [`observation::Observation`]s with associated observer metadata.
 ///
 /// `ObsDataset` is the primary container for observation data in the pipeline.
 /// In addition to the raw observations it holds:
@@ -91,8 +92,8 @@ pub enum ObsDatasetError {
 /// - A **lazily-initialised MPC lookup table** that maps three-byte MPC codes
 ///   to [`Observer`] metadata.  The table is fetched from the MPC website
 ///   on the first access and cached for the lifetime of the dataset.
-/// - An **LRU cache** of up to 1 000 [`Observation`] values so that repeated
-///   look-ups by [`ObsId`] avoid a full linear scan.
+/// - An **LRU cache** of up to 1 000 [`observation::Observation`] values so that
+///   repeated look-ups by [`ObsId`] avoid a full linear scan.
 #[derive(Debug)]
 pub struct ObsDataset {
     /// Full list of observations in insertion order.
@@ -101,8 +102,8 @@ pub struct ObsDataset {
     /// Index mappings for efficient look-up by various identifiers.
     index: ObsDatasetIndex,
 
-    /// Set of Observer values corresponding to geodetic observers supplied by the input data,
-    /// referenced by index through ObserverId::IntId or looked up lazily from the MPC catalogue through ObserverId::MpcCode.
+    /// Observer values for both custom geodetic observers (indexed by `ObserverId::IntId`)
+    /// and MPC-coded observers (resolved lazily via `ObserverId::MpcCode`).
     observer_dataset: ObserverDataset,
 
     /// LRU cache keyed by [`ObsId`] with a fixed capacity of 1 000 entries.
@@ -190,6 +191,15 @@ impl ObsDataset {
     ///    searched with [`Iterator::find`].  The found value is cloned into
     ///    the cache before a reference is returned, so subsequent look-ups
     ///    for the same `id` hit the cache.
+    ///
+    /// # Arguments
+    ///
+    /// - `id` — the `ObsId` of the observation to look up.
+    ///
+    /// # Returns
+    ///
+    /// `Some(&Observation)` if an observation with the given `id` exists in this dataset;
+    /// `None` otherwise.
     pub fn get_observation(&mut self, id: ObsId) -> Option<&Observation> {
         if self.lru_cache_obs.contains(&id) {
             return self.lru_cache_obs.get(&id);
@@ -200,12 +210,33 @@ impl ObsDataset {
         self.lru_cache_obs.get(&id)
     }
 
+    /// Look up a single observation by its raw vector position.
+    ///
+    /// Unlike [`ObsDataset::get_observation`], which searches by `ObsId`,
+    /// this method performs a direct index into the internal observations
+    /// vector.  The result is also stored in the LRU cache so that a
+    /// subsequent `get_observation` call for the same entry can be served
+    /// from the cache.
+    ///
+    /// # Arguments
+    ///
+    /// - `idx` — zero-based position into the internal observations vector,
+    ///   as returned by `Observation::index`.
+    ///
+    /// # Returns
+    ///
+    /// `Some(&Observation)` if `idx` is within bounds; `None` otherwise.
     pub fn get_obs_by_index(&mut self, idx: ObsIndex) -> Option<&Observation> {
         let obs = self.observations.get(idx)?;
         self.lru_cache_obs.put(*obs.id(), obs.clone());
         Some(obs)
     }
 
+    /// Return the total number of observations in this dataset.
+    ///
+    /// # Returns
+    ///
+    /// The number of [`Observation`] values stored in the dataset.
     pub fn observation_count(&self) -> usize {
         self.observations.len()
     }
@@ -214,6 +245,10 @@ impl ObsDataset {
     ///
     /// The iterator yields shared references and does not clone any data.
     /// The order matches the order of the source `DataFrame` rows.
+    ///
+    /// # Returns
+    ///
+    /// An iterator yielding `&Observation` for each observation in insertion order.
     pub fn iter_observations(&self) -> impl Iterator<Item = &Observation> {
         self.observations.iter()
     }
@@ -240,21 +275,59 @@ impl ObsDataset {
             .map(|indices| indices.map(|idx| &self.observations[idx]))
     }
 
+    /// Return an iterator over `(NightId, &Observation)` pairs for every observation in the night index.
+    ///
+    /// Each pair associates a night identifier with a shared reference to one of the
+    /// observations recorded on that night.  Observations from the same night appear
+    /// consecutively, but the order between different nights is unspecified.
+    ///
+    /// # Returns
+    ///
+    /// `Some(iterator)` if the dataset was built with a night index; `None` otherwise.
     pub fn iter_full_night(&self) -> Option<impl Iterator<Item = (NightId, &Observation)>> {
         self.index
             .iter_full_night()
             .map(|night_iter| night_iter.map(|(night_id, idx)| (night_id, &self.observations[idx])))
     }
 
+    /// Collect all observations belonging to a given night into a `Vec`.
+    ///
+    /// This is a convenience wrapper around [`ObsDataset::iter_night_observations`] that
+    /// eagerly collects the iterator results.
+    ///
+    /// # Arguments
+    ///
+    /// - `night_id` — the identifier of the night to materialise.
+    ///
+    /// # Returns
+    ///
+    /// `Some(Vec<&Observation>)` in insertion order if the night index exists and the
+    /// given `night_id` is present; `None` otherwise.
     pub fn materialize_night(&self, night_id: &NightId) -> Option<Vec<&Observation>> {
         self.iter_night_observations(night_id)
             .map(|iter| iter.collect())
     }
 
+    /// Return an iterator over all `NightId` keys present in the night index.
+    ///
+    /// # Returns
+    ///
+    /// `Some(iterator)` if the dataset was built with a night index; `None` otherwise.
+    /// The iteration order is unspecified.
     pub fn iter_night_id(&self) -> Option<impl Iterator<Item = &NightId>> {
         self.index.iter_night_id()
     }
 
+    /// Return the number of observations recorded on a given night.
+    ///
+    /// # Arguments
+    ///
+    /// - `night_id` — the night whose observation count is requested.
+    ///
+    /// # Returns
+    ///
+    /// `Some(count)` if the night index exists and the given `night_id` is present;
+    /// `None` otherwise.
     pub fn len_night(&self, night_id: &NightId) -> Option<usize> {
         self.index.len_night(night_id)
     }
@@ -281,25 +354,74 @@ impl ObsDataset {
             .map(|indices| indices.map(|idx| &self.observations[idx]))
     }
 
+    /// Return an iterator over `(TrajId, &Observation)` pairs for every observation in the trajectory index.
+    ///
+    /// Each pair associates a trajectory identifier with a shared reference to one of the
+    /// observations belonging to that trajectory.  Observations from the same trajectory
+    /// appear consecutively, but the order between different trajectories is unspecified.
+    ///
+    /// # Returns
+    ///
+    /// `Some(iterator)` if the dataset was built with a trajectory index; `None` otherwise.
     pub fn iter_full_trajectory(&self) -> Option<impl Iterator<Item = (TrajId, &Observation)>> {
         self.index.iter_full_trajectory().map(|traj_iter| {
             traj_iter.map(|(traj_id, idx)| (traj_id.clone(), &self.observations[idx]))
         })
     }
 
+    /// Collect all observations belonging to a given trajectory into a `Vec`.
+    ///
+    /// This is a convenience wrapper around [`ObsDataset::iter_trajectory_observations`]
+    /// that eagerly collects the iterator results.
+    ///
+    /// # Arguments
+    ///
+    /// - `traj_id` — the identifier of the trajectory to materialise.
+    ///
+    /// # Returns
+    ///
+    /// `Some(Vec<&Observation>)` in insertion order if the trajectory index exists and the
+    /// given `traj_id` is present; `None` otherwise.
     pub fn materialize_trajectory(&self, traj_id: &TrajId) -> Option<Vec<&Observation>> {
         self.iter_trajectory_observations(traj_id)
             .map(|iter| iter.collect())
     }
 
+    /// Return an iterator over all `TrajId` keys present in the trajectory index.
+    ///
+    /// # Returns
+    ///
+    /// `Some(iterator)` if the dataset was built with a trajectory index; `None` otherwise.
+    /// The iteration order is unspecified.
     pub fn iter_traj_id(&self) -> Option<impl Iterator<Item = &TrajId>> {
         self.index.iter_traj_id()
     }
 
+    /// Return the number of observations assigned to a given trajectory.
+    ///
+    /// # Arguments
+    ///
+    /// - `traj_id` — the trajectory whose observation count is requested.
+    ///
+    /// # Returns
+    ///
+    /// `Some(count)` if the trajectory index exists and the given `traj_id` is present;
+    /// `None` otherwise.
     pub fn len_trajectory(&self, traj_id: &TrajId) -> Option<usize> {
         self.index.len_trajectory(traj_id)
     }
 
+    /// Register a new trajectory in the trajectory index.
+    ///
+    /// Associates `traj_id` with the positions of `obs_indices` in the internal
+    /// observations vector.  If the dataset was not built with a trajectory index
+    /// (i.e. the source data had no `traj_id` column), this method is a no-op.
+    ///
+    /// # Arguments
+    ///
+    /// - `traj_id` — the identifier of the trajectory to register.
+    /// - `obs_indices` — slice of [`Observation`] values whose internal vector
+    ///   positions will be recorded under `traj_id`.
     pub fn push_new_trajectory(&mut self, traj_id: TrajId, obs_indices: &[Observation]) {
         self.index.push_trajectory(
             traj_id,
@@ -322,6 +444,16 @@ impl ObsDataset {
     /// single statement.  This releases the mutable borrow on `self` held by
     /// `get_observation` before `custom_observers` or `mpc_observers` are
     /// accessed, satisfying the borrow checker without any heap allocation.
+    ///
+    /// # Arguments
+    ///
+    /// - `id` — the `ObsId` of the observation whose observer is requested.
+    ///
+    /// # Returns
+    ///
+    /// `Some(&Observer)` if the observation exists and has an observer that can be resolved;
+    /// `None` if the observation does not exist, has no observer, or the MPC catalogue
+    /// initialisation failed.
     pub fn get_observer(&mut self, id: ObsId) -> Option<&Observer> {
         // Copy the ObserverId out first to release the borrow on `self` held by
         // `get_observation` before we access `self.custom_observers` or
@@ -339,11 +471,21 @@ impl ObsDataset {
     ///
     /// # Arguments
     ///
-    /// - `observations`     — the full list of observations.
-    /// - `custom_observers` — geodetic observers de-duplicated by the caller.
-    /// - `error_model`      — astrometric error model used during MPC
+    /// - `observations`            — the full list of observations in insertion order.
+    /// - `custom_observers`        — geodetic observers de-duplicated by the caller,
+    ///   addressable by index via `ObserverId::IntId`.
+    /// - `error_model`             — astrometric error model used during MPC
     ///   observatory initialisation.
-    /// - `lru_cache_size`    — optional capacity for the LRU cache (default 1 000).
+    /// - `obs_index_by_night`      — optional pre-built night index; pass `None`
+    ///   when the source data has no `night_id` column.
+    /// - `obs_index_by_trajectory` — optional pre-built trajectory index; pass `None`
+    ///   when the source data has no `traj_id` column.
+    /// - `lru_cache_size`          — optional capacity for the LRU cache; `None` defaults
+    ///   to 1 000.
+    ///
+    /// # Returns
+    ///
+    /// A fully initialised `ObsDataset` with the observations indexed and the LRU cache empty.
     pub(crate) fn new(
         observations: Vec<Observation>,
         custom_observers: Vec<Observer>,
