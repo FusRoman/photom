@@ -80,7 +80,7 @@ pub(crate) struct ObserverDataset {
 
     /// Astrometric error model used to assign measurement accuracies to
     /// MPC-coded observers during MPC table initialisation.
-    mpc_error_model: ObsErrorModel,
+    pub(crate) mpc_error_model: Option<ObsErrorModel>,
 }
 
 impl ObserverDataset {
@@ -102,7 +102,10 @@ impl ObserverDataset {
     ///
     /// A freshly constructed [`ObserverDataset`] with an uninitialised MPC
     /// lookup table.
-    pub(crate) fn new(custom_observers: Vec<Observer>, mpc_error_model: ObsErrorModel) -> Self {
+    pub(crate) fn new(
+        custom_observers: Vec<Observer>,
+        mpc_error_model: Option<ObsErrorModel>,
+    ) -> Self {
         Self {
             custom_observers,
             mpc_observers: OnceLock::new(),
@@ -145,8 +148,8 @@ impl ObserverDataset {
     ///
     /// # Errors
     ///
-    /// Returns [`ObsDatasetError::ErrorModelError`] if the error model file
-    /// cannot be parsed, or [`ObsDatasetError::MPCError`] if the MPC fetch
+    /// Returns [`ObsDatasetError::ErrorModelNotFound`] if the error model file
+    /// has not been initialised, or [`ObsDatasetError::MPCError`] if the MPC fetch
     /// fails.
     pub(crate) fn mpc_observers(&self) -> Result<&MpcCodeObs, &ObsDatasetError> {
         self.mpc_observers
@@ -156,7 +159,11 @@ impl ObserverDataset {
                     .build();
                 let agent: Agent = config.into();
 
-                let error_model_data = self.mpc_error_model.read_error_model_file()?;
+                let error_model_data = self
+                    .mpc_error_model
+                    .as_ref()
+                    .ok_or(ObsDatasetError::ErrorModelNotFound)?
+                    .read_error_model_file()?;
                 let obs = init_observatories(agent, &error_model_data)?;
                 Ok(obs)
             })

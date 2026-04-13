@@ -320,10 +320,22 @@ fn iter_opt_str<'df>(
 /// documented on [`load_observation_from_frame`].
 pub(crate) fn load_observation_from_polars<T: IntoFrame>(
     frame: T,
-    error_model: ObsErrorModel,
+    error_model: Option<ObsErrorModel>,
     lru_cache_size: Option<usize>,
 ) -> Result<ObsDataset, PolarsError> {
     let df = frame.collect_frame()?;
+    // Consolidate multi-chunk columns into a single contiguous chunk so that
+    // the zero-copy slice extraction in `f64_slice` / `u64_slice` succeeds.
+    // Parquet files written with multiple row-groups produce one Arrow chunk
+    // per row-group; `rechunk_mut` is a no-op when the frame is already contiguous.
+    let mut df = df;
+    if df
+        .columns()
+        .iter()
+        .any(|c: &Column| c.as_materialized_series().chunks().len() > 1)
+    {
+        df.rechunk_mut();
+    }
     load_observation_from_frame(&df, error_model, lru_cache_size)
 }
 
@@ -379,7 +391,7 @@ pub(crate) fn load_observation_from_polars<T: IntoFrame>(
 ///   its type is neither `UInt64` nor `String`.
 fn load_observation_from_frame(
     df: &DataFrame,
-    error_model: ObsErrorModel,
+    error_model: Option<ObsErrorModel>,
     lru_cache_size: Option<usize>,
 ) -> Result<ObsDataset, PolarsError> {
     // ── base columns (non-nullable, zero-copy slices) ─────────────────────────
@@ -604,7 +616,7 @@ mod polars_reader_tests {
         let df = DataFrame::new_infer_height(base_columns_single_row())
             .expect("DataFrame construction must succeed for valid base columns");
 
-        let result = load_observation_from_polars(&df, ObsErrorModel::FCCT14, Some(10));
+        let result = load_observation_from_polars(&df, Some(ObsErrorModel::FCCT14), Some(10));
 
         assert!(
             result.is_ok(),
@@ -634,7 +646,7 @@ mod polars_reader_tests {
 
         let df = DataFrame::new_infer_height(cols).expect("DataFrame construction must succeed");
 
-        let result = load_observation_from_polars(&df, ObsErrorModel::FCCT14, Some(10));
+        let result = load_observation_from_polars(&df, Some(ObsErrorModel::FCCT14), Some(10));
 
         assert!(
             result.is_ok(),
@@ -676,7 +688,7 @@ mod polars_reader_tests {
 
         let df = DataFrame::new_infer_height(cols).expect("DataFrame construction must succeed");
 
-        let result = load_observation_from_polars(&df, ObsErrorModel::FCCT14, Some(10));
+        let result = load_observation_from_polars(&df, Some(ObsErrorModel::FCCT14), Some(10));
 
         assert!(
             result.is_ok(),
@@ -720,7 +732,7 @@ mod polars_reader_tests {
 
         let df = DataFrame::new_infer_height(cols).expect("DataFrame construction must succeed");
 
-        let result = load_observation_from_polars(&df, ObsErrorModel::FCCT14, Some(10));
+        let result = load_observation_from_polars(&df, Some(ObsErrorModel::FCCT14), Some(10));
 
         assert!(
             result.is_ok(),
@@ -765,7 +777,7 @@ mod polars_reader_tests {
 
         let df = DataFrame::new_infer_height(cols).expect("DataFrame construction must succeed");
 
-        let result = load_observation_from_polars(&df, ObsErrorModel::FCCT14, Some(10));
+        let result = load_observation_from_polars(&df, Some(ObsErrorModel::FCCT14), Some(10));
 
         // Use `match` instead of `unwrap_err()` because `ObsDataset` does not
         // implement `Debug`, which is required by `Result::unwrap_err`.
@@ -800,7 +812,7 @@ mod polars_reader_tests {
 
         let df = DataFrame::new_infer_height(cols).expect("DataFrame construction must succeed");
 
-        let result = load_observation_from_polars(&df, ObsErrorModel::FCCT14, Some(10));
+        let result = load_observation_from_polars(&df, Some(ObsErrorModel::FCCT14), Some(10));
 
         // Use `match` instead of `unwrap_err()` because `ObsDataset` does not
         // implement `Debug`, which is required by `Result::unwrap_err`.
@@ -829,7 +841,7 @@ mod polars_reader_tests {
 
         let df = DataFrame::new_infer_height(cols).expect("DataFrame construction must succeed");
 
-        let result = load_observation_from_polars(&df, ObsErrorModel::FCCT14, Some(10));
+        let result = load_observation_from_polars(&df, Some(ObsErrorModel::FCCT14), Some(10));
 
         // Use `match` instead of `unwrap_err()` because `ObsDataset` does not
         // implement `Debug`, which is required by `Result::unwrap_err`.
@@ -851,7 +863,7 @@ mod polars_reader_tests {
 
         let df = DataFrame::new_infer_height(cols).expect("DataFrame construction must succeed");
 
-        let result = load_observation_from_polars(&df, ObsErrorModel::FCCT14, Some(10));
+        let result = load_observation_from_polars(&df, Some(ObsErrorModel::FCCT14), Some(10));
 
         // Use `match` instead of `unwrap_err()` because `ObsDataset` does not
         // implement `Debug`, which is required by `Result::unwrap_err`.
@@ -888,7 +900,7 @@ mod polars_reader_tests {
 
         let df = DataFrame::new_infer_height(cols).expect("DataFrame construction must succeed");
 
-        let result = load_observation_from_polars(&df, ObsErrorModel::FCCT14, Some(10));
+        let result = load_observation_from_polars(&df, Some(ObsErrorModel::FCCT14), Some(10));
 
         assert!(
             result.is_ok(),
@@ -928,7 +940,7 @@ mod polars_reader_tests {
 
         let df = DataFrame::new_infer_height(cols).expect("DataFrame construction must succeed");
 
-        let result = load_observation_from_polars(&df, ObsErrorModel::FCCT14, Some(10));
+        let result = load_observation_from_polars(&df, Some(ObsErrorModel::FCCT14), Some(10));
 
         assert!(
             result.is_ok(),
@@ -967,7 +979,7 @@ mod polars_reader_tests {
 
         let df = DataFrame::new_infer_height(cols).expect("DataFrame construction must succeed");
 
-        let result = load_observation_from_polars(&df, ObsErrorModel::FCCT14, Some(10));
+        let result = load_observation_from_polars(&df, Some(ObsErrorModel::FCCT14), Some(10));
 
         assert!(
             result.is_ok(),
@@ -1007,7 +1019,7 @@ mod polars_reader_tests {
 
         let df = DataFrame::new_infer_height(cols).expect("DataFrame construction must succeed");
 
-        let result = load_observation_from_polars(&df, ObsErrorModel::FCCT14, Some(10));
+        let result = load_observation_from_polars(&df, Some(ObsErrorModel::FCCT14), Some(10));
 
         assert!(
             result.is_ok(),
@@ -1045,7 +1057,7 @@ mod polars_reader_tests {
 
         let df = DataFrame::new_infer_height(cols).expect("DataFrame construction must succeed");
 
-        let result = load_observation_from_polars(&df, ObsErrorModel::FCCT14, Some(10));
+        let result = load_observation_from_polars(&df, Some(ObsErrorModel::FCCT14), Some(10));
 
         match result {
             Err(PolarsError::FilterColumnTypeError(_)) => { /* expected */ }
@@ -1164,7 +1176,7 @@ mod polars_reader_prop_tests {
             let df = DataFrame::new_infer_height(cols)
                 .expect("DataFrame construction must succeed");
 
-            let result = load_observation_from_polars(&df, ObsErrorModel::FCCT14, Some(10));
+            let result = load_observation_from_polars(&df, Some(ObsErrorModel::FCCT14), Some(10));
             prop_assert!(result.is_ok(), "Expected Ok, got: {:?}", result.err());
 
             let dataset = result.unwrap();
@@ -1181,7 +1193,7 @@ mod polars_reader_prop_tests {
             let df = DataFrame::new_infer_height(cols)
                 .expect("DataFrame construction must succeed");
 
-            let result = load_observation_from_polars(&df, ObsErrorModel::FCCT14, None);
+            let result = load_observation_from_polars(&df, Some(ObsErrorModel::FCCT14), None);
             prop_assert!(result.is_ok(), "Expected Ok, got: {:?}", result.err());
 
             let dataset = result.unwrap();
@@ -1209,7 +1221,7 @@ mod polars_reader_prop_tests {
             let df = DataFrame::new_infer_height(cols)
                 .expect("DataFrame construction must succeed");
 
-            let result = load_observation_from_polars(&df, ObsErrorModel::FCCT14, Some(10));
+            let result = load_observation_from_polars(&df, Some(ObsErrorModel::FCCT14), Some(10));
             prop_assert!(result.is_ok(), "Expected Ok for valid 3-byte code {:?}, got: {:?}", code, result.err());
 
             let dataset = result.unwrap();
@@ -1252,7 +1264,7 @@ mod polars_reader_prop_tests {
             let df = DataFrame::new_infer_height(cols)
                 .expect("DataFrame construction must succeed");
 
-            let result = load_observation_from_polars(&df, ObsErrorModel::FCCT14, Some(10));
+            let result = load_observation_from_polars(&df, Some(ObsErrorModel::FCCT14), Some(10));
             prop_assert!(result.is_ok(), "Expected Ok for valid geodetic observer, got: {:?}", result.err());
 
             let dataset = result.unwrap();
@@ -1284,7 +1296,7 @@ mod polars_reader_prop_tests {
             let df = DataFrame::new_infer_height(cols)
                 .expect("DataFrame construction must succeed");
 
-            let result = load_observation_from_polars(&df, ObsErrorModel::FCCT14, Some(10));
+            let result = load_observation_from_polars(&df, Some(ObsErrorModel::FCCT14), Some(10));
             match result {
                 Err(PolarsError::PartialTripletNull { .. }) => { /* expected */ }
                 Err(other) => prop_assert!(false, "Expected PartialTripletNull, got: {other:?}"),
@@ -1310,7 +1322,7 @@ mod polars_reader_prop_tests {
             let df = DataFrame::new_infer_height(cols)
                 .expect("DataFrame construction must succeed");
 
-            let result = load_observation_from_polars(&df, ObsErrorModel::FCCT14, Some(10));
+            let result = load_observation_from_polars(&df, Some(ObsErrorModel::FCCT14), Some(10));
             match result {
                 Err(PolarsError::PartialTripletNull { .. }) => { /* expected */ }
                 Err(other) => prop_assert!(false, "Expected PartialTripletNull, got: {other:?}"),
@@ -1336,7 +1348,7 @@ mod polars_reader_prop_tests {
             let df = DataFrame::new_infer_height(cols)
                 .expect("DataFrame construction must succeed");
 
-            let result = load_observation_from_polars(&df, ObsErrorModel::FCCT14, Some(10));
+            let result = load_observation_from_polars(&df, Some(ObsErrorModel::FCCT14), Some(10));
             match result {
                 Err(PolarsError::PartialTripletNull { .. }) => { /* expected */ }
                 Err(other) => prop_assert!(false, "Expected PartialTripletNull, got: {other:?}"),
@@ -1370,7 +1382,7 @@ mod polars_reader_prop_tests {
             let df = DataFrame::new_infer_height(cols)
                 .expect("DataFrame construction must succeed");
 
-            let result = load_observation_from_polars(&df, ObsErrorModel::FCCT14, Some(10));
+            let result = load_observation_from_polars(&df, Some(ObsErrorModel::FCCT14), Some(10));
             match result {
                 Err(PolarsError::MissingAccuracyForGeodesic(_)) => { /* expected */ }
                 Err(other) => prop_assert!(false, "Expected MissingAccuracyForGeodesic, got: {other:?}"),
@@ -1408,7 +1420,7 @@ mod polars_reader_prop_tests {
             let df = DataFrame::new_infer_height(cols)
                 .expect("DataFrame construction must succeed");
 
-            let result = load_observation_from_polars(&df, ObsErrorModel::FCCT14, Some(10));
+            let result = load_observation_from_polars(&df, Some(ObsErrorModel::FCCT14), Some(10));
             prop_assert!(result.is_ok(), "Expected Ok, got: {:?}", result.err());
 
             let dataset = result.unwrap();
@@ -1455,9 +1467,9 @@ mod lazy_frame_tests {
         let df = base_df_single_row();
         let lf = df.clone().lazy();
 
-        let eager = load_observation_from_polars(df, ObsErrorModel::FCCT14, Some(10))
+        let eager = load_observation_from_polars(df, Some(ObsErrorModel::FCCT14), Some(10))
             .expect("eager path must succeed");
-        let lazy = load_observation_from_polars(lf, ObsErrorModel::FCCT14, Some(10))
+        let lazy = load_observation_from_polars(lf, Some(ObsErrorModel::FCCT14), Some(10))
             .expect("lazy path must succeed");
 
         let eager_obs: Vec<&Observation> = eager.iter_observations().collect();
@@ -1480,7 +1492,7 @@ mod lazy_frame_tests {
         df.with_column(Column::new("mpc_code_obs".into(), mpc_col))
             .expect("column addition must succeed");
 
-        let result = load_observation_from_polars(df.lazy(), ObsErrorModel::FCCT14, Some(10));
+        let result = load_observation_from_polars(df.lazy(), Some(ObsErrorModel::FCCT14), Some(10));
 
         assert!(result.is_ok(), "expected Ok, got: {:?}", result.err());
         let dataset = result.unwrap();
@@ -1527,7 +1539,7 @@ mod index_tests {
     fn night_index_absent_when_no_column() {
         let df =
             DataFrame::new_infer_height(base_cols(2)).expect("DataFrame construction must succeed");
-        let ds = load_observation_from_polars(&df, ObsErrorModel::FCCT14, None)
+        let ds = load_observation_from_polars(&df, Some(ObsErrorModel::FCCT14), None)
             .expect("ingestion must succeed");
 
         assert!(
@@ -1553,7 +1565,7 @@ mod index_tests {
         cols.push(Column::new("night_id".into(), nights));
 
         let df = DataFrame::new_infer_height(cols).expect("DataFrame construction must succeed");
-        let ds = load_observation_from_polars(&df, ObsErrorModel::FCCT14, None)
+        let ds = load_observation_from_polars(&df, Some(ObsErrorModel::FCCT14), None)
             .expect("ingestion must succeed");
 
         // Night 10 → rows 0 and 2 → obs ids 1 and 3.
@@ -1586,7 +1598,7 @@ mod index_tests {
         cols.push(Column::new("night_id".into(), nights));
 
         let df = DataFrame::new_infer_height(cols).expect("DataFrame construction must succeed");
-        let ds = load_observation_from_polars(&df, ObsErrorModel::FCCT14, None)
+        let ds = load_observation_from_polars(&df, Some(ObsErrorModel::FCCT14), None)
             .expect("ingestion must succeed");
 
         // All 3 observations must be in the dataset.
@@ -1619,7 +1631,7 @@ mod index_tests {
         cols.push(Column::new("night_id".into(), bad.as_slice()));
 
         let df = DataFrame::new_infer_height(cols).expect("DataFrame construction must succeed");
-        let result = load_observation_from_polars(&df, ObsErrorModel::FCCT14, None);
+        let result = load_observation_from_polars(&df, Some(ObsErrorModel::FCCT14), None);
 
         match result {
             Err(PolarsError::NightIdColumnTypeError(_)) => { /* expected */ }
@@ -1635,7 +1647,7 @@ mod index_tests {
     fn traj_index_absent_when_no_column() {
         let df =
             DataFrame::new_infer_height(base_cols(2)).expect("DataFrame construction must succeed");
-        let ds = load_observation_from_polars(&df, ObsErrorModel::FCCT14, None)
+        let ds = load_observation_from_polars(&df, Some(ObsErrorModel::FCCT14), None)
             .expect("ingestion must succeed");
 
         assert!(
@@ -1661,7 +1673,7 @@ mod index_tests {
         cols.push(Column::new("traj_id".into(), trajs));
 
         let df = DataFrame::new_infer_height(cols).expect("DataFrame construction must succeed");
-        let ds = load_observation_from_polars(&df, ObsErrorModel::FCCT14, None)
+        let ds = load_observation_from_polars(&df, Some(ObsErrorModel::FCCT14), None)
             .expect("ingestion must succeed");
 
         let mut t100: Vec<u64> = ds
@@ -1700,7 +1712,7 @@ mod index_tests {
         cols.push(Column::new("traj_id".into(), trajs));
 
         let df = DataFrame::new_infer_height(cols).expect("DataFrame construction must succeed");
-        let ds = load_observation_from_polars(&df, ObsErrorModel::FCCT14, None)
+        let ds = load_observation_from_polars(&df, Some(ObsErrorModel::FCCT14), None)
             .expect("ingestion must succeed");
 
         let alpha: Vec<u64> = ds
@@ -1730,7 +1742,7 @@ mod index_tests {
         cols.push(Column::new("traj_id".into(), trajs));
 
         let df = DataFrame::new_infer_height(cols).expect("DataFrame construction must succeed");
-        let ds = load_observation_from_polars(&df, ObsErrorModel::FCCT14, None)
+        let ds = load_observation_from_polars(&df, Some(ObsErrorModel::FCCT14), None)
             .expect("ingestion must succeed");
 
         assert_eq!(
@@ -1760,7 +1772,7 @@ mod index_tests {
         cols.push(Column::new("traj_id".into(), bad.as_slice()));
 
         let df = DataFrame::new_infer_height(cols).expect("DataFrame construction must succeed");
-        let result = load_observation_from_polars(&df, ObsErrorModel::FCCT14, None);
+        let result = load_observation_from_polars(&df, Some(ObsErrorModel::FCCT14), None);
 
         match result {
             Err(PolarsError::TrajIdColumnTypeError(_)) => { /* expected */ }
@@ -1782,7 +1794,7 @@ mod index_tests {
         cols.push(Column::new("traj_id".into(), trajs));
 
         let df = DataFrame::new_infer_height(cols).expect("DataFrame construction must succeed");
-        let ds = load_observation_from_polars(&df, ObsErrorModel::FCCT14, None)
+        let ds = load_observation_from_polars(&df, Some(ObsErrorModel::FCCT14), None)
             .expect("ingestion must succeed");
 
         // Night 1 → obs ids 1, 2.

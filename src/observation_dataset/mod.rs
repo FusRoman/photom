@@ -76,6 +76,10 @@ pub enum ObsDatasetError {
     #[error(transparent)]
     ErrorModelError(#[from] ErrorModelParseError),
 
+    /// The observer associated with an observation could not be resolved.
+    #[error("The error model has not been initialised")]
+    ErrorModelNotFound,
+
     /// A Polars I/O or schema error occurred while loading observations.
     #[cfg(feature = "polars")]
     #[error(transparent)]
@@ -137,7 +141,7 @@ impl ObsDataset {
     #[cfg(feature = "polars")]
     pub fn from_polars(
         df: &DataFrame,
-        error_model: ObsErrorModel,
+        error_model: Option<ObsErrorModel>,
         lru_cache_size: Option<usize>,
     ) -> Result<Self, PolarsError> {
         load_observation_from_polars(df, error_model, lru_cache_size)
@@ -163,7 +167,7 @@ impl ObsDataset {
     #[cfg(feature = "polars")]
     pub fn from_lazy(
         lf: LazyFrame,
-        error_model: ObsErrorModel,
+        error_model: Option<ObsErrorModel>,
         lru_cache_size: Option<usize>,
     ) -> Result<Self, PolarsError> {
         load_observation_from_polars(lf, error_model, lru_cache_size)
@@ -462,6 +466,22 @@ impl ObsDataset {
         self.observer_dataset.get(&observer_id)
     }
 
+    /// Set the astrometric error model used for MPC observatory initialisation.
+    /// This method allows changing the error model after the dataset has been constructed,
+    /// which will affect the accuracies assigned to MPC-coded observers when the MPC table is loaded.
+    ///
+    /// Note that if the MPC table has already been initialised,
+    /// changing the error model will not retroactively update the observer accuracies;
+    /// the new error model will only take effect on the first call to `mpc_observers()`
+    /// if the MPC table has not yet been loaded.
+    ///
+    /// # Arguments
+    ///
+    /// - `error_model` — the new [`ObsErrorModel`] to use for MPC observatory initialisation.
+    pub fn set_error_model(&mut self, error_model: ObsErrorModel) {
+        self.observer_dataset.mpc_error_model = Some(error_model);
+    }
+
     /// Create a new dataset from pre-parsed data.
     ///
     /// This constructor is used internally by [`ObsDataset::from_polars`] and
@@ -489,7 +509,7 @@ impl ObsDataset {
     pub(crate) fn new(
         observations: Vec<Observation>,
         custom_observers: Vec<Observer>,
-        error_model: ObsErrorModel,
+        error_model: Option<ObsErrorModel>,
         obs_index_by_night: Option<NightIndexMap>,
         obs_index_by_trajectory: Option<TrajIndexMap>,
         lru_cache_size: Option<usize>,
@@ -566,7 +586,14 @@ mod observation_tests {
 
     /// Build an ObsDataset with an LRU cache capacity of 100.
     fn make_dataset(obs: Vec<Observation>, observers: Vec<Observer>) -> ObsDataset {
-        ObsDataset::new(obs, observers, ObsErrorModel::FCCT14, None, None, Some(100))
+        ObsDataset::new(
+            obs,
+            observers,
+            Some(ObsErrorModel::FCCT14),
+            None,
+            None,
+            Some(100),
+        )
     }
 
     // -----------------------------------------------------------------------
@@ -654,13 +681,27 @@ mod observation_tests {
         /// Verifies that constructing an empty dataset with None cache size does not panic.
         #[test]
         fn new_empty_with_none_cache_size_does_not_panic() {
-            let _ds = ObsDataset::new(vec![], vec![], ObsErrorModel::FCCT14, None, None, None);
+            let _ds = ObsDataset::new(
+                vec![],
+                vec![],
+                Some(ObsErrorModel::FCCT14),
+                None,
+                None,
+                None,
+            );
         }
 
         /// Verifies that constructing an empty dataset with a custom cache size does not panic.
         #[test]
         fn new_empty_with_custom_cache_size_does_not_panic() {
-            let _ds = ObsDataset::new(vec![], vec![], ObsErrorModel::FCCT14, None, None, Some(5));
+            let _ds = ObsDataset::new(
+                vec![],
+                vec![],
+                Some(ObsErrorModel::FCCT14),
+                None,
+                None,
+                Some(5),
+            );
         }
 
         /// Verifies that an empty dataset has zero observations via iter_observations.
@@ -779,7 +820,14 @@ mod observation_tests {
         fn get_observation_lru_eviction_still_findable_via_linear_scan() {
             // Capacity=1: looking up id=2 will evict id=1 from the cache.
             let obs = vec![make_observation(1, None), make_observation(2, None)];
-            let mut ds = ObsDataset::new(obs, vec![], ObsErrorModel::FCCT14, None, None, Some(1));
+            let mut ds = ObsDataset::new(
+                obs,
+                vec![],
+                Some(ObsErrorModel::FCCT14),
+                None,
+                None,
+                Some(1),
+            );
 
             // Populate the cache with id=1.
             assert!(ds.get_observation(1).is_some());
