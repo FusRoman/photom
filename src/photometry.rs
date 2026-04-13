@@ -1,7 +1,7 @@
 //! Photometric measurement types used throughout the pipeline.
 //!
 //! This module defines the data structures that encode the photometric
-//! information attached to each [`crate::observation::Observation`]:
+//! information attached to each [`crate::observation_dataset::observation::Observation`]:
 //!
 //! - [`Filter`] — the bandpass filter through which a source was observed,
 //!   represented either as a human-readable label or as a numeric code.

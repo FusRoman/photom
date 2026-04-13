@@ -4,9 +4,8 @@
 //! `photom` provides a type-safe pipeline for ingesting astrometric and photometric
 //! measurements, associating them with ground-based observatories, and grouping them into
 //! trajectories of moving objects.  The library is designed around two primary dataset
-//! types — [`observation::ObsDataset`] for flat observation collections and
-//! [`trajectory::TrajDataset`] for trajectory-grouped datasets — with LRU caches providing
-//! fast repeated lookups in both cases.
+//! types — [`observation_dataset::ObsDataset`] for flat observation collections — with LRU
+//! caches providing fast repeated lookups.
 //!
 //! # Features
 //!
@@ -27,8 +26,7 @@
 //! |--------|-------------|
 //! | [`astrometry`] | Equatorial sky coordinates ([`astrometry::EquCoord`]) with uncertainties and the Vincenty angular-separation formula |
 //! | [`photometry`] | Photometric measurement types: apparent magnitude, uncertainty, and bandpass filter ([`photometry::Photometry`], [`photometry::Filter`]) |
-//! | [`observation`] | Core observation types ([`observation::Observation`], [`observation::ObsDataset`], [`observation::ObserverId`]) |
-//! | [`trajectory`] | Trajectory grouping types ([`trajectory::Trajectory`], [`trajectory::TrajDataset`], [`trajectory::TrajId`]) |
+//! | [`observation_dataset`] | Core observation types ([`observation_dataset::observation::Observation`], [`observation_dataset::ObsDataset`]) |
 //! | [`observer`] | Ground-based observatory representation ([`observer::Observer`]) and geodetic utilities |
 //! | [`observer::error_model`] | Astrometric error model variants ([`observer::error_model::ObsErrorModel`]: FCCT14, CBM10, VFCC17) |
 //! | [`constants`] | Physical and geodetic constants (Earth axes, AU, etc.) |
@@ -88,8 +86,8 @@
 //!
 //! ## Observer resolution (per row, in precedence order)
 //!
-//! 1. `mpc_code_obs` non-null → [`observation::ObserverId::MpcCode`] (MPC site, resolved lazily).
-//! 2. `obs_lon`, `obs_lat`, and `obs_alt` all non-null → [`observation::ObserverId::IntId`] (geodetic
+//! 1. `mpc_code_obs` non-null → [`observer::dataset::ObserverId::MpcCode`] (MPC site, resolved lazily).
+//! 2. `obs_lon`, `obs_lat`, and `obs_alt` all non-null → [`observer::dataset::ObserverId::IntId`] (geodetic
 //!    site; `obs_ra_acc` and `obs_dec_acc` must also be non-null).
 //! 3. Otherwise → no observer (`None`).
 //!
@@ -212,7 +210,7 @@
 //!
 //! Without this feature the crate is still fully usable: all types, constants, and
 //! astrometric utilities are available; only the `from_polars` and `from_lazy`
-//! constructors on [`observation::ObsDataset`] and [`trajectory::TrajDataset`] are absent.
+//! constructors on [`observation_dataset::ObsDataset`] are absent.
 //!
 //! # Minimum Supported Rust Version
 //!
@@ -221,11 +219,9 @@
 pub mod astrometry;
 pub mod constants;
 pub mod io;
-pub mod nightly;
-pub mod observation;
+pub mod observation_dataset;
 pub mod observer;
 pub mod photometry;
-pub mod trajectory;
 
 /// Radians.
 pub type Radians = f64;
@@ -235,3 +231,32 @@ pub type Degrees = f64;
 pub type MJDTT = f64;
 /// Meters.
 pub type Meters = f64;
+
+/// Logical identifier for a night of observation.
+///
+/// Wraps a `u32` that typically represents an integer MJD day number
+/// (e.g. `60312`).  The value must be stable across runs because it is used
+/// as a directory name in on-disk outputs.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct NightId(pub u32);
+
+// ── TrajId ────────────────────────────────────────────────────────────────────
+
+/// Typed identifier for a single trajectory.
+///
+/// A trajectory can be identified either by a **64-bit unsigned integer** (e.g.
+/// a running index or a catalogue number) or by a **string label** (e.g. a
+/// Minor Planet Center provisional designation such as `"2020 AV2"`, or a
+/// proper name such as `"Ceres"`).
+///
+/// The column type of `traj_id` in the source `DataFrame` determines which
+/// variant is used: a `UInt64` column produces [`TrajId::Int`] keys and a
+/// `String` column produces [`TrajId::Str`] keys.  Mixing both types in a
+/// single dataset is not supported; the column must be uniformly one type.
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+pub enum TrajId {
+    /// A 64-bit unsigned integer identifier (e.g. a catalogue number).
+    Int(u64),
+    /// A string label (e.g. a MPC provisional designation or a proper name).
+    Str(String),
+}

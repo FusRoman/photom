@@ -3,9 +3,8 @@
 //!
 //! This module provides `load_observation_from_polars`, the primary internal
 //! entry point for converting a validated Polars `DataFrame` into an
-//! `ObsDataset`, and `load_traj_from_polars`, which additionally groups
-//! observations into a `TrajDataset`.  It handles all three observer
-//! representations supported by the library:
+//! `ObsDataset`.  It handles all three observer representations supported by
+//! the library:
 //!
 //! - **Geodetic** — a custom ground-based site described by longitude,
 //!   latitude, altitude, and astrometric accuracy values.
@@ -20,8 +19,6 @@
 //! | [`PolarsError`] | enum | All error conditions that can arise during ingestion |
 //! | `IntoFrame` | trait | Sealed trait implemented by `DataFrame`, `&DataFrame`, and `LazyFrame` |
 //! | `load_observation_from_polars` | fn (pub crate) | Internal entry point — convert a `DataFrame` or `LazyFrame` into an `ObsDataset` |
-//! | `load_traj_from_polars` | fn (pub crate) | Internal entry point — convert a `DataFrame` or `LazyFrame` into a `TrajDataset` |
-//! | `load_night_from_polars` | fn (pub crate) | Internal entry point — convert a `DataFrame` or `LazyFrame` into a `NightDataset` |
 //!
 //! ## Sub-modules
 //!
@@ -33,10 +30,9 @@
 //!
 //! ### Mandatory base columns
 //!
-//! Every `DataFrame` passed to `load_observation_from_polars` or
-//! `load_traj_from_polars` must contain the following nine columns.  All are
-//! non-nullable; a `null` cell or a missing column is a schema validation
-//! error.
+//! Every `DataFrame` passed to `load_observation_from_polars` must contain the
+//! following nine columns.  All are non-nullable; a `null` cell or a missing
+//! column is a schema validation error.
 //!
 //! | Column | Polars type | Description |
 //! |-------------|-------------|----------------------------------------------|
@@ -65,14 +61,17 @@
 //! | `obs_dec_acc` | `Float64` | yes | Dec measurement accuracy in radians (required when geodetic triplet is set) |
 //! | `mpc_code_obs` | `String` | yes | Three-byte ASCII MPC observatory code (takes precedence over geodetic triplet) |
 //!
-//! ### Optional trajectory column
+//! ### Optional index columns
 //!
-//! The `traj_id` column is used exclusively by `load_traj_from_polars`.  It
-//! is *optional* (the column may be absent) and *nullable* (individual cells
-//! may be `null`).  Two Polars types are accepted:
+//! When present, these columns are used to build look-up index maps that
+//! allow efficient iteration over observations grouped by night or trajectory.
+//! If a column is absent, the corresponding index in [`ObsDataset`] is `None`.
+//! Individual `null` cells are silently skipped (the observation is still
+//! included in the dataset but not added to any index bucket).
 //!
 //! | Column | Polars type | Nullable | Description |
-//! |----------|----------------------|----------|----------------------------------------------------|
+//! |----------|-------------|----------|----------------------------------------------------|
+//! | `night_id` | `UInt32` | yes | Night identifier; groups observations by night |
 //! | `traj_id` | `UInt64` or `String` | yes | Trajectory identifier; groups observations into trajectories |
 //!
 //! ## Observer column rules
@@ -88,51 +87,26 @@
 //!   always an error.
 //! - `obs_ra_acc` and `obs_dec_acc` are required whenever the geodetic triplet
 //!   is fully specified.
-//!
-//! ## TrajDataset ingestion
-//!
-//! `load_traj_from_polars` builds a `TrajDataset` from the same `DataFrame`
-//! schema described above.  A `TrajDataset` bundles an `ObsDataset` with
-//! trajectory groupings derived from the `traj_id` column.
-//!
-//! ### `traj_id` column rules
-//!
-//! | Situation | Outcome |
-//! |-----------|---------|
-//! | Column absent | All observations loaded; no trajectories created. |
-//! | Column present, type `UInt64` | Non-null cells map to `TrajId::Int`. |
-//! | Column present, type `String` | Non-null cells map to `TrajId::Str`. |
-//! | Column present, any other type | [`PolarsError::TrajIdColumnTypeError`]. |
-//! | Cell `null` | Row belongs to no trajectory but is still included in the `ObsDataset`. |
-//!
-//! ### First-appearance ordering
-//!
-//! Trajectories are assembled in **first-appearance order**: the first row
-//! that introduces a given `traj_id` value defines the position of that
-//! trajectory in `TrajDataset::iter_trajectories`.  Subsequent rows with the
-//! same value are appended to the same trajectory's `obs_ids` list in
-//! source-row order.
 
 use ahash::AHashMap;
 use itertools::{Either, izip};
-use polars::{
-    frame::DataFrame,
-    lazy::frame::LazyFrame,
-    prelude::{Column, DataType},
-};
+use polars::{frame::DataFrame, lazy::frame::LazyFrame, prelude::Column};
 
 use crate::{
+    NightId, TrajId,
     astrometry::EquCoord,
     io::polars::{
         base_field::BaseFields,
         error::PolarsError,
         observer_field::{RawObsRow, ResolvedObserver, resolve_observer},
     },
-    nightly::{NightDataset, NightObs},
-    observation::{ObsDataset, Observation, ObserverId},
-    observer::{Observer, error_model::ObsErrorModel},
+    observation_dataset::{
+        ObsDataset,
+        index::{NightIndexMap, TrajIndexMap},
+        observation::Observation,
+    },
+    observer::{Observer, dataset::ObserverId, error_model::ObsErrorModel},
     photometry::{Filter, Photometry},
-    trajectory::{TrajDataset, TrajId, Trajectory},
 };
 
 pub(crate) mod base_field;
@@ -340,8 +314,21 @@ pub(crate) fn load_observation_from_polars<T: IntoFrame>(
 /// Internal ingestion logic that operates on an already-materialised
 /// [`DataFrame`].
 ///
-/// This is the single implementation shared by both the [`DataFrame`] and
-/// [`LazyFrame`] paths exposed through [`load_observation_from_polars`].
+/// Builds [`Observation`]s and, when the optional `night_id` / `traj_id`
+/// columns are present, fills the corresponding index maps in a single pass
+/// over the rows.
+///
+/// # Optional index columns
+///
+/// | Column | Polars type | Index built |
+/// |--------|-------------|-------------|
+/// | `night_id` | `UInt32` | [`NightIndexMap`] keyed by [`NightId`] |
+/// | `traj_id` | `UInt64` | [`TrajIndexMap`] keyed by [`TrajId::Int`] |
+/// | `traj_id` | `String` | [`TrajIndexMap`] keyed by [`TrajId::Str`] |
+///
+/// When a column is absent the corresponding `Option` in [`ObsDataset`] is
+/// `None`.  When a column is present but a cell is `null`, the row is
+/// included in the [`ObsDataset`] but is **not** added to any index bucket.
 ///
 /// # Observer field rules
 ///
@@ -370,6 +357,10 @@ pub(crate) fn load_observation_from_polars<T: IntoFrame>(
 ///   a valid three-byte ASCII MPC code.
 /// - [`PolarsError::DataConversionError`] — [`Observer::new`] rejected the
 ///   coordinate values.
+/// - [`PolarsError::NightIdColumnTypeError`] — `night_id` column is present
+///   but its type is not `UInt32`.
+/// - [`PolarsError::TrajIdColumnTypeError`] — `traj_id` column is present but
+///   its type is neither `UInt64` nor `String`.
 fn load_observation_from_frame(
     df: &DataFrame,
     error_model: ObsErrorModel,
@@ -377,12 +368,9 @@ fn load_observation_from_frame(
 ) -> Result<ObsDataset, PolarsError> {
     // ── base columns (non-nullable, zero-copy slices) ─────────────────────────
     let base = BaseFields::materialize_fields(df)?;
-
     let n = base.ids.len();
 
-    // Build lazy iterators over the optional observer columns.  No Vec is
-    // allocated: the iterators borrow directly from Polars' internal memory
-    // (present column) or yield `None` values via `repeat` (absent column).
+    // ── optional observer columns ─────────────────────────────────────────────
     let obs_lon = iter_opt_f64(df, "obs_lon", n)?;
     let obs_lat = iter_opt_f64(df, "obs_lat", n)?;
     let obs_alt = iter_opt_f64(df, "obs_alt", n)?;
@@ -390,9 +378,67 @@ fn load_observation_from_frame(
     let obs_dec_acc = iter_opt_f64(df, "obs_dec_acc", n)?;
     let mpc_codes = iter_opt_str(df, "mpc_code_obs", n)?;
 
+    // ── optional index columns ────────────────────────────────────────────────
+    //
+    // We materialise the night_id / traj_id columns up-front (as
+    // `Vec<Option<…>>`) so that they can be zipped with the base-field
+    // iterators in the single assembly pass below.
+
+    // night_id: UInt32 → NightId(u32).  Column absent ⟹ None sentinel vec.
+    let night_ids: Option<Vec<Option<NightId>>> = match df.column("night_id") {
+        Err(_) => None, // column absent — index will be None
+        Ok(col) => {
+            let ca = col
+                .as_materialized_series()
+                .u32()
+                .map_err(|_| PolarsError::NightIdColumnTypeError(col.dtype().to_string()))?;
+            Some(ca.iter().map(|opt| opt.map(NightId)).collect())
+        }
+    };
+
+    // traj_id: UInt64 → TrajId::Int  /  String → TrajId::Str.
+    // Column absent ⟹ None sentinel vec.
+    let traj_ids: Option<Vec<Option<TrajId>>> = match df.column("traj_id") {
+        Err(_) => None, // column absent — index will be None
+        Ok(col) => {
+            use polars::prelude::DataType;
+            match col.dtype() {
+                DataType::UInt64 => {
+                    let ca = col.as_materialized_series().u64()?;
+                    Some(ca.iter().map(|opt| opt.map(TrajId::Int)).collect())
+                }
+                DataType::String => {
+                    let ca = col.as_materialized_series().str()?;
+                    Some(
+                        ca.iter()
+                            .map(|opt| opt.map(|s| TrajId::Str(s.to_owned())))
+                            .collect(),
+                    )
+                }
+                other => {
+                    return Err(PolarsError::TrajIdColumnTypeError(other.to_string()));
+                }
+            }
+        }
+    };
+
     // ── per-row assembly ───────────────────────────────────────────────────────
     let mut custom_observers: Vec<Observer> = Vec::with_capacity(16);
     let mut observer_lookup: AHashMap<Observer, usize> = AHashMap::with_capacity(16);
+
+    // Index maps — only allocated when the corresponding column is present.
+    let mut night_map: Option<NightIndexMap> = night_ids.as_ref().map(|_| NightIndexMap::new());
+    let mut traj_map: Option<TrajIndexMap> = traj_ids.as_ref().map(|_| TrajIndexMap::new());
+
+    // Fallback iterators for absent columns: repeat None for each row.
+    let night_iter: Box<dyn Iterator<Item = Option<NightId>>> = match night_ids {
+        Some(v) => Box::new(v.into_iter()),
+        None => Box::new(std::iter::repeat_n(None, n)),
+    };
+    let traj_iter: Box<dyn Iterator<Item = Option<TrajId>>> = match traj_ids {
+        Some(v) => Box::new(v.into_iter()),
+        None => Box::new(std::iter::repeat_n(None, n)),
+    };
 
     let observations = izip!(
         0usize..,
@@ -403,6 +449,8 @@ fn load_observation_from_frame(
         obs_ra_acc,
         obs_dec_acc,
         mpc_codes,
+        night_iter,
+        traj_iter,
     )
     .map(
         |(
@@ -414,6 +462,8 @@ fn load_observation_from_frame(
             obs_ra_acc,
             obs_dec_acc,
             mpc_code,
+            night_id,
+            traj_id,
         )| {
             let raw = RawObsRow {
                 obs_lon,
@@ -424,9 +474,9 @@ fn load_observation_from_frame(
                 mpc_code,
             };
 
+            // Resolve the observer for this row according to the documented precedence
             let observer_id = match resolve_observer(&raw, row_idx)? {
                 ResolvedObserver::Geodetic(observer) => {
-                    // Intern the observer: identical sites share a single slot.
                     let idx = match observer_lookup.get(&observer) {
                         Some(&i) => i,
                         None => {
@@ -442,7 +492,16 @@ fn load_observation_from_frame(
                 ResolvedObserver::None => None,
             };
 
+            // Populate the optional index maps.
+            if let (Some(map), Some(nid)) = (&mut night_map, night_id) {
+                map.entry(nid).or_insert_with(Vec::new).push(row_idx);
+            }
+            if let (Some(map), Some(tid)) = (&mut traj_map, traj_id) {
+                map.entry(tid).or_insert_with(Vec::new).push(row_idx);
+            }
+
             Ok(Observation {
+                index: row_idx,
                 id,
                 equ_coord: EquCoord::new(ra, ra_err, dec, dec_err),
                 photometry: Photometry {
@@ -461,248 +520,10 @@ fn load_observation_from_frame(
         observations,
         custom_observers,
         error_model,
+        night_map,
+        traj_map,
         lru_cache_size,
     ))
-}
-
-// ── trajectory ingestion ──────────────────────────────────────────────────────
-
-/// Load observations and trajectory groupings from a Polars [`DataFrame`] or
-/// [`LazyFrame`] into a [`TrajDataset`].
-///
-/// This is the generic entry point that accepts any type implementing
-/// [`IntoFrame`] — concretely either a [`DataFrame`] (already materialised)
-/// or a [`LazyFrame`] (whose plan is executed before ingestion).  After
-/// materialisation the function delegates to the same grouping pipeline
-/// regardless of the input type.
-///
-/// See [`load_traj_from_frame`] for the full documentation of the `traj_id`
-/// column rules and grouping semantics.
-///
-/// # Errors
-///
-/// Returns [`PolarsError::Polars`] if lazy execution fails, plus all errors
-/// documented on [`load_traj_from_frame`].
-pub(crate) fn load_traj_from_polars<T: IntoFrame>(
-    frame: T,
-    error_model: ObsErrorModel,
-    lru_cache_size: Option<usize>,
-) -> Result<TrajDataset, PolarsError> {
-    let df = frame.collect_frame()?;
-    load_traj_from_frame(&df, error_model, lru_cache_size)
-}
-
-/// Internal trajectory ingestion logic that operates on an
-/// already-materialised [`DataFrame`].
-///
-/// This is the single implementation shared by both the [`DataFrame`] and
-/// [`LazyFrame`] paths exposed through [`load_traj_from_polars`].
-///
-/// ## `traj_id` column rules
-///
-/// The `traj_id` column is **optional** (the column may be absent from the
-/// frame) and **nullable** (individual cells may be `null`).
-///
-/// | Situation | Outcome |
-/// |-----------|---------|
-/// | Column absent | All observations loaded, no trajectories created. |
-/// | Column present, type `UInt64` | Non-null cells → [`TrajId::Int`]. |
-/// | Column present, type `String` | Non-null cells → [`TrajId::Str`]. |
-/// | Column present, other type | [`PolarsError::TrajIdColumnTypeError`]. |
-/// | Cell `null` | Row belongs to no trajectory (still in [`ObsDataset`]). |
-///
-/// ## Grouping semantics
-///
-/// Trajectories are assembled in **first-appearance order**: the first row
-/// that carries a given `traj_id` value defines the position of that
-/// trajectory in [`TrajDataset::iter_trajectories`].  Subsequent rows with
-/// the same value are appended to the same [`Trajectory`]'s `obs_ids` list in
-/// source-row order.
-///
-/// # Errors
-///
-/// Returns a [`PolarsError`] for any of the reasons documented on
-/// [`load_observation_from_frame`], plus
-/// [`PolarsError::TrajIdColumnTypeError`] when the `traj_id` column is
-/// present but has an unsupported Polars type.
-fn load_traj_from_frame(
-    df: &DataFrame,
-    error_model: ObsErrorModel,
-    lru_cache_size: Option<usize>,
-) -> Result<TrajDataset, PolarsError> {
-    // ── Step 1: full observation ingestion ────────────────────────────────────
-    let obs_dataset = load_observation_from_frame(df, error_model, lru_cache_size)?;
-
-    // ── Step 2: read the optional traj_id column ──────────────────────────────
-    //
-    // We need the row → ObsId mapping, which we reconstruct by reading the
-    // `id` base column directly (same zero-copy slice used during ingestion).
-    // The `traj_id` column drives the grouping; the `id` column provides the
-    // ObsId for each row.
-    let id_col = df.column("id")?;
-    let obs_ids_slice = u64_slice(id_col)?;
-    let n = obs_ids_slice.len();
-
-    let trajectories: Vec<Trajectory> = match df.column("traj_id") {
-        // Column absent → no trajectories.
-        Err(_) => Vec::new(),
-
-        Ok(traj_col) => {
-            let series = traj_col.as_materialized_series();
-            match series.dtype() {
-                DataType::UInt64 => {
-                    // Build trajectories keyed by TrajId::Int.
-                    // zip obs_ids_slice with the ChunkedArray iterator, skip
-                    // null cells via filter_map, then fold into a Vec<Trajectory>
-                    // and a temporary AHashMap for O(1) look-up.
-                    let ca = series.u64()?;
-                    let (trajectories, _) = obs_ids_slice
-                        .iter()
-                        .copied()
-                        .zip(ca.iter())
-                        .filter_map(|(obs_id, opt_tid)| opt_tid.map(|tid| (obs_id, tid)))
-                        .fold(
-                            (
-                                Vec::<Trajectory>::new(),
-                                AHashMap::<u64, usize>::with_capacity(n.min(64)),
-                            ),
-                            |(mut trajs, mut idx_map), (obs_id, tid)| {
-                                match idx_map.get(&tid) {
-                                    Some(&i) => trajs[i].obs_ids.push(obs_id),
-                                    None => {
-                                        let i = trajs.len();
-                                        idx_map.insert(tid, i);
-                                        trajs.push(Trajectory {
-                                            id: TrajId::Int(tid),
-                                            obs_ids: vec![obs_id],
-                                        });
-                                    }
-                                }
-                                (trajs, idx_map)
-                            },
-                        );
-                    trajectories
-                }
-
-                DataType::String => {
-                    // Build trajectories keyed by TrajId::Str.
-                    // Clone the key string only on first insertion (to_owned()
-                    // is called at most once per unique traj_id value).
-                    let ca = series.str()?;
-                    let (trajectories, _) = obs_ids_slice
-                        .iter()
-                        .copied()
-                        .zip(ca.iter())
-                        .filter_map(|(obs_id, opt_tid)| opt_tid.map(|tid| (obs_id, tid)))
-                        .fold(
-                            (
-                                Vec::<Trajectory>::new(),
-                                AHashMap::<String, usize>::with_capacity(n.min(64)),
-                            ),
-                            |(mut trajs, mut idx_map), (obs_id, tid_str)| {
-                                match idx_map.get(tid_str) {
-                                    Some(&i) => trajs[i].obs_ids.push(obs_id),
-                                    None => {
-                                        let key = tid_str.to_owned();
-                                        let i = trajs.len();
-                                        idx_map.insert(key.clone(), i);
-                                        trajs.push(Trajectory {
-                                            id: TrajId::Str(key),
-                                            obs_ids: vec![obs_id],
-                                        });
-                                    }
-                                }
-                                (trajs, idx_map)
-                            },
-                        );
-                    trajectories
-                }
-
-                other => {
-                    return Err(PolarsError::TrajIdColumnTypeError(format!("{other:?}")));
-                }
-            }
-        }
-    };
-
-    Ok(TrajDataset::new(obs_dataset, trajectories, lru_cache_size))
-}
-
-// ── night ingestion ──────────────────────────────────────────────────────
-
-pub(crate) fn load_night_from_polars<T: IntoFrame>(
-    frame: T,
-    error_model: ObsErrorModel,
-    lru_cache_size: Option<usize>,
-) -> Result<NightDataset, PolarsError> {
-    let df = frame.collect_frame()?;
-    load_night_from_frame(&df, error_model, lru_cache_size)
-}
-
-fn load_night_from_frame(
-    df: &DataFrame,
-    error_model: ObsErrorModel,
-    lru_cache_size: Option<usize>,
-) -> Result<NightDataset, PolarsError> {
-    // ── Step 1: full observation ingestion ────────────────────────────────────
-    let obs_dataset = load_observation_from_frame(df, error_model, lru_cache_size)?;
-
-    // ── Step 2: read the optional traj_id column ──────────────────────────────
-    //
-    // We need the row → ObsId mapping, which we reconstruct by reading the
-    // `id` base column directly (same zero-copy slice used during ingestion).
-    // The `traj_id` column drives the grouping; the `id` column provides the
-    // ObsId for each row.
-    let id_col = df.column("id")?;
-    let obs_ids_slice = u64_slice(id_col)?;
-    let n = obs_ids_slice.len();
-
-    let nights: Vec<NightObs> = match df.column("night_id") {
-        // Column absent → no nights.
-        Err(_) => Vec::new(),
-
-        Ok(night_col) => {
-            let series = night_col.as_materialized_series();
-            match series.dtype() {
-                DataType::UInt32 => {
-                    // Build nights keyed by the integer night ID.
-                    let ca = night_col.u32()?;
-                    let (nights, _) = obs_ids_slice
-                        .iter()
-                        .copied()
-                        .zip(ca.iter())
-                        .filter_map(|(obs_id, opt_nid)| opt_nid.map(|nid| (obs_id, nid)))
-                        .fold(
-                            (
-                                Vec::<NightObs>::new(),
-                                AHashMap::<u32, usize>::with_capacity(n.min(64)),
-                            ),
-                            |(mut nights, mut idx_map), (obs_id, nid)| {
-                                match idx_map.get(&nid) {
-                                    Some(&i) => nights[i].obs_ids.push(obs_id),
-                                    None => {
-                                        let i = nights.len();
-                                        idx_map.insert(nid, i);
-                                        nights.push(NightObs {
-                                            night_id: nid.into(),
-                                            obs_ids: vec![obs_id],
-                                        });
-                                    }
-                                }
-                                (nights, idx_map)
-                            },
-                        );
-                    nights
-                }
-
-                other => {
-                    return Err(PolarsError::TrajIdColumnTypeError(format!("{other:?}")));
-                }
-            }
-        }
-    };
-
-    Ok(NightDataset::new(obs_dataset, nights, lru_cache_size))
 }
 
 // ── unit tests ────────────────────────────────────────────────────────────────
@@ -1508,75 +1329,331 @@ mod lazy_frame_tests {
             obs[0].observer
         );
     }
+}
 
-    // ── TrajDataset::from_lazy ────────────────────────────────────────────────
+// ── index-building tests ──────────────────────────────────────────────────────
 
-    /// A [`LazyFrame`] with a `traj_id` `UInt64` column produces the same
-    /// trajectory grouping as the eager path.
+#[cfg(test)]
+mod index_tests {
+    use super::*;
+    use crate::{NightId, TrajId};
+    use polars::frame::DataFrame;
+
+    /// Build the nine mandatory base columns for `n` rows with sequential ids.
+    fn base_cols(n: usize) -> Vec<Column> {
+        let ids: Vec<u64> = (1u64..=n as u64).collect();
+        let f: Vec<f64> = vec![1.0; n];
+        let s: Vec<&str> = vec!["G"; n];
+        vec![
+            Column::new("id".into(), ids.as_slice()),
+            Column::new("ra".into(), f.as_slice()),
+            Column::new("ra_err".into(), f.as_slice()),
+            Column::new("dec".into(), f.as_slice()),
+            Column::new("dec_err".into(), f.as_slice()),
+            Column::new("magnitude".into(), f.as_slice()),
+            Column::new("mag_err".into(), f.as_slice()),
+            Column::new("filter".into(), s.as_slice()),
+            Column::new("mjd_tt".into(), f.as_slice()),
+        ]
+    }
+
+    // ── night_id absent ───────────────────────────────────────────────────────
+
+    /// When `night_id` is absent, `iter_night_observations` returns `None`.
     #[test]
-    fn test_lazy_traj_uint64_grouping() {
-        let df = DataFrame::new_infer_height(vec![
-            Column::new("id".into(), &[10u64, 20u64, 30u64]),
-            Column::new("ra".into(), &[1.0f64, 2.0f64, 3.0f64]),
-            Column::new("ra_err".into(), &[0.001f64, 0.001f64, 0.001f64]),
-            Column::new("dec".into(), &[0.0f64, 0.0f64, 0.0f64]),
-            Column::new("dec_err".into(), &[0.001f64, 0.001f64, 0.001f64]),
-            Column::new("magnitude".into(), &[15.0f64, 16.0f64, 17.0f64]),
-            Column::new("mag_err".into(), &[0.05f64, 0.05f64, 0.05f64]),
-            Column::new("filter".into(), &["G", "G", "G"]),
-            Column::new("mjd_tt".into(), &[60000.0f64, 60001.0f64, 60002.0f64]),
-            Column::new("traj_id".into(), &[1u64, 2u64, 1u64]),
-        ])
-        .expect("DataFrame construction must succeed");
+    fn night_index_absent_when_no_column() {
+        let df =
+            DataFrame::new_infer_height(base_cols(2)).expect("DataFrame construction must succeed");
+        let ds = load_observation_from_polars(&df, ObsErrorModel::FCCT14, None)
+            .expect("ingestion must succeed");
 
-        let eager = load_traj_from_polars(&df, ObsErrorModel::FCCT14, Some(10))
-            .expect("eager traj path must succeed");
-        let lazy = load_traj_from_polars(df.lazy(), ObsErrorModel::FCCT14, Some(10))
-            .expect("lazy traj path must succeed");
-
-        let eager_trajs: Vec<&Trajectory> = eager.iter_trajectories().collect();
-        let lazy_trajs: Vec<&Trajectory> = lazy.iter_trajectories().collect();
-
-        assert_eq!(
-            eager_trajs.len(),
-            lazy_trajs.len(),
-            "trajectory counts must match"
+        assert!(
+            ds.iter_night_observations(&NightId(0)).is_none(),
+            "Expected None when night_id column is absent"
         );
-        for (e, l) in eager_trajs.iter().zip(lazy_trajs.iter()) {
-            assert_eq!(e.id, l.id, "trajectory ids must match");
-            assert_eq!(e.obs_ids, l.obs_ids, "obs_ids must match");
+    }
+
+    // ── night_id present, UInt32 ──────────────────────────────────────────────
+
+    /// When `night_id` is present, observations are grouped correctly.
+    ///
+    /// Layout (3 rows):
+    ///  row 0 → night 10
+    ///  row 1 → night 20
+    ///  row 2 → night 10
+    ///
+    /// `iter_night_observations(NightId(10))` must yield observation ids 1 and 3.
+    #[test]
+    fn night_index_groups_correctly() {
+        let mut cols = base_cols(3);
+        let nights: Vec<Option<u32>> = vec![Some(10), Some(20), Some(10)];
+        cols.push(Column::new("night_id".into(), nights));
+
+        let df = DataFrame::new_infer_height(cols).expect("DataFrame construction must succeed");
+        let ds = load_observation_from_polars(&df, ObsErrorModel::FCCT14, None)
+            .expect("ingestion must succeed");
+
+        // Night 10 → rows 0 and 2 → obs ids 1 and 3.
+        let night10: Vec<u64> = ds
+            .iter_night_observations(&NightId(10))
+            .expect("night_id column present, NightId(10) must exist")
+            .map(|o| o.id)
+            .collect();
+        assert_eq!(
+            night10,
+            vec![1u64, 3u64],
+            "Night 10 must contain obs ids 1 and 3"
+        );
+
+        // Night 20 → row 1 → obs id 2.
+        let night20: Vec<u64> = ds
+            .iter_night_observations(&NightId(20))
+            .expect("NightId(20) must exist")
+            .map(|o| o.id)
+            .collect();
+        assert_eq!(night20, vec![2u64], "Night 20 must contain obs id 2");
+    }
+
+    /// A null cell in `night_id` is silently skipped; the observation still
+    /// appears in `iter_observations` but not in any night bucket.
+    #[test]
+    fn night_index_null_cell_is_skipped() {
+        let mut cols = base_cols(3);
+        let nights: Vec<Option<u32>> = vec![Some(5), None, Some(5)];
+        cols.push(Column::new("night_id".into(), nights));
+
+        let df = DataFrame::new_infer_height(cols).expect("DataFrame construction must succeed");
+        let ds = load_observation_from_polars(&df, ObsErrorModel::FCCT14, None)
+            .expect("ingestion must succeed");
+
+        // All 3 observations must be in the dataset.
+        assert_eq!(
+            ds.iter_observations().count(),
+            3,
+            "All 3 observations must be present"
+        );
+
+        // Night 5 → rows 0 and 2 only (row 1 is null).
+        let night5: Vec<u64> = ds
+            .iter_night_observations(&NightId(5))
+            .expect("NightId(5) must exist")
+            .map(|o| o.id)
+            .collect();
+        assert_eq!(
+            night5,
+            vec![1u64, 3u64],
+            "Night 5 must contain obs ids 1 and 3 (null skipped)"
+        );
+    }
+
+    /// A wrong type for `night_id` (e.g. `Int32` instead of `UInt32`) must
+    /// return [`PolarsError::NightIdColumnTypeError`].
+    #[test]
+    fn night_id_wrong_type_is_error() {
+        let mut cols = base_cols(1);
+        // Int32 is not the expected UInt32.
+        let bad: Vec<i32> = vec![1];
+        cols.push(Column::new("night_id".into(), bad.as_slice()));
+
+        let df = DataFrame::new_infer_height(cols).expect("DataFrame construction must succeed");
+        let result = load_observation_from_polars(&df, ObsErrorModel::FCCT14, None);
+
+        match result {
+            Err(PolarsError::NightIdColumnTypeError(_)) => { /* expected */ }
+            Err(other) => panic!("Expected NightIdColumnTypeError, got: {other:?}"),
+            Ok(_) => panic!("Expected Err for wrong night_id type, got Ok"),
         }
     }
 
-    /// A [`LazyFrame`] with a `traj_id` `String` column produces the same
-    /// trajectory grouping as the eager path.
+    // ── traj_id absent ────────────────────────────────────────────────────────
+
+    /// When `traj_id` is absent, `iter_trajectory_observations` returns `None`.
     #[test]
-    fn test_lazy_traj_string_grouping() {
-        let traj_ids: Vec<Option<&str>> = vec![Some("alpha"), Some("beta"), Some("alpha")];
-        let df = DataFrame::new_infer_height(vec![
-            Column::new("id".into(), &[10u64, 20u64, 30u64]),
-            Column::new("ra".into(), &[1.0f64, 2.0f64, 3.0f64]),
-            Column::new("ra_err".into(), &[0.001f64, 0.001f64, 0.001f64]),
-            Column::new("dec".into(), &[0.0f64, 0.0f64, 0.0f64]),
-            Column::new("dec_err".into(), &[0.001f64, 0.001f64, 0.001f64]),
-            Column::new("magnitude".into(), &[15.0f64, 16.0f64, 17.0f64]),
-            Column::new("mag_err".into(), &[0.05f64, 0.05f64, 0.05f64]),
-            Column::new("filter".into(), &["G", "G", "G"]),
-            Column::new("mjd_tt".into(), &[60000.0f64, 60001.0f64, 60002.0f64]),
-            Column::new("traj_id".into(), traj_ids),
-        ])
-        .expect("DataFrame construction must succeed");
+    fn traj_index_absent_when_no_column() {
+        let df =
+            DataFrame::new_infer_height(base_cols(2)).expect("DataFrame construction must succeed");
+        let ds = load_observation_from_polars(&df, ObsErrorModel::FCCT14, None)
+            .expect("ingestion must succeed");
 
-        let result = load_traj_from_polars(df.lazy(), ObsErrorModel::FCCT14, Some(10));
+        assert!(
+            ds.iter_trajectory_observations(&TrajId::Int(0)).is_none(),
+            "Expected None when traj_id column is absent"
+        );
+    }
 
-        assert!(result.is_ok(), "expected Ok, got: {:?}", result.err());
-        let dataset = result.unwrap();
-        let trajs: Vec<&Trajectory> = dataset.iter_trajectories().collect();
+    // ── traj_id present, UInt64 ───────────────────────────────────────────────
 
-        assert_eq!(trajs.len(), 2, "expected 2 trajectories");
-        assert_eq!(trajs[0].id, TrajId::Str("alpha".to_owned()));
-        assert_eq!(trajs[0].obs_ids, vec![10u64, 30u64]);
-        assert_eq!(trajs[1].id, TrajId::Str("beta".to_owned()));
-        assert_eq!(trajs[1].obs_ids, vec![20u64]);
+    /// When `traj_id` is `UInt64`, observations are grouped into `TrajId::Int`
+    /// buckets correctly.
+    ///
+    /// Layout (4 rows):
+    ///  row 0 → traj 100
+    ///  row 1 → traj 200
+    ///  row 2 → traj 100
+    ///  row 3 → traj 200
+    #[test]
+    fn traj_index_uint64_groups_correctly() {
+        let mut cols = base_cols(4);
+        let trajs: Vec<Option<u64>> = vec![Some(100), Some(200), Some(100), Some(200)];
+        cols.push(Column::new("traj_id".into(), trajs));
+
+        let df = DataFrame::new_infer_height(cols).expect("DataFrame construction must succeed");
+        let ds = load_observation_from_polars(&df, ObsErrorModel::FCCT14, None)
+            .expect("ingestion must succeed");
+
+        let mut t100: Vec<u64> = ds
+            .iter_trajectory_observations(&TrajId::Int(100))
+            .expect("TrajId::Int(100) must exist")
+            .map(|o| o.id)
+            .collect();
+        t100.sort_unstable();
+        assert_eq!(
+            t100,
+            vec![1u64, 3u64],
+            "Traj 100 must contain obs ids 1 and 3"
+        );
+
+        let mut t200: Vec<u64> = ds
+            .iter_trajectory_observations(&TrajId::Int(200))
+            .expect("TrajId::Int(200) must exist")
+            .map(|o| o.id)
+            .collect();
+        t200.sort_unstable();
+        assert_eq!(
+            t200,
+            vec![2u64, 4u64],
+            "Traj 200 must contain obs ids 2 and 4"
+        );
+    }
+
+    // ── traj_id present, String ───────────────────────────────────────────────
+
+    /// When `traj_id` is `String`, observations are grouped into `TrajId::Str`
+    /// buckets correctly.
+    #[test]
+    fn traj_index_string_groups_correctly() {
+        let mut cols = base_cols(3);
+        let trajs: Vec<Option<&str>> = vec![Some("alpha"), Some("beta"), Some("alpha")];
+        cols.push(Column::new("traj_id".into(), trajs));
+
+        let df = DataFrame::new_infer_height(cols).expect("DataFrame construction must succeed");
+        let ds = load_observation_from_polars(&df, ObsErrorModel::FCCT14, None)
+            .expect("ingestion must succeed");
+
+        let alpha: Vec<u64> = ds
+            .iter_trajectory_observations(&TrajId::Str("alpha".to_owned()))
+            .expect("TrajId::Str(\"alpha\") must exist")
+            .map(|o| o.id)
+            .collect();
+        assert_eq!(
+            alpha,
+            vec![1u64, 3u64],
+            "Traj 'alpha' must contain obs ids 1 and 3"
+        );
+
+        let beta: Vec<u64> = ds
+            .iter_trajectory_observations(&TrajId::Str("beta".to_owned()))
+            .expect("TrajId::Str(\"beta\") must exist")
+            .map(|o| o.id)
+            .collect();
+        assert_eq!(beta, vec![2u64], "Traj 'beta' must contain obs id 2");
+    }
+
+    /// A null cell in `traj_id` is silently skipped.
+    #[test]
+    fn traj_index_null_cell_is_skipped() {
+        let mut cols = base_cols(3);
+        let trajs: Vec<Option<u64>> = vec![Some(1), None, Some(1)];
+        cols.push(Column::new("traj_id".into(), trajs));
+
+        let df = DataFrame::new_infer_height(cols).expect("DataFrame construction must succeed");
+        let ds = load_observation_from_polars(&df, ObsErrorModel::FCCT14, None)
+            .expect("ingestion must succeed");
+
+        assert_eq!(
+            ds.iter_observations().count(),
+            3,
+            "All 3 observations must be present"
+        );
+
+        let t1: Vec<u64> = ds
+            .iter_trajectory_observations(&TrajId::Int(1))
+            .expect("TrajId::Int(1) must exist")
+            .map(|o| o.id)
+            .collect();
+        assert_eq!(
+            t1,
+            vec![1u64, 3u64],
+            "Traj 1 must contain obs ids 1 and 3 (null skipped)"
+        );
+    }
+
+    /// A wrong type for `traj_id` (e.g. `Int32`) must return
+    /// [`PolarsError::TrajIdColumnTypeError`].
+    #[test]
+    fn traj_id_wrong_type_is_error() {
+        let mut cols = base_cols(1);
+        let bad: Vec<i32> = vec![1];
+        cols.push(Column::new("traj_id".into(), bad.as_slice()));
+
+        let df = DataFrame::new_infer_height(cols).expect("DataFrame construction must succeed");
+        let result = load_observation_from_polars(&df, ObsErrorModel::FCCT14, None);
+
+        match result {
+            Err(PolarsError::TrajIdColumnTypeError(_)) => { /* expected */ }
+            Err(other) => panic!("Expected TrajIdColumnTypeError, got: {other:?}"),
+            Ok(_) => panic!("Expected Err for wrong traj_id type, got Ok"),
+        }
+    }
+
+    // ── both columns present ──────────────────────────────────────────────────
+
+    /// When both `night_id` and `traj_id` are present, both index maps are
+    /// populated independently.
+    #[test]
+    fn both_night_and_traj_index_built_simultaneously() {
+        let mut cols = base_cols(4);
+        let nights: Vec<Option<u32>> = vec![Some(1), Some(1), Some(2), Some(2)];
+        let trajs: Vec<Option<u64>> = vec![Some(10), Some(20), Some(10), Some(20)];
+        cols.push(Column::new("night_id".into(), nights));
+        cols.push(Column::new("traj_id".into(), trajs));
+
+        let df = DataFrame::new_infer_height(cols).expect("DataFrame construction must succeed");
+        let ds = load_observation_from_polars(&df, ObsErrorModel::FCCT14, None)
+            .expect("ingestion must succeed");
+
+        // Night 1 → obs ids 1, 2.
+        let n1: Vec<u64> = ds
+            .iter_night_observations(&NightId(1))
+            .expect("NightId(1) must exist")
+            .map(|o| o.id)
+            .collect();
+        assert_eq!(n1, vec![1u64, 2u64]);
+
+        // Night 2 → obs ids 3, 4.
+        let n2: Vec<u64> = ds
+            .iter_night_observations(&NightId(2))
+            .expect("NightId(2) must exist")
+            .map(|o| o.id)
+            .collect();
+        assert_eq!(n2, vec![3u64, 4u64]);
+
+        // Traj 10 → obs ids 1, 3.
+        let mut t10: Vec<u64> = ds
+            .iter_trajectory_observations(&TrajId::Int(10))
+            .expect("TrajId::Int(10) must exist")
+            .map(|o| o.id)
+            .collect();
+        t10.sort_unstable();
+        assert_eq!(t10, vec![1u64, 3u64]);
+
+        // Traj 20 → obs ids 2, 4.
+        let mut t20: Vec<u64> = ds
+            .iter_trajectory_observations(&TrajId::Int(20))
+            .expect("TrajId::Int(20) must exist")
+            .map(|o| o.id)
+            .collect();
+        t20.sort_unstable();
+        assert_eq!(t20, vec![2u64, 4u64]);
     }
 }

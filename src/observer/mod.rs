@@ -23,6 +23,7 @@
 //! | [`geodetic_to_parallax`] | fn | Degrees-based wrapper for [`lat_alt_to_parallax`] |
 //! | [`lat_alt_to_parallax`] | fn | Geodetic-to-geocentric parallax conversion (radians) |
 
+pub mod dataset;
 pub mod error_model;
 pub mod mpc;
 
@@ -87,6 +88,10 @@ pub enum ObserverError {
     MissingMpcCode,
 }
 
+/// Converts [`ordered_float::FloatIsNan`] into [`ObserverError::InvalidFloatValue`].
+///
+/// This blanket conversion lets the `?` operator be used when wrapping
+/// floating-point values in [`NotNan`] inside the [`Observer`] constructors.
 impl From<ordered_float::FloatIsNan> for ObserverError {
     fn from(e: ordered_float::FloatIsNan) -> Self {
         ObserverError::InvalidFloatValue(e)

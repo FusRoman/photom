@@ -28,6 +28,14 @@ use crate::observer::error_model::ParseResult;
 ///
 /// Used by [`parse_word`] and [`parse_catalog_codes`] to delimit tokens
 /// in the VFCC17 rule format.
+///
+/// # Arguments
+///
+/// - `c` — the character to test.
+///
+/// # Returns
+///
+/// `true` if `c` is alphanumeric or `'*'`, `false` otherwise.
 #[inline]
 fn is_word_char(c: char) -> bool {
     c.is_alphanumeric() || c == '*'
@@ -35,10 +43,14 @@ fn is_word_char(c: char) -> bool {
 
 /// Parse a contiguous word token consisting of alphanumeric characters and `*`.
 ///
+/// # Arguments
+///
+/// - `input` — the parser input slice positioned at the start of a word token.
+///
 /// # Returns
 ///
-/// The matched slice on success, or a `nom` error if the input does not start
-/// with at least one word character.
+/// The matched slice on success together with the unconsumed input tail, or a
+/// `nom` error if the input does not start with at least one word character.
 fn parse_word(input: &str) -> IResult<&str, &str> {
     take_while1(is_word_char)(input)
 }
@@ -50,9 +62,14 @@ fn parse_word(input: &str) -> IResult<&str, &str> {
 /// Each ASCII character in the run following `c=` becomes a separate element
 /// in the returned vector (e.g. `c=tU` yields `["t", "U"]`).
 ///
+/// # Arguments
+///
+/// - `input` — the parser input slice positioned at the `c=` prefix.
+///
 /// # Returns
 ///
-/// A `Vec<String>` where each element is a single-character catalog code.
+/// A `Vec<String>` where each element is a single-character catalog code,
+/// together with the unconsumed input tail.
 fn parse_catalog_codes(input: &str) -> IResult<&str, Vec<String>> {
     preceded(
         tag("c="),
@@ -71,9 +88,15 @@ fn parse_catalog_codes(input: &str) -> IResult<&str, Vec<String>> {
 /// All text between the current position and the `@` marker is consumed and
 /// discarded (date range and parallax fields).
 ///
+/// # Arguments
+///
+/// - `input` — the parser input slice positioned at the `t=…` field or any
+///   text that precedes the `@` marker.
+///
 /// # Returns
 ///
-/// A tuple `(rms_ra, rms_dec)` as `f32` values.
+/// A tuple `(rms_ra, rms_dec)` as `f32` values, together with the unconsumed
+/// input tail.
 fn parse_rms_values(input: &str) -> IResult<&str, (f32, f32)> {
     preceded(
         (take_until("@"), char('@')),
@@ -137,6 +160,13 @@ pub fn parse_vfcc17_line(input: &str) -> ParseResult<'_> {
 mod test_vfcc17_parser {
     use super::*;
 
+    /// Verifies that `parse_vfcc17_line` correctly parses representative VFCC17 rule lines.
+    ///
+    /// Covers two patterns:
+    /// - the `c=*` wildcard catalog code with a trailing `! comment`
+    ///   (`ALL t=… c=* … @ 1.00, 1.00 ! Unknown catalog`),
+    /// - a specific single-catalog code with a trailing comment
+    ///   (`568 t=… c=t … @ 0.20, 0.20 ! Micheli updated`).
     #[test]
     fn test_vfcc17_parser() {
         let input = "ALL t=cBCVn c=*          p=    >            <            @  1.00,  1.00 ! Unknown catalog";
