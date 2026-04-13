@@ -132,6 +132,13 @@ impl ObsDataset {
     ///   MPC-coded observers during MPC table initialisation.
     /// - `lru_cache_size` — optional capacity for the LRU cache used to speed up repeated observation lookups;
     ///   if `None`, the cache size is set to 1 000.
+    /// - `do_rechunk` — whether to consolidate multi-chunk columns into a single contiguous
+    ///   chunk before ingestion.  `None` and `Some(true)` both enable the automatic rechunk
+    ///   (default behaviour).  Pass `Some(false)` only when every column in `df` is already
+    ///   stored in a single Arrow chunk (e.g. after reading with
+    ///   `ScanArgsParquet { rechunk: true, .. }` or after an explicit
+    ///   `DataFrame::rechunk_mut`).  Passing `Some(false)` on a fragmented frame will
+    ///   cause ingestion to fail with a [`PolarsError::Polars`] error.
     ///
     /// # Errors
     ///
@@ -143,8 +150,9 @@ impl ObsDataset {
         df: &DataFrame,
         error_model: Option<ObsErrorModel>,
         lru_cache_size: Option<usize>,
+        do_rechunk: Option<bool>,
     ) -> Result<Self, PolarsError> {
-        load_observation_from_polars(df, error_model, lru_cache_size)
+        load_observation_from_polars(df, error_model, lru_cache_size, do_rechunk)
     }
 
     /// Construct an [`ObsDataset`] from a Polars [`LazyFrame`].
@@ -159,6 +167,13 @@ impl ObsDataset {
     /// - `error_model` — the [`ObsErrorModel`] used to assign astrometric
     ///   accuracies to MPC-coded observers during MPC table initialisation.
     /// - `lru_cache_size` — optional LRU cache capacity; `None` defaults to 1 000.
+    /// - `do_rechunk` — whether to consolidate multi-chunk columns into a single contiguous
+    ///   chunk after the lazy plan is collected.  `None` and `Some(true)` both enable the
+    ///   automatic rechunk (default behaviour).  Pass `Some(false)` only when the collected
+    ///   frame is already contiguous — for example when the `LazyFrame` was created with
+    ///   `ScanArgsParquet { rechunk: true, .. }`, which guarantees a single chunk per column
+    ///   after `collect`.  Passing `Some(false)` on a fragmented frame will cause ingestion
+    ///   to fail with a [`PolarsError::Polars`] error.
     ///
     /// # Errors
     ///
@@ -169,8 +184,9 @@ impl ObsDataset {
         lf: LazyFrame,
         error_model: Option<ObsErrorModel>,
         lru_cache_size: Option<usize>,
+        do_rechunk: Option<bool>,
     ) -> Result<Self, PolarsError> {
-        load_observation_from_polars(lf, error_model, lru_cache_size)
+        load_observation_from_polars(lf, error_model, lru_cache_size, do_rechunk)
     }
 
     /// Look up a single observation by its [`ObsId`].
