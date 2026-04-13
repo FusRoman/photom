@@ -4,7 +4,7 @@
 //! common set of nine columns defined by [`base_fields()`]:
 //!
 //! | Column | Type | Description |
-//! |-------------|-----------|----------------------------------------------|
+//! |-------------|------------------------|----------------------------------------------|
 //! | `id` | `UInt64` | Unique observation identifier |
 //! | `ra` | `Float64` | Right ascension (degrees) |
 //! | `ra_err` | `Float64` | Right ascension uncertainty (degrees) |
@@ -12,7 +12,7 @@
 //! | `dec_err` | `Float64` | Declination uncertainty (degrees) |
 //! | `magnitude` | `Float64` | Apparent magnitude |
 //! | `mag_err` | `Float64` | Magnitude uncertainty |
-//! | `filter` | `String` | Photometric filter label |
+//! | `filter` | `String` **or** `UInt32` | Photometric filter label or integer code |
 //! | `mjd_tt` | `Float64` | Epoch (Modified Julian Date, Terrestrial Time) |
 //!
 //! ## Design decisions
@@ -25,29 +25,15 @@
 //! ensure the `DataFrame` is not fragmented (e.g. by calling
 //! `DataFrame::rechunk` beforehand if necessary).
 //!
-//! ### Filter label interning
+//! ### Filter column
 //!
-//! The `filter` column holds string data, which Polars cannot expose as a
-//! borrowed slice. Instead, [`BaseFields`] owns the materialized [`Series`] and
-//! builds a [`AHashMap`](ahash::AHashMap) intern pool at construction time: each
-//! unique filter label is allocated into an [`Arc<str>`] exactly once. Every
-//! subsequent access via [`BaseFields::iter_base_fields`] clones the matching
-//! `Arc` handle, paying only an atomic reference-count increment rather than a
-//! heap allocation.
-//!
-//! ### Relationship between `base_fields()` and `BaseFields`
-//!
-//! [`base_fields()`] is the single source of truth for both the schema
-//! definition (used by [`crate::schema`]) and the column-extraction logic in
-//! [`BaseFields::materialize_fields`]. The materialization loop iterates
-//! [`base_fields()`] and dispatches each column solely on its declared
-//! [`DataType`], so adding or reordering columns only requires editing
-//! [`base_fields()`] — no name string is hard-coded anywhere else in this
-//! module.
+//! The `filter` column may be either a `String` series or a `UInt32` series —
+//! but never a mixture of both within the same `DataFrame`.  The column type is
+//! detected once during [`BaseFields::materialize_fields`] and stored as a
+//! [`FilterData`] variant.  Each call to
+//! [`BaseFields::iter_base_fields`] produces a [`Filter`] value directly from
+//! the underlying series without any interning or shared-pointer overhead.
 
-use std::sync::Arc;
-
-use ahash::AHashMap;
 use itertools::izip;
 use polars::{
     frame::DataFrame,
@@ -55,19 +41,42 @@ use polars::{
     series::Series,
 };
 
-use crate::io::polars::{PolarsError, f64_slice, u64_slice};
+use crate::{
+    io::polars::{PolarsError, f64_slice, u64_slice},
+    photometry::Filter,
+};
+
+/// One row of base observation data yielded by [`BaseFields::iter_base_fields`].
+///
+/// The tuple order mirrors the declaration order of [`base_fields()`]:
+/// `(id, ra, ra_err, dec, dec_err, magnitude, mag_err, mjd_tt, filter)`.
+pub(crate) type BaseRow<'a> = (
+    &'a u64,
+    &'a f64,
+    &'a f64,
+    &'a f64,
+    &'a f64,
+    &'a f64,
+    &'a f64,
+    &'a f64,
+    Filter,
+);
 
 /// Returns an iterator over the name–type pairs that form the base observation schema.
 ///
 /// The iterator yields the nine columns shared by every observation schema variant,
 /// in declaration order:
 /// `id` (`UInt64`), `ra`, `ra_err`, `dec`, `dec_err`, `magnitude`, `mag_err`
-/// (all `Float64`), `filter` (`String`), and `mjd_tt` (`Float64`).
+/// (all `Float64`), `filter` (`String` or `UInt32`), and `mjd_tt` (`Float64`).
 ///
 /// This function is the single source of truth for both schema construction
 /// (see [`crate::schema`]) and column materialization
 /// (see [`BaseFields::materialize_fields`]). Schema-level field additions must
 /// be made here.
+///
+/// > **Note:** the `filter` column is listed here with type `String` for schema
+/// > documentation purposes only. The actual materialization logic in
+/// > [`BaseFields::materialize_fields`] accepts both `String` and `UInt32`.
 pub(crate) fn base_fields() -> impl Iterator<Item = (pl::PlSmallStr, pl::DataType)> {
     [
         ("id".into(), pl::DataType::UInt64),
@@ -83,14 +92,28 @@ pub(crate) fn base_fields() -> impl Iterator<Item = (pl::PlSmallStr, pl::DataTyp
     .into_iter()
 }
 
+/// Owned storage for the `filter` column, discriminated by Polars type.
+///
+/// The two variants correspond to the two accepted column types:
+///
+/// - [`FilterData::Str`] — the column is a `String` series; each row produces a
+///   [`Filter::String`].
+/// - [`FilterData::Int`] — the column is a `UInt32` series; each row produces a
+///   [`Filter::Int`].
+enum FilterData {
+    Str(Series),
+    Int(Series),
+}
+
 /// Holds zero-copy slices and the owned `filter` series for all base observation columns.
 ///
 /// Numeric columns are represented as contiguous borrowed slices (`&'a [u64]` or
 /// `&'a [f64]`), giving bound-check-free row iteration at zero allocation cost.
 /// The `filter` column cannot be exposed as a slice because Polars stores string
-/// data separately; instead, [`filter_series`](BaseFields::filter_series) owns
-/// the materialized [`Series`] so that [`ChunkedArray`](polars::prelude::ChunkedArray)
-/// borrows made during iteration remain valid.
+/// data separately; instead, [`filter`](BaseFields::filter) owns the materialized
+/// [`Series`] (in either its `String` or `UInt32` form) so that
+/// [`ChunkedArray`](polars::prelude::ChunkedArray) borrows made during iteration
+/// remain valid.
 ///
 /// Construct via [`BaseFields::materialize_fields`], then iterate with
 /// [`BaseFields::iter_base_fields`].
@@ -111,85 +134,76 @@ pub(crate) struct BaseFields<'a> {
     pub(crate) mag_err: &'a [f64],
     /// Observation epochs in Modified Julian Date (Terrestrial Time) (`mjd_tt` column).
     pub(crate) mjd_tt: &'a [f64],
-    /// Owned `Series` for the `filter` column.
-    ///
-    /// Kept alive so that `&ChunkedArray` borrows produced inside
-    /// [`iter_base_fields`](BaseFields::iter_base_fields) remain valid for the
-    /// lifetime of the iterator.
-    pub(crate) filter_series: Series,
-    /// Intern pool mapping each unique filter label to a shared [`Arc<str>`].
-    ///
-    /// Built once in [`materialize_fields`](BaseFields::materialize_fields); every
-    /// subsequent lookup in [`iter_base_fields`](BaseFields::iter_base_fields)
-    /// clones an `Arc` handle instead of allocating a new string.
-    pub(crate) filter_pool: AHashMap<String, Arc<str>>,
+    /// Owned series for the `filter` column, in either its `String` or `UInt32` form.
+    filter: FilterData,
 }
 
 impl<'a> BaseFields<'a> {
     /// Extracts and materializes all base columns from `df` into a [`BaseFields`] struct.
     ///
-    /// Column names and types are driven entirely by [`base_fields()`] — no column
-    /// name is hard-coded here. Each column is dispatched by its declared [`DataType`]:
+    /// Column names and types are driven by [`base_fields()`] for all columns
+    /// except `filter`, which accepts either `String` or `UInt32`:
     ///
     /// - `UInt64`  → borrowed contiguous `&[u64]` slice (`ids`)
     /// - `Float64` → borrowed contiguous `&[f64]` slice, collected in declaration order:
     ///   `ra`, `ra_err`, `dec`, `dec_err`, `magnitude`, `mag_err`, `mjd_tt`
-    /// - `String`  → owned [`Series`] stored in [`BaseFields::filter_series`], plus an
-    ///   intern pool of `Arc<str>` stored in [`BaseFields::filter_pool`]
+    /// - `String`  → owned [`Series`] stored as [`FilterData::Str`]
+    /// - `UInt32`  → owned [`Series`] stored as [`FilterData::Int`]
     ///
-    /// The filter intern pool is built once so that each call to
-    /// [`BaseFields::iter_base_fields`] pays only an atomic reference-count increment
-    /// per row rather than a new heap allocation.
+    /// The `filter` column type is detected at construction time.  A column
+    /// that is neither `String` nor `UInt32` is rejected with a
+    /// [`PolarsError::FilterColumnTypeError`].
     ///
     /// # Errors
     ///
-    /// Returns a [`PolarsResult`] error if any column named by [`base_fields()`] is
-    /// absent from `df`, or if a column's data cannot be cast to the expected type
-    /// (e.g. the `filter` column is not a `String` series).
+    /// Returns a [`PolarsError`] if any required column is absent from `df`,
+    /// if a numeric column cannot be cast to the expected type, or if the
+    /// `filter` column is present but has an unsupported type.
     ///
     /// # Panics
     ///
     /// Panics if the layout of [`base_fields()`] has been modified in an inconsistent
-    /// way — specifically if it no longer contains exactly one `UInt64` column, exactly
-    /// one `String` column, or exactly seven `Float64` columns. These invariants are
-    /// checked with `expect` at construction time.
+    /// way — specifically if it no longer contains exactly one `UInt64` column or
+    /// exactly seven `Float64` columns. These invariants are checked with `expect`
+    /// at construction time.
     pub(crate) fn materialize_fields(df: &'a DataFrame) -> Result<Self, PolarsError> {
         let mut ids_slot: Option<&'a [u64]> = None;
         let mut f64_slices: Vec<&'a [f64]> = Vec::new();
-        let mut filter_series_slot: Option<Series> = None;
+        let mut filter_slot: Option<FilterData> = None;
 
+        // Process all columns declared by base_fields(), but handle `filter`
+        // separately because it accepts two possible Polars types.
         for (name, dtype) in base_fields() {
             let col = df.column(&name)?;
-            match dtype {
-                DataType::UInt64 => ids_slot = Some(u64_slice(col)?),
-                DataType::Float64 => f64_slices.push(f64_slice(col)?),
-                DataType::String => {
-                    filter_series_slot = Some(col.as_materialized_series().clone());
+            if name == "filter" {
+                // Accept String or UInt32; reject everything else.
+                let series = col.as_materialized_series().clone();
+                let filter_data = match col.dtype() {
+                    DataType::String => FilterData::Str(series),
+                    DataType::UInt32 => FilterData::Int(series),
+                    other => {
+                        return Err(PolarsError::FilterColumnTypeError(other.to_string()));
+                    }
+                };
+                filter_slot = Some(filter_data);
+            } else {
+                match dtype {
+                    DataType::UInt64 => ids_slot = Some(u64_slice(col)?),
+                    DataType::Float64 => f64_slices.push(f64_slice(col)?),
+                    _ => {}
                 }
-                _ => {}
             }
         }
 
         let ids = ids_slot.expect("base_fields() must contain exactly one UInt64 column (id)");
-        let filter_series = filter_series_slot
-            .expect("base_fields() must contain exactly one String column (filter)");
+        let filter =
+            filter_slot.expect("base_fields() must contain exactly one String column (filter)");
 
         // Float64 columns arrive in declaration order from base_fields():
         // ra, ra_err, dec, dec_err, magnitude, mag_err, mjd_tt  (7 total)
         let [ra, ra_err, dec, dec_err, magnitude, mag_err, mjd_tt]: [&'a [f64]; 7] = f64_slices
             .try_into()
             .expect("base_fields() must contain exactly 7 Float64 columns");
-
-        let filter_pool: AHashMap<String, Arc<str>> = {
-            let ca = filter_series.str()?;
-            let mut pool = AHashMap::new();
-            for s in ca.iter().flatten() {
-                if !pool.contains_key(s) {
-                    pool.insert(s.to_string(), Arc::from(s));
-                }
-            }
-            pool
-        };
 
         Ok(BaseFields {
             ids,
@@ -200,40 +214,38 @@ impl<'a> BaseFields<'a> {
             magnitude,
             mag_err,
             mjd_tt,
-            filter_series,
-            filter_pool,
+            filter,
         })
     }
 
-    /// Returns an iterator yielding one tuple per row over all nine base columns.
+    /// Returns an iterator yielding one tuple per row over all nine base columns,
+    /// or a [`PolarsError`] if the internal filter series cannot be cast to the
+    /// expected type.
     ///
     /// Each tuple is `(id, ra, ra_err, dec, dec_err, magnitude, mag_err, mjd_tt, filter)`,
     /// where all numeric elements are shared references into the borrowed slices and
-    /// `filter` is an [`Arc<str>`] cloned from the intern pool built at construction
-    /// time. All rows that share the same filter label clone the same `Arc`, so the
-    /// per-row cost is a single atomic reference-count increment rather than a heap
-    /// allocation.
+    /// `filter` is a freshly constructed [`Filter`] value for each row.
+    ///
+    /// Depending on the column type detected at construction:
+    ///
+    /// - `String` column → yields [`Filter::String`] with an owned [`String`].
+    /// - `UInt32` column → yields [`Filter::Int`] with a `u32` value.
     ///
     /// The iterator zips all nine columns with [`izip!`](itertools::izip), which
     /// eliminates per-element bounds checks and stops as soon as the shortest slice
     /// is exhausted. Because all slices are derived from the same validated
     /// `DataFrame`, they are guaranteed to have equal length.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics if [`BaseFields::filter_series`] is not a `String` series (which
-    /// cannot occur when the struct was constructed via
-    /// [`BaseFields::materialize_fields`]), or if a `filter` value encountered
-    /// during iteration is absent from [`BaseFields::filter_pool`] (which cannot
-    /// occur because the pool is built from the same series).
+    /// Returns [`PolarsError::Polars`] if the internal [`FilterData`] series
+    /// cannot be cast to its declared type.  In practice this cannot occur when
+    /// the struct was constructed via [`BaseFields::materialize_fields`], but the
+    /// error is propagated rather than panicked to keep the API honest.
     pub(crate) fn iter_base_fields(
         &self,
-    ) -> impl Iterator<Item = (&u64, &f64, &f64, &f64, &f64, &f64, &f64, &f64, Arc<str>)> + '_ {
-        let filter_ca = self
-            .filter_series
-            .str()
-            .expect("filter column is not String");
-        izip!(
+    ) -> Result<impl Iterator<Item = BaseRow<'_>> + '_, PolarsError> {
+        let numeric = izip!(
             self.ids.iter(),
             self.ra.iter(),
             self.ra_err.iter(),
@@ -242,19 +254,29 @@ impl<'a> BaseFields<'a> {
             self.magnitude.iter(),
             self.mag_err.iter(),
             self.mjd_tt.iter(),
-            filter_ca.iter(),
-        )
-        .map(
-            |(id, ra, ra_err, dec, dec_err, magnitude, mag_err, mjd_tt, filter)| {
-                let filter = self
-                    .filter_pool
-                    .get(filter.unwrap_or_default())
-                    .expect("filter value not in pool — pool was built from the same series")
-                    .clone();
-                (
-                    id, ra, ra_err, dec, dec_err, magnitude, mag_err, mjd_tt, filter,
-                )
-            },
-        )
+        );
+
+        match &self.filter {
+            FilterData::Str(series) => {
+                let ca = series.str()?;
+                let filter_iter = ca
+                    .iter()
+                    .map(|opt| Filter::String(opt.unwrap_or_default().to_owned()));
+                Ok(itertools::Either::Left(izip!(numeric, filter_iter).map(
+                    |((id, ra, ra_err, dec, dec_err, mag, mag_err, mjd), f)| {
+                        (id, ra, ra_err, dec, dec_err, mag, mag_err, mjd, f)
+                    },
+                )))
+            }
+            FilterData::Int(series) => {
+                let ca = series.u32()?;
+                let filter_iter = ca.iter().map(|opt| Filter::Int(opt.unwrap_or(0)));
+                Ok(itertools::Either::Right(izip!(numeric, filter_iter).map(
+                    |((id, ra, ra_err, dec, dec_err, mag, mag_err, mjd), f)| {
+                        (id, ra, ra_err, dec, dec_err, mag, mag_err, mjd, f)
+                    },
+                )))
+            }
+        }
     }
 }

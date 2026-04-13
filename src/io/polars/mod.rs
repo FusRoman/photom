@@ -22,7 +22,7 @@
 //!
 //! ## Sub-modules
 //!
-//! - `base_field` — zero-copy materialization of the nine mandatory base columns.
+//! - `base_field` — materialization of the nine mandatory base columns.
 //! - `error` — the [`PolarsError`] enum.
 //! - `observer_field` — per-row observer resolution logic.
 //!
@@ -43,7 +43,7 @@
 //! | `dec_err` | `Float64` | Declination uncertainty (degrees) |
 //! | `magnitude` | `Float64` | Apparent magnitude |
 //! | `mag_err` | `Float64` | Magnitude uncertainty |
-//! | `filter` | `String` | Photometric filter label |
+//! | `filter` | `String` or `UInt32` | Photometric filter label or integer code |
 //! | `mjd_tt` | `Float64` | Epoch (Modified Julian Date, Terrestrial Time) |
 //!
 //! ### Optional observer columns
@@ -106,7 +106,7 @@ use crate::{
         observation::Observation,
     },
     observer::{Observer, dataset::ObserverId, error_model::ObsErrorModel},
-    photometry::{Filter, Photometry},
+    photometry::Photometry,
 };
 
 pub(crate) mod base_field;
@@ -442,7 +442,7 @@ fn load_observation_from_frame(
 
     let observations = izip!(
         0usize..,
-        base.iter_base_fields(),
+        base.iter_base_fields()?,
         obs_lon,
         obs_lat,
         obs_alt,
@@ -507,7 +507,7 @@ fn load_observation_from_frame(
                 photometry: Photometry {
                     magnitude: mag,
                     error: mag_err,
-                    filter: Filter::String(filter.as_ref().to_string()),
+                    filter,
                 },
                 mjd_tt,
                 observer: observer_id,
@@ -531,6 +531,7 @@ fn load_observation_from_frame(
 #[cfg(test)]
 mod polars_reader_tests {
     use super::*;
+    use crate::photometry::Filter;
     use polars::frame::DataFrame;
 
     // ── helpers ───────────────────────────────────────────────────────────────
@@ -889,6 +890,73 @@ mod polars_reader_tests {
              but got: {:?}",
             obs[0].observer
         );
+    }
+
+    // ── test 9 ────────────────────────────────────────────────────────────────
+
+    /// Verify that a `filter` column of type `UInt32` (integer codes) is
+    /// accepted and produces [`Filter::Int`] values.
+    #[test]
+    fn test_filter_column_integer() {
+        let cols = vec![
+            Column::new("id".into(), &[42u64]),
+            Column::new("ra".into(), &[10.5f64]),
+            Column::new("ra_err".into(), &[0.001f64]),
+            Column::new("dec".into(), &[-5.0f64]),
+            Column::new("dec_err".into(), &[0.001f64]),
+            Column::new("magnitude".into(), &[15.2f64]),
+            Column::new("mag_err".into(), &[0.05f64]),
+            Column::new("filter".into(), &[7u32]),
+            Column::new("mjd_tt".into(), &[60000.0f64]),
+        ];
+
+        let df = DataFrame::new_infer_height(cols).expect("DataFrame construction must succeed");
+
+        let result = load_observation_from_polars(&df, ObsErrorModel::FCCT14, Some(10));
+
+        assert!(
+            result.is_ok(),
+            "Expected Ok for a UInt32 filter column, got: {:?}",
+            result.err()
+        );
+        let dataset = result.unwrap();
+        let obs: Vec<&Observation> = dataset.iter_observations().collect();
+        assert_eq!(obs.len(), 1);
+        assert!(
+            matches!(obs[0].photometry.filter, Filter::Int(7)),
+            "Expected Filter::Int(7), got: {:?}",
+            obs[0].photometry.filter
+        );
+    }
+
+    // ── test 10 ───────────────────────────────────────────────────────────────
+
+    /// Verify that a `filter` column with an unsupported Polars type (e.g.
+    /// `Int64`) is rejected with [`PolarsError::FilterColumnTypeError`].
+    #[test]
+    fn test_filter_column_unsupported_type() {
+        let cols = vec![
+            Column::new("id".into(), &[42u64]),
+            Column::new("ra".into(), &[10.5f64]),
+            Column::new("ra_err".into(), &[0.001f64]),
+            Column::new("dec".into(), &[-5.0f64]),
+            Column::new("dec_err".into(), &[0.001f64]),
+            Column::new("magnitude".into(), &[15.2f64]),
+            Column::new("mag_err".into(), &[0.05f64]),
+            // Int64 is not accepted for filter.
+            Column::new("filter".into(), &[7i64]),
+            Column::new("mjd_tt".into(), &[60000.0f64]),
+        ];
+
+        let df = DataFrame::new_infer_height(cols).expect("DataFrame construction must succeed");
+
+        let result = load_observation_from_polars(&df, ObsErrorModel::FCCT14, Some(10));
+
+        match result {
+            Err(PolarsError::FilterColumnTypeError(_)) => { /* expected */ }
+            Err(other) => panic!("Expected PolarsError::FilterColumnTypeError, got: {other:?}"),
+            Ok(_) => panic!("Expected Err for unsupported filter column type, got Ok"),
+        }
     }
 }
 

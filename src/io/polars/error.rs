@@ -73,6 +73,19 @@ pub enum PolarsError {
     #[error("Invalid MPC code '{0}' at row {1}: must be exactly 3 ASCII bytes")]
     InvalidMpcCode(String, usize),
 
+    /// The `filter` column is present in the `DataFrame` but its Polars
+    /// type is neither `String` nor `UInt32`.
+    ///
+    /// Only these two column types are accepted: `String` cells are mapped to
+    /// [`crate::photometry::Filter::String`] and `UInt32` cells are mapped to
+    /// [`crate::photometry::Filter::Int`].  Any other type must be cast by the
+    /// caller before ingestion.
+    ///
+    /// The inner `String` is a human-readable description of the actual type
+    /// that was found.
+    #[error("filter column has unsupported type: {0} (expected String or UInt32)")]
+    FilterColumnTypeError(String),
+
     /// The `night_id` column is present in the `DataFrame` but its Polars
     /// type is not `UInt32`.
     ///
