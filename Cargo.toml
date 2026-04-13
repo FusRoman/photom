@@ -29,6 +29,8 @@ ureq = { version = "3.3.0", default-features = false, features = ["rustls"] }
 # optional dependencies gated behind features
 polars = { version = "0.53.0", default-features = false, features = [
     "lazy",
+    "dtype-u8",
+    "dtype-u16",
 ], optional = true }
 
 [dev-dependencies]
