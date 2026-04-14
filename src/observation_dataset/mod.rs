@@ -33,6 +33,9 @@
 pub(crate) mod index;
 pub mod observation;
 
+#[cfg(feature = "parallel")]
+pub mod parallel;
+
 use std::num::NonZeroUsize;
 
 use lru::LruCache;
@@ -450,6 +453,21 @@ impl ObsDataset {
                 .map(|obs| obs.index)
                 .collect::<Vec<ObsIndex>>()),
         );
+    }
+
+    /// Register a new trajectory in the trajectory index.
+    ///
+    /// Associates `traj_id` with the positions of `obs_indices` in the internal
+    /// observations vector.  If the dataset was not built with a trajectory index
+    /// (i.e. the source data had no `traj_id` column), this method is a no-op.
+    ///
+    /// # Arguments
+    ///
+    /// - `traj_id` — the identifier of the trajectory to register.
+    /// - `obs_indices` — slice of [`Observation`] values whose internal vector
+    ///   positions will be recorded under `traj_id`.
+    pub fn push_new_trajectory_by_index(&mut self, traj_id: TrajId, obs_indices: &[ObsIndex]) {
+        self.index.push_trajectory(traj_id, obs_indices);
     }
 
     /// Look up the [`Observer`] associated with a given observation.

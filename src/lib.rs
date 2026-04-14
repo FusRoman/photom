@@ -11,6 +11,8 @@
 //!
 //! - **Polars ingestion** (`polars` feature) — load observations from a `DataFrame` or
 //!   `LazyFrame` with full schema validation.
+//! - **Parallel iteration** (`parallel` feature) — process observations, nights, and
+//!   trajectories in parallel via [rayon](https://docs.rs/rayon) with zero data copying.
 //! - **Multi-observer support** — MPC observatory codes (resolved lazily from the MPC
 //!   website), custom geodetic sites (interned and deduplicated), or unknown observer.
 //! - **Trajectory grouping** — group observations by a `traj_id` column; supports both
@@ -201,6 +203,32 @@
 //! let sep = a.angular_separation(&b); // result in radians
 //! ```
 //!
+//! ## Parallel iteration
+//!
+//! *Requires the `parallel` feature.*
+//!
+//! When the `parallel` feature is enabled, [`observation_dataset::ObsDataset`] gains a
+//! family of `par_iter_*` methods that return
+//! [`rayon::iter::ParallelIterator`](https://docs.rs/rayon/latest/rayon/iter/trait.ParallelIterator.html)
+//! values instead of standard iterators.  These methods take `&self` and can be called
+//! while other shared borrows of the dataset are live.
+//!
+//! ```rust,ignore
+//! use photom::observation_dataset::ObsDataset;
+//! use rayon::iter::ParallelIterator;
+//!
+//! // Iterate over every observation in parallel.
+//! let count = dataset.par_iter_observations().count();
+//!
+//! // Iterate over every (NightId, &Observation) pair in parallel.
+//! // Returns None if the dataset was built without a night_id column.
+//! if let Some(par_iter) = dataset.par_iter_full_night() {
+//!     par_iter.for_each(|(night_id, obs)| {
+//!         println!("night {:?}: obs id {}", night_id, obs.id());
+//!     });
+//! }
+//! ```
+//!
 //! # The `polars` Feature
 //!
 //! Polars-based ingestion is gated behind the optional `polars` feature.  To enable it,
@@ -214,6 +242,28 @@
 //! Without this feature the crate is still fully usable: all types, constants, and
 //! astrometric utilities are available; only the `from_polars` and `from_lazy`
 //! constructors on [`observation_dataset::ObsDataset`] are absent.
+//!
+//! # The `parallel` Feature
+//!
+//! Parallel iteration is gated behind the optional `parallel` feature, which brings in
+//! [rayon](https://docs.rs/rayon) as a dependency.  To enable it, add the following to
+//! your `Cargo.toml`:
+//!
+//! ```toml
+//! [dependencies]
+//! photom = { version = "0.1", features = ["parallel"] }
+//! ```
+//!
+//! The `parallel` feature can be combined freely with the `polars` feature:
+//!
+//! ```toml
+//! photom = { version = "0.1", features = ["polars", "parallel"] }
+//! ```
+//!
+//! When enabled, every method documented in
+//! [`observation_dataset::parallel`](observation_dataset) becomes available on
+//! [`observation_dataset::ObsDataset`].  All parallel methods take `&self`, so they do
+//! not conflict with outstanding shared borrows of the dataset.
 //!
 //! # Minimum Supported Rust Version
 //!

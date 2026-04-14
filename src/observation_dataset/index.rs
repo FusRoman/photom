@@ -62,12 +62,12 @@ pub struct ObsDatasetIndex {
     /// Mapping from `NightId` to the list of observation indices belonging to that night.
     ///
     /// `None` when the source data contained no `night_id` column.
-    obs_index_by_night: Option<NightIndexMap>,
+    pub(crate) obs_index_by_night: Option<NightIndexMap>,
 
     /// Mapping from `TrajId` to the list of observation indices belonging to that trajectory.
     ///
     /// `None` when the source data contained no `traj_id` column.
-    obs_index_by_trajectory: Option<TrajIndexMap>,
+    pub(crate) obs_index_by_trajectory: Option<TrajIndexMap>,
 }
 
 impl ObsDatasetIndex {

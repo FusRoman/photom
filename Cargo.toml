@@ -31,8 +31,9 @@ polars = { version = "0.53.0", default-features = false, features = [
     "lazy",
     "dtype-u8",
     "dtype-u16",
-    "parquet"
+    "parquet",
 ], optional = true }
+rayon = { version = "1.12.0", default-features = false, optional = true }
 
 [dev-dependencies]
 approx = "0.5.1"
@@ -41,8 +42,8 @@ proptest = "1.11.0"
 
 [features]
 polars = ["dep:polars"]
-
+parallel = ["dep:rayon"]
 
 [package.metadata.docs.rs]
-features = ["polars"]
+features = ["polars", "parallel"]
 rustdoc-args = ["--cfg", "docsrs"]
