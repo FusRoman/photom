@@ -88,7 +88,7 @@
 //! | Column | Polars type | Nullable | Description |
 //! |----------|-------------|----------|----------------------------------------------------|
 //! | `night_id` | `UInt32` | yes | Night identifier; groups observations by night |
-//! | `traj_id` | `UInt64` or `String` | yes | Trajectory identifier; groups observations into trajectories |
+//! | `traj_id` | `UInt32` or `String` | yes | Trajectory identifier; groups observations into trajectories |
 //!
 //! ## Observer column rules
 //!
@@ -109,7 +109,7 @@ use itertools::{Either, izip};
 use polars::{
     frame::DataFrame,
     lazy::frame::LazyFrame,
-    prelude::{ChunkedArray, Column, DataType, StringType, UInt32Type, UInt64Type},
+    prelude::{ChunkedArray, Column, DataType, StringType, UInt32Type},
 };
 
 use crate::{
@@ -442,20 +442,20 @@ fn load_observation_from_frame(
     // traj_id: UInt64 or String.  Column absent ⟹ iterator of None.
     // We store the two possible typed borrows in separate Options; exactly one
     // (or neither) will be Some.
-    let traj_u64_ca: Option<&ChunkedArray<UInt64Type>>;
+    let traj_u32_ca: Option<&ChunkedArray<UInt32Type>>;
     let traj_str_ca: Option<&ChunkedArray<StringType>>;
     match df.column("traj_id") {
         Err(_) => {
-            traj_u64_ca = None;
+            traj_u32_ca = None;
             traj_str_ca = None;
         }
         Ok(col) => match col.dtype() {
-            DataType::UInt64 => {
-                traj_u64_ca = Some(col.as_materialized_series().u64()?);
+            DataType::UInt32 => {
+                traj_u32_ca = Some(col.as_materialized_series().u32()?);
                 traj_str_ca = None;
             }
             DataType::String => {
-                traj_u64_ca = None;
+                traj_u32_ca = None;
                 traj_str_ca = Some(col.as_materialized_series().str()?);
             }
             other => {
@@ -466,7 +466,7 @@ fn load_observation_from_frame(
 
     // Build the index map sentinel booleans before entering the loop.
     let has_night = night_ca.is_some();
-    let has_traj = traj_u64_ca.is_some() || traj_str_ca.is_some();
+    let has_traj = traj_u32_ca.is_some() || traj_str_ca.is_some();
 
     // ── per-row assembly ───────────────────────────────────────────────────────
     let mut custom_observers: Vec<Observer> = Vec::with_capacity(16);
@@ -483,9 +483,9 @@ fn load_observation_from_frame(
 
     // Unified traj iterator: yields Option<TrajId> regardless of the column type.
     // We use nested Either to keep the type monomorphised with no virtual dispatch.
-    let traj_iter = match (traj_u64_ca, traj_str_ca) {
+    let traj_iter = match (traj_u32_ca, traj_str_ca) {
         (Some(ca), _) => Either::Left(Either::Left(
-            ca.iter().map(|opt: Option<u64>| opt.map(TrajId::Int)),
+            ca.iter().map(|opt: Option<u32>| opt.map(TrajId::Int)),
         )),
         (_, Some(ca)) => Either::Left(Either::Right(
             ca.iter()

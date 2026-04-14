@@ -256,7 +256,7 @@ pub struct NightId(pub u32);
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub enum TrajId {
     /// A 64-bit unsigned integer identifier (e.g. a catalogue number).
-    Int(u64),
+    Int(u32),
     /// A string label (e.g. a MPC provisional designation or a proper name).
     Str(String),
 }
