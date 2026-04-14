@@ -29,7 +29,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        features: [no-features, polars]
+        features: [no-features, polars, parallel]
         command: [clippy, check, doc]
         include:
           - features: no-features
@@ -89,12 +89,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        features: [no-features, polars]
+        features: [no-features, polars, parallel]
         include:
           - features: no-features
             cargo_flags: --no-default-features
           - features: polars
             cargo_flags: --features polars
+          - features: parallel
+            cargo_flags: --features parallel
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -151,6 +153,7 @@ jobs:
           lcov \
             --add-tracefile lcov-no-features.info \
             --add-tracefile lcov-polars.info \
+            --add-tracefile lcov-parallel.info \
             --output-file lcov.info
 
       - name: Upload to Codecov
