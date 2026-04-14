@@ -23,9 +23,25 @@ jobs:
       - name: cargo fmt
         run: cargo fmt --all -- --check
 
-  clippy:
-    name: Clippy
+  ci:
+    name: ${{ matrix.command }} (${{ matrix.features }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        features: [no-features, polars]
+        command: [clippy, check, doc]
+        include:
+          - features: no-features
+            cargo_flags: --no-default-features
+          - features: polars
+            cargo_flags: --features polars
+          - command: clippy
+            components: clippy
+          - command: check
+            components: ""
+          - command: doc
+            components: ""
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -33,68 +49,30 @@ jobs:
       - name: Install Rust (stable)
         uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy
-
-      - name: Install system dependencies
-        # Note: Needed for plotters in the fink-fat-eval crate
-        run: sudo apt-get update && sudo apt-get install -y libfontconfig1-dev
+          components: ${{ matrix.components }}
 
       - name: Cache Rust
         uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
+          key: ${{ matrix.features }}-${{ matrix.command }}
 
       - name: cargo clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
-
-  check:
-    name: Cargo check
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install Rust (stable)
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Install system dependencies
-        # Note: Needed for plotters in the fink-fat-eval crate
-        run: sudo apt-get update && sudo apt-get install -y libfontconfig1-dev
-
-      - name: Cache Rust
-        uses: Swatinem/rust-cache@v2
-        with:
-          cache-on-failure: true
+        if: matrix.command == 'clippy'
+        run: cargo clippy --all-targets ${{ matrix.cargo_flags }} -- -D warnings
 
       - name: cargo check
-        run: cargo check --all-targets --all-features
-
-  doc:
-    name: Documentation check
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install Rust (stable)
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Install system dependencies
-        # Note: Needed for plotters in the fink-fat-eval crate
-        run: sudo apt-get update && sudo apt-get install -y libfontconfig1-dev
-
-      - name: Cache Rust
-        uses: Swatinem/rust-cache@v2
-        with:
-          cache-on-failure: true
+        if: matrix.command == 'check'
+        run: cargo check --all-targets ${{ matrix.cargo_flags }}
 
       - name: cargo doc
-        run: RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features
+        if: matrix.command == 'doc'
+        run: RUSTDOCFLAGS="-D warnings" cargo doc --no-deps ${{ matrix.cargo_flags }}
 
   semver:
     name: Semver checks
     runs-on: ubuntu-latest
-    needs: [fmt, clippy, check, doc]
+    needs: [fmt, ci]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -105,9 +83,18 @@ jobs:
           feature-group: all-features
 
   coverage:
-    name: Tests & Coverage
+    name: Coverage (${{ matrix.features }})
     runs-on: ubuntu-latest
-    needs: [fmt, clippy, check, doc]
+    needs: [fmt, ci]
+    strategy:
+      fail-fast: false
+      matrix:
+        features: [no-features, polars]
+        include:
+          - features: no-features
+            cargo_flags: --no-default-features
+          - features: polars
+            cargo_flags: --features polars
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -121,6 +108,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
+          key: ${{ matrix.features }}-coverage
 
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
@@ -128,14 +116,42 @@ jobs:
       - name: Clean coverage artifacts
         run: cargo llvm-cov clean --workspace
 
-      - name: Generate coverage (engine only, lcov)
+      - name: Generate coverage (lcov)
         env:
           RAYON_NUM_THREADS: 2
           RUST_TEST_THREADS: 1
         run: |
           cargo llvm-cov \
-            --all-features \
-            --lcov --output-path lcov.info
+            ${{ matrix.cargo_flags }} \
+            --lcov --output-path lcov-${{ matrix.features }}.info
+
+      - name: Upload lcov artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ matrix.features }}
+          path: lcov-${{ matrix.features }}.info
+          retention-days: 1
+
+  coverage-report:
+    name: Coverage report
+    runs-on: ubuntu-latest
+    needs: [coverage]
+    steps:
+      - name: Download all lcov artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: coverage-*
+          merge-multiple: true
+
+      - name: Install lcov
+        run: sudo apt-get update && sudo apt-get install -y lcov
+
+      - name: Merge lcov reports
+        run: |
+          lcov \
+            --add-tracefile lcov-no-features.info \
+            --add-tracefile lcov-polars.info \
+            --output-file lcov.info
 
       - name: Upload to Codecov
         uses: codecov/codecov-action@v4
