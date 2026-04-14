@@ -81,7 +81,7 @@
 //!
 //! | Column | Polars type | Description |
 //! |--------|-------------|-------------|
-//! | `traj_id` | `UInt64` or `String` | Trajectory identifier; nullable — null rows are loaded into the `ObsDataset` but are not assigned to any trajectory |
+//! | `traj_id` | `UInt32` or `String` | Trajectory identifier; nullable — null rows are loaded into the `ObsDataset` but are not assigned to any trajectory |
 //! | `night_id` | `UInt32` | Night identifier; nullable — null rows are included in the `ObsDataset` but are not assigned to any night |
 //!
 //! ## Observer resolution (per row, in precedence order)
@@ -158,7 +158,7 @@
 //! use photom::trajectory::{TrajDataset, TrajId};
 //! use photom::observer::error_model::ObsErrorModel;
 //!
-//! // traj_id can be UInt64 or String; null rows are loaded but not grouped.
+//! // traj_id can be UInt32 or String; null rows are loaded but not grouped.
 //! let df = df! {
 //!     "id"        => &[1_u64, 2_u64, 3_u64],
 //!     "ra"        => &[83.82_f64, 84.10_f64, 10.0_f64],
@@ -244,18 +244,18 @@ pub struct NightId(pub u32);
 
 /// Typed identifier for a single trajectory.
 ///
-/// A trajectory can be identified either by a **64-bit unsigned integer** (e.g.
+/// A trajectory can be identified either by a **32-bit unsigned integer** (e.g.
 /// a running index or a catalogue number) or by a **string label** (e.g. a
 /// Minor Planet Center provisional designation such as `"2020 AV2"`, or a
 /// proper name such as `"Ceres"`).
 ///
 /// The column type of `traj_id` in the source `DataFrame` determines which
-/// variant is used: a `UInt64` column produces [`TrajId::Int`] keys and a
+/// variant is used: a `UInt32` column produces [`TrajId::Int`] keys and a
 /// `String` column produces [`TrajId::Str`] keys.  Mixing both types in a
 /// single dataset is not supported; the column must be uniformly one type.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub enum TrajId {
-    /// A 64-bit unsigned integer identifier (e.g. a catalogue number).
+    /// A 32-bit unsigned integer identifier (e.g. a catalogue number).
     Int(u32),
     /// A string label (e.g. a MPC provisional designation or a proper name).
     Str(String),
