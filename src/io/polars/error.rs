@@ -99,16 +99,15 @@ pub enum PolarsError {
     NightIdColumnTypeError(String),
 
     /// The `traj_id` column is present in the `DataFrame` but its Polars
-    /// type is neither `UInt64` nor `String`.
+    /// type is neither `UInt32` nor `String`.
     ///
-    /// Only these two column types are accepted: `UInt64` cells are mapped to
-    /// [`crate::TrajId::Int`] and `String` cells are mapped to
-    /// [`crate::TrajId::Str`].  Any other type (e.g. `Int32`,
+    /// Only these two column types are accepted: `UInt32` cells are mapped to
+    /// [`crate::TrajId::Int`] and `String` cells are mapped to [`crate::TrajId::Str`].  Any other type (e.g. `Int32`,
     /// `Float64`) must be cast by the caller before ingestion.
     ///
     /// The inner `String` is a human-readable description of the actual type
     /// that was found.
-    #[error("traj_id column has unsupported type: {0} (expected UInt64 or String)")]
+    #[error("traj_id column has unsupported type: {0} (expected UInt32 or String)")]
     TrajIdColumnTypeError(String),
 
     /// A Polars-internal error propagated transparently from the underlying

@@ -88,7 +88,7 @@
 //! | Column | Polars type | Nullable | Description |
 //! |----------|-------------|----------|----------------------------------------------------|
 //! | `night_id` | `UInt32` | yes | Night identifier; groups observations by night |
-//! | `traj_id` | `UInt32` or `String` | yes | Trajectory identifier; groups observations into trajectories |
+//! | `traj_id` | `UInt32`, `UInt64`, or `String` | yes | Trajectory identifier; groups observations into trajectories |
 //!
 //! ## Observer column rules
 //!
@@ -365,7 +365,7 @@ pub(crate) fn load_observation_from_polars<T: IntoFrame>(
 /// | Column | Polars type | Index built |
 /// |--------|-------------|-------------|
 /// | `night_id` | `UInt32` | [`NightIndexMap`] keyed by [`NightId`] |
-/// | `traj_id` | `UInt64` | [`TrajIndexMap`] keyed by [`TrajId::Int`] |
+/// | `traj_id` | `UInt32` | [`TrajIndexMap`] keyed by [`TrajId::Int`] |
 /// | `traj_id` | `String` | [`TrajIndexMap`] keyed by [`TrajId::Str`] |
 ///
 /// When a column is absent the corresponding `Option` in [`ObsDataset`] is
@@ -402,7 +402,7 @@ pub(crate) fn load_observation_from_polars<T: IntoFrame>(
 /// - [`PolarsError::NightIdColumnTypeError`] — `night_id` column is present
 ///   but its type is not `UInt32`.
 /// - [`PolarsError::TrajIdColumnTypeError`] — `traj_id` column is present but
-///   its type is neither `UInt64` nor `String`.
+///   its type is neither `UInt32` nor `String`.
 fn load_observation_from_frame(
     df: &DataFrame,
     error_model: Option<ObsErrorModel>,

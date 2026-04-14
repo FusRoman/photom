@@ -19,8 +19,8 @@ categories = ["science", "parsing", "data-structures"]
 
 [dependencies]
 ahash = { version = "0.8.12", default-features = false, features = ["std"] }
-itertools = "0.14.0"
-lru = "0.16.3"
+itertools = { version = "0.14.0", default-features = false }
+lru = { version = "0.16.3", default-features = false }
 nom = { version = "8.0.0", default-features = false }
 ordered-float = { version = "5.3.0", default-features = false }
 thiserror = { version = "2.0.18" }
@@ -31,6 +31,7 @@ polars = { version = "0.53.0", default-features = false, features = [
     "lazy",
     "dtype-u8",
     "dtype-u16",
+    "parquet"
 ], optional = true }
 
 [dev-dependencies]
