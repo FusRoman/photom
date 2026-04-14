@@ -522,6 +522,7 @@ impl ObsDataset {
     /// # Returns
     ///
     /// A fully initialised `ObsDataset` with the observations indexed and the LRU cache empty.
+    #[cfg_attr(not(feature = "polars"), allow(dead_code))]
     pub(crate) fn new(
         observations: Vec<Observation>,
         custom_observers: Vec<Observer>,

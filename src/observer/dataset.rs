@@ -102,6 +102,7 @@ impl ObserverDataset {
     ///
     /// A freshly constructed [`ObserverDataset`] with an uninitialised MPC
     /// lookup table.
+    #[cfg_attr(not(feature = "polars"), allow(dead_code))]
     pub(crate) fn new(
         custom_observers: Vec<Observer>,
         mpc_error_model: Option<ObsErrorModel>,

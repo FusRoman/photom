@@ -84,6 +84,7 @@ impl ObsDatasetIndex {
     /// # Returns
     ///
     /// A fully initialised `ObsDatasetIndex`.
+    #[cfg_attr(not(feature = "polars"), allow(dead_code))]
     pub(crate) fn new(
         obs_index_by_id: ObservationIndexMap,
         obs_index_by_night: Option<NightIndexMap>,

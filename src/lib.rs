@@ -30,7 +30,10 @@
 //! | [`observer`] | Ground-based observatory representation ([`observer::Observer`]) and geodetic utilities |
 //! | [`observer::error_model`] | Astrometric error model variants ([`observer::error_model::ObsErrorModel`]: FCCT14, CBM10, VFCC17) |
 //! | [`constants`] | Physical and geodetic constants (Earth axes, AU, etc.) |
-//! | [`io`] | Internal ingestion backends (Polars adapter, schema validation) |
+#![cfg_attr(
+    feature = "polars",
+    doc = "| [`io`] | Internal ingestion backends (Polars adapter, schema validation) |"
+)]
 //!
 //! # Type Aliases
 //!
