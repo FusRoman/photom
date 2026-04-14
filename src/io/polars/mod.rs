@@ -1696,7 +1696,7 @@ mod index_tests {
     #[test]
     fn traj_index_uint64_groups_correctly() {
         let mut cols = base_cols(4);
-        let trajs: Vec<Option<u64>> = vec![Some(100), Some(200), Some(100), Some(200)];
+        let trajs: Vec<Option<u32>> = vec![Some(100), Some(200), Some(100), Some(200)];
         cols.push(Column::new("traj_id".into(), trajs));
 
         let df = DataFrame::new_infer_height(cols).expect("DataFrame construction must succeed");
@@ -1765,7 +1765,7 @@ mod index_tests {
     #[test]
     fn traj_index_null_cell_is_skipped() {
         let mut cols = base_cols(3);
-        let trajs: Vec<Option<u64>> = vec![Some(1), None, Some(1)];
+        let trajs: Vec<Option<u32>> = vec![Some(1), None, Some(1)];
         cols.push(Column::new("traj_id".into(), trajs));
 
         let df = DataFrame::new_infer_height(cols).expect("DataFrame construction must succeed");
@@ -1816,7 +1816,7 @@ mod index_tests {
     fn both_night_and_traj_index_built_simultaneously() {
         let mut cols = base_cols(4);
         let nights: Vec<Option<u32>> = vec![Some(1), Some(1), Some(2), Some(2)];
-        let trajs: Vec<Option<u64>> = vec![Some(10), Some(20), Some(10), Some(20)];
+        let trajs: Vec<Option<u32>> = vec![Some(10), Some(20), Some(10), Some(20)];
         cols.push(Column::new("night_id".into(), nights));
         cols.push(Column::new("traj_id".into(), trajs));
 

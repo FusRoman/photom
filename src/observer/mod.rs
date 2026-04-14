@@ -4,7 +4,7 @@
 //! observatory site, together with the two constructors that create one from
 //! geodetic or from pre-computed geocentric parallax coordinates.  It also
 //! exposes the low-level geodetic conversion helpers
-//! ([`geodetic_to_parallax`], [`lat_alt_to_parallax`]) and the error type
+//! ([`geodetic_to_parallax`] and the error type
 //! ([`ObserverError`]) that covers all failure modes arising during observer
 //! construction.
 //!
@@ -20,8 +20,7 @@
 //! | [`Observer`] | struct | Ground-based observatory site with parallax constants |
 //! | [`ObserverError`] | enum | Errors arising during observer construction |
 //! | [`to_opt_notnan`] | fn | Lift `Option<f64>` into `Option<NotNan<f64>>` |
-//! | [`geodetic_to_parallax`] | fn | Degrees-based wrapper for [`lat_alt_to_parallax`] |
-//! | [`lat_alt_to_parallax`] | fn | Geodetic-to-geocentric parallax conversion (radians) |
+//! | [`geodetic_to_parallax`] | fn | Geodetic-to-geocentric parallax conversion (radians) |
 
 pub mod dataset;
 pub mod error_model;
@@ -32,7 +31,7 @@ use thiserror::Error;
 use ordered_float::NotNan;
 
 use crate::{
-    Degrees, Meters, Radians,
+    Meters, Radians,
     constants::{EARTH_MAJOR_AXIS, EARTH_MINOR_AXIS},
 };
 
@@ -49,8 +48,8 @@ use crate::{
 /// [`Observer::from_parallax`] to supply the parallax constants directly.
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
 pub struct Observer {
-    /// Geodetic longitude in **degrees** east of Greenwich.
-    pub longitude: NotNan<Degrees>,
+    /// Geodetic longitude in **radians** east of Greenwich.
+    pub longitude: NotNan<Radians>,
 
     /// $\rho\cos\phi'$ — geocentric parallax constant, in **Earth radii** (dimensionless).
     pub rho_cos_phi: NotNan<f64>,
@@ -107,8 +106,8 @@ impl Observer {
     ///
     /// # Arguments
     ///
-    /// - `longitude` — geodetic longitude in **degrees** (east positive).
-    /// - `latitude` — geodetic latitude in **degrees**.
+    /// - `longitude` — geodetic longitude in **radians** (east positive).
+    /// - `latitude` — geodetic latitude in **radians**.
     /// - `elevation` — height above the reference ellipsoid in **meters**.
     /// - `name` — optional human-readable site name.
     /// - `ra_accuracy` — optional RA measurement accuracy in **radians**.
@@ -124,23 +123,23 @@ impl Observer {
     /// Returns [`ObserverError::InvalidFloatValue`] if any of the supplied
     /// floating-point values is `NaN`.
     pub fn new(
-        longitude: Degrees,
-        latitude: Degrees,
+        longitude: Radians,
+        latitude: Radians,
         elevation: Meters,
         name: Option<String>,
-        ra_accuracy: Option<f64>,
-        dec_accuracy: Option<f64>,
+        ra_accuracy: Option<Radians>,
+        dec_accuracy: Option<Radians>,
     ) -> Result<Observer, ObserverError> {
         let (rho_cos_phi, rho_sin_phi) = geodetic_to_parallax(latitude, elevation);
 
-        Ok(Observer {
-            longitude: NotNan::try_from(longitude)?,
-            rho_cos_phi: NotNan::try_from(rho_cos_phi)?,
-            rho_sin_phi: NotNan::try_from(rho_sin_phi)?,
+        Observer::from_parallax(
+            longitude,
+            rho_cos_phi,
+            rho_sin_phi,
             name,
-            ra_accuracy: to_opt_notnan(ra_accuracy)?,
-            dec_accuracy: to_opt_notnan(dec_accuracy)?,
-        })
+            ra_accuracy,
+            dec_accuracy,
+        )
     }
 
     /// Construct an [`Observer`] from pre-computed geocentric parallax coordinates.
@@ -152,7 +151,7 @@ impl Observer {
     ///
     /// # Arguments
     ///
-    /// - `longitude` — geodetic longitude in **degrees** (east positive).
+    /// - `longitude` — geodetic longitude in **radians** (east positive).
     /// - `rho_cos_phi` — $\rho\cos\phi'$ in **Earth radii** (dimensionless).
     /// - `rho_sin_phi` — $\rho\sin\phi'$ in **Earth radii** (dimensionless).
     /// - `name` — optional human-readable site name.
@@ -169,7 +168,7 @@ impl Observer {
     /// Returns [`ObserverError::InvalidFloatValue`] if any of the supplied
     /// floating-point values is `NaN`.
     pub fn from_parallax(
-        longitude: Degrees,
+        longitude: Radians,
         rho_cos_phi: f64,
         rho_sin_phi: f64,
         name: Option<String>,
@@ -210,33 +209,6 @@ pub fn to_opt_notnan(x: Option<f64>) -> Result<Option<NotNan<f64>>, ordered_floa
     x.map(NotNan::new).transpose()
 }
 
-/// Convert geodetic latitude in **degrees** and height in **meters** into
-/// normalized parallax coordinates.
-///
-/// This is a thin wrapper around [`lat_alt_to_parallax`] that converts `lat`
-/// from degrees to radians before delegating.
-///
-/// # Arguments
-///
-/// - `lat` — geodetic latitude of the observer in **degrees**.
-/// - `height` — observer's altitude above the reference ellipsoid in **meters**.
-///
-/// # Returns
-///
-/// A tuple `(rho_cos_phi, rho_sin_phi)` where:
-///
-/// - `rho_cos_phi` — $\rho\cos\phi'$, normalized projection on the equatorial plane.
-/// - `rho_sin_phi` — $\rho\sin\phi'$, normalized projection on the polar axis.
-pub fn geodetic_to_parallax(lat: f64, height: f64) -> (f64, f64) {
-    // Convert latitude from degrees to radians
-    let latitude_rad = lat.to_radians();
-
-    // Call the main routine that works with radians
-    let (rho_cos_phi, rho_sin_phi) = lat_alt_to_parallax(latitude_rad, height);
-
-    (rho_cos_phi, rho_sin_phi)
-}
-
 /// Convert geodetic latitude in **radians** and height in **meters** into
 /// normalized parallax coordinates on the Earth.
 ///
@@ -265,7 +237,7 @@ pub fn geodetic_to_parallax(lat: f64, height: f64) -> (f64, f64) {
 ///
 /// - `rho_cos_phi` — $\rho\cos\phi'$, normalized projection on the equatorial plane.
 /// - `rho_sin_phi` — $\rho\sin\phi'$, normalized projection on the polar axis.
-pub fn lat_alt_to_parallax(lat: f64, height: f64) -> (f64, f64) {
+pub fn geodetic_to_parallax(lat: Radians, height: Meters) -> (f64, f64) {
     // Ratio of the Earth's minor to major axis (flattening factor)
     let axis_ratio = EARTH_MINOR_AXIS / EARTH_MAJOR_AXIS;
 
