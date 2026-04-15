@@ -103,7 +103,10 @@ pub(crate) fn base_fields() -> impl Iterator<Item = (pl::PlSmallStr, pl::DataTyp
 ///   `UInt8` or `UInt16` at materialisation time); each row produces a
 ///   [`Filter::Int`].
 enum FilterData {
+    /// The `filter` column is a `String` series; row values are mapped to [`Filter::String`].
     Str(Series),
+    /// The `filter` column is a `UInt32` series (possibly upcast from `UInt8` or `UInt16`);
+    /// row values are mapped to [`Filter::Int`].
     Int(Series),
 }
 

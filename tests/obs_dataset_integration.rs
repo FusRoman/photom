@@ -35,71 +35,10 @@
 
 #![cfg(feature = "polars")]
 
-use photom::{NightId, TrajId, observation_dataset::ObsDataset};
-use polars::prelude::{LazyFrame, ScanArgsParquet};
+mod helpers;
+use helpers::*;
 
-// ── path constants ────────────────────────────────────────────────────────────
-
-const PATH_INT: &str = "tests/data/test_data_traj_int.parquet";
-const PATH_STR: &str = "tests/data/test_data_traj_str.parquet";
-
-/// Total number of rows in each fixture file.
-const TOTAL_ROWS: usize = 561_287;
-
-/// Number of distinct nights in both fixture files.
-const NIGHT_COUNT: usize = 10;
-
-/// Number of observations with a non-null trajectory identifier.
-const TRAJ_NON_NULL: usize = 68_145;
-
-/// Number of distinct trajectory identifiers.
-const TRAJ_UNIQUE: usize = 38_024;
-
-/// Night identifiers and their expected observation counts (from the fixture).
-const NIGHT_EXPECTED: &[(u32, usize)] = &[
-    (3010, 78204),
-    (3026, 37244),
-    (3074, 86675),
-    (3081, 86693),
-    (3140, 88273),
-    (3177, 44772),
-    (3200, 82158),
-    (3204, 29196),
-    (3248, 11674),
-    (3278, 16398),
-];
-
-/// Geodetic coordinates of ZTF's Palomar Observatory as stored in the int fixture.
-/// Longitude and latitude in radians, altitude in metres.
-const OBS_LON: f64 = -2.0391;
-const OBS_LAT: f64 = 0.5822;
-const OBS_ALT: f64 = 1712.0;
-
-/// MPC observatory code present in every row of the str fixture.
-const MPC_CODE: &[u8; 3] = b"I41";
-
-// ── helpers ───────────────────────────────────────────────────────────────────
-
-/// Load the integer-traj fixture via `ObsDataset::from_lazy` (fast path:
-/// `ScanArgsParquet { rechunk: true }` + `do_rechunk = Some(false)`).
-fn load_int() -> ObsDataset {
-    let args = ScanArgsParquet {
-        rechunk: true,
-        ..Default::default()
-    };
-    let lf = LazyFrame::scan_parquet(PATH_INT.into(), args).expect("scan_parquet must succeed");
-    ObsDataset::from_lazy(lf, None, None, Some(false)).expect("from_lazy must succeed for int file")
-}
-
-/// Load the string-traj fixture via `ObsDataset::from_lazy`.
-fn load_str() -> ObsDataset {
-    let args = ScanArgsParquet {
-        rechunk: true,
-        ..Default::default()
-    };
-    let lf = LazyFrame::scan_parquet(PATH_STR.into(), args).expect("scan_parquet must succeed");
-    ObsDataset::from_lazy(lf, None, None, Some(false)).expect("from_lazy must succeed for str file")
-}
+use photom::{NightId, TrajId};
 
 // ── 1. Conversion correctness ─────────────────────────────────────────────────
 
@@ -129,6 +68,7 @@ fn str_file_row_count() {
 /// the correct row count.
 #[test]
 fn int_file_from_polars_eager() {
+    use photom::io::polars::FromPolarsArgs;
     use polars::prelude::*;
     let args = ScanArgsParquet {
         rechunk: true,
@@ -138,8 +78,14 @@ fn int_file_from_polars_eager() {
         .expect("scan must succeed")
         .collect()
         .expect("collect must succeed");
-    let ds =
-        ObsDataset::from_polars(&df, None, None, Some(false)).expect("from_polars must succeed");
+    let ds = photom::observation_dataset::ObsDataset::from_polars(
+        &df,
+        FromPolarsArgs {
+            do_rechunk: Some(false),
+            ..Default::default()
+        },
+    )
+    .expect("from_polars must succeed");
     assert_eq!(ds.observation_count(), TOTAL_ROWS);
 }
 
@@ -681,9 +627,6 @@ fn push_new_trajectory_int_file() {
 }
 
 // ── 8. Observer integrity (geodetic — int fixture) ────────────────────────────
-
-/// Tolerance for floating-point comparisons of observer parallax constants.
-const OBSERVER_TOLERANCE: f64 = 1e-9;
 
 /// Every observation in the int fixture must resolve to a non-None observer
 /// (all rows carry complete geodetic columns).

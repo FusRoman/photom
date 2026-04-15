@@ -31,23 +31,24 @@
 //! | [`ObsDatasetError`] | enum | Errors arising from dataset construction |
 
 pub(crate) mod index;
+pub mod iter;
 pub mod observation;
 
 #[cfg(feature = "parallel")]
 pub mod parallel;
+
+#[cfg(feature = "polars")]
+pub mod polars;
+#[cfg(feature = "polars")]
+use crate::io::polars::error::PolarsError;
 
 use std::num::NonZeroUsize;
 
 use lru::LruCache;
 use thiserror::Error;
 
-#[cfg(feature = "polars")]
-use crate::io::polars::{error::PolarsError, load_observation_from_polars};
-#[cfg(feature = "polars")]
-use polars::{frame::DataFrame, lazy::frame::LazyFrame};
-
 use crate::{
-    NightId, TrajId,
+    TrajId,
     observation_dataset::{
         index::{NightIndexMap, ObsDatasetIndex, ObsIndex, ObservationIndexMap, TrajIndexMap},
         observation::Observation,
@@ -121,77 +122,6 @@ pub struct ObsDataset {
 }
 
 impl ObsDataset {
-    /// Construct an [`ObsDataset`] from a Polars [`DataFrame`].
-    ///
-    /// Validates the frame against the expected schema, extracts all
-    /// observation columns, and assembles the dataset.  See
-    /// [`crate::io::polars`] for the full column specification and
-    /// observer-resolution rules.
-    ///
-    /// # Arguments
-    ///
-    /// - `df` — the source Polars [`DataFrame`] containing the observation data.
-    /// - `error_model` — the [`ObsErrorModel`] used to assign astrometric accuracies to
-    ///   MPC-coded observers during MPC table initialisation.
-    /// - `lru_cache_size` — optional capacity for the LRU cache used to speed up repeated observation lookups;
-    ///   if `None`, the cache size is set to 1 000.
-    /// - `do_rechunk` — whether to consolidate multi-chunk columns into a single contiguous
-    ///   chunk before ingestion.  `None` and `Some(true)` both enable the automatic rechunk
-    ///   (default behaviour).  Pass `Some(false)` only when every column in `df` is already
-    ///   stored in a single Arrow chunk (e.g. after reading with
-    ///   `ScanArgsParquet { rechunk: true, .. }` or after an explicit
-    ///   `DataFrame::rechunk_mut`).  Passing `Some(false)` on a fragmented frame will
-    ///   cause ingestion to fail with a [`PolarsError::Polars`] error.
-    ///
-    /// # Errors
-    ///
-    /// Returns a [`PolarsError`] if the frame fails schema validation, if a
-    /// Polars-internal operation fails, or if any observer column violates
-    /// the resolution rules (e.g. a partially-null geodetic triplet).
-    #[cfg(feature = "polars")]
-    pub fn from_polars(
-        df: &DataFrame,
-        error_model: Option<ObsErrorModel>,
-        lru_cache_size: Option<usize>,
-        do_rechunk: Option<bool>,
-    ) -> Result<Self, PolarsError> {
-        load_observation_from_polars(df, error_model, lru_cache_size, do_rechunk)
-    }
-
-    /// Construct an [`ObsDataset`] from a Polars [`LazyFrame`].
-    ///
-    /// The lazy computation plan is executed (via [`LazyFrame::collect`]) before
-    /// ingestion begins.  Once collected, the same validation and assembly
-    /// pipeline as [`ObsDataset::from_polars`] is applied.
-    ///
-    /// # Arguments
-    ///
-    /// - `lf` — the source Polars [`LazyFrame`].
-    /// - `error_model` — the [`ObsErrorModel`] used to assign astrometric
-    ///   accuracies to MPC-coded observers during MPC table initialisation.
-    /// - `lru_cache_size` — optional LRU cache capacity; `None` defaults to 1 000.
-    /// - `do_rechunk` — whether to consolidate multi-chunk columns into a single contiguous
-    ///   chunk after the lazy plan is collected.  `None` and `Some(true)` both enable the
-    ///   automatic rechunk (default behaviour).  Pass `Some(false)` only when the collected
-    ///   frame is already contiguous — for example when the `LazyFrame` was created with
-    ///   `ScanArgsParquet { rechunk: true, .. }`, which guarantees a single chunk per column
-    ///   after `collect`.  Passing `Some(false)` on a fragmented frame will cause ingestion
-    ///   to fail with a [`PolarsError::Polars`] error.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`PolarsError::Polars`] if the lazy plan fails to execute, plus
-    /// all errors documented on [`ObsDataset::from_polars`].
-    #[cfg(feature = "polars")]
-    pub fn from_lazy(
-        lf: LazyFrame,
-        error_model: Option<ObsErrorModel>,
-        lru_cache_size: Option<usize>,
-        do_rechunk: Option<bool>,
-    ) -> Result<Self, PolarsError> {
-        load_observation_from_polars(lf, error_model, lru_cache_size, do_rechunk)
-    }
-
     /// Look up a single observation by its [`ObsId`].
     ///
     /// Returns a shared reference to the matching [`Observation`], or `None`
@@ -264,174 +194,14 @@ impl ObsDataset {
         self.observations.len()
     }
 
-    /// Return an iterator over all observations in insertion order.
+    /// Return a shared reference to the internal composite index.
     ///
-    /// The iterator yields shared references and does not clone any data.
-    /// The order matches the order of the source `DataFrame` rows.
-    ///
-    /// # Returns
-    ///
-    /// An iterator yielding `&Observation` for each observation in insertion order.
-    pub fn iter_observations(&self) -> impl Iterator<Item = &Observation> {
-        self.observations.iter()
-    }
-
-    /// Return an iterator over all observations belonging to a given night, in insertion order.
-    /// Returns `None` if the dataset does not have an index by night or if the given night_id is not found.
-    /// The order of the yielded observations matches the order of the source `DataFrame` rows.
-    ///
-    /// # Arguments
-    ///
-    /// - `night_id` — the identifier of the night for which to return observations.
-    ///
-    /// # Returns
-    ///
-    /// `Some(iterator)` if the dataset has an index by night and the given `night_id` is found,
-    ///    where `iterator` yields shared references to the observations belonging to that night in insertion order;
-    ///    `None` otherwise.
-    pub fn iter_night_observations(
-        &self,
-        night_id: &NightId,
-    ) -> Option<impl Iterator<Item = &Observation>> {
-        self.index
-            .iter_night_obs_index(night_id)
-            .map(|indices| indices.map(|idx| &self.observations[idx]))
-    }
-
-    /// Return an iterator over `(NightId, &Observation)` pairs for every observation in the night index.
-    ///
-    /// Each pair associates a night identifier with a shared reference to one of the
-    /// observations recorded on that night.  Observations from the same night appear
-    /// consecutively, but the order between different nights is unspecified.
-    ///
-    /// # Returns
-    ///
-    /// `Some(iterator)` if the dataset was built with a night index; `None` otherwise.
-    pub fn iter_full_night(&self) -> Option<impl Iterator<Item = (NightId, &Observation)>> {
-        self.index
-            .iter_full_night()
-            .map(|night_iter| night_iter.map(|(night_id, idx)| (night_id, &self.observations[idx])))
-    }
-
-    /// Collect all observations belonging to a given night into a `Vec`.
-    ///
-    /// This is a convenience wrapper around [`ObsDataset::iter_night_observations`] that
-    /// eagerly collects the iterator results.
-    ///
-    /// # Arguments
-    ///
-    /// - `night_id` — the identifier of the night to materialise.
-    ///
-    /// # Returns
-    ///
-    /// `Some(Vec<&Observation>)` in insertion order if the night index exists and the
-    /// given `night_id` is present; `None` otherwise.
-    pub fn materialize_night(&self, night_id: &NightId) -> Option<Vec<&Observation>> {
-        self.iter_night_observations(night_id)
-            .map(|iter| iter.collect())
-    }
-
-    /// Return an iterator over all `NightId` keys present in the night index.
-    ///
-    /// # Returns
-    ///
-    /// `Some(iterator)` if the dataset was built with a night index; `None` otherwise.
-    /// The iteration order is unspecified.
-    pub fn iter_night_id(&self) -> Option<impl Iterator<Item = &NightId>> {
-        self.index.iter_night_id()
-    }
-
-    /// Return the number of observations recorded on a given night.
-    ///
-    /// # Arguments
-    ///
-    /// - `night_id` — the night whose observation count is requested.
-    ///
-    /// # Returns
-    ///
-    /// `Some(count)` if the night index exists and the given `night_id` is present;
-    /// `None` otherwise.
-    pub fn len_night(&self, night_id: &NightId) -> Option<usize> {
-        self.index.len_night(night_id)
-    }
-
-    /// Return an iterator over all observations belonging to a given trajectory, in insertion order.
-    /// Returns `None` if the dataset does not have an index by trajectory or if the given traj_id is not found.
-    /// The order of the yielded observations matches the order of the source `DataFrame` rows.
-    ///
-    /// # Arguments
-    ///
-    /// - `traj_id` — the identifier of the trajectory for which to return observations.
-    ///
-    /// # Returns
-    ///
-    /// `Some(iterator)` if the dataset has an index by trajectory and the given `traj_id` is found,
-    ///   where `iterator` yields shared references to the observations belonging to that trajectory in insertion order;
-    ///  `None` otherwise.
-    pub fn iter_trajectory_observations(
-        &self,
-        traj_id: &TrajId,
-    ) -> Option<impl Iterator<Item = &Observation>> {
-        self.index
-            .iter_traj_obs_index(traj_id)
-            .map(|indices| indices.map(|idx| &self.observations[idx]))
-    }
-
-    /// Return an iterator over `(TrajId, &Observation)` pairs for every observation in the trajectory index.
-    ///
-    /// Each pair associates a trajectory identifier with a shared reference to one of the
-    /// observations belonging to that trajectory.  Observations from the same trajectory
-    /// appear consecutively, but the order between different trajectories is unspecified.
-    ///
-    /// # Returns
-    ///
-    /// `Some(iterator)` if the dataset was built with a trajectory index; `None` otherwise.
-    pub fn iter_full_trajectory(&self) -> Option<impl Iterator<Item = (TrajId, &Observation)>> {
-        self.index.iter_full_trajectory().map(|traj_iter| {
-            traj_iter.map(|(traj_id, idx)| (traj_id.clone(), &self.observations[idx]))
-        })
-    }
-
-    /// Collect all observations belonging to a given trajectory into a `Vec`.
-    ///
-    /// This is a convenience wrapper around [`ObsDataset::iter_trajectory_observations`]
-    /// that eagerly collects the iterator results.
-    ///
-    /// # Arguments
-    ///
-    /// - `traj_id` — the identifier of the trajectory to materialise.
-    ///
-    /// # Returns
-    ///
-    /// `Some(Vec<&Observation>)` in insertion order if the trajectory index exists and the
-    /// given `traj_id` is present; `None` otherwise.
-    pub fn materialize_trajectory(&self, traj_id: &TrajId) -> Option<Vec<&Observation>> {
-        self.iter_trajectory_observations(traj_id)
-            .map(|iter| iter.collect())
-    }
-
-    /// Return an iterator over all `TrajId` keys present in the trajectory index.
-    ///
-    /// # Returns
-    ///
-    /// `Some(iterator)` if the dataset was built with a trajectory index; `None` otherwise.
-    /// The iteration order is unspecified.
-    pub fn iter_traj_id(&self) -> Option<impl Iterator<Item = &TrajId>> {
-        self.index.iter_traj_id()
-    }
-
-    /// Return the number of observations assigned to a given trajectory.
-    ///
-    /// # Arguments
-    ///
-    /// - `traj_id` — the trajectory whose observation count is requested.
-    ///
-    /// # Returns
-    ///
-    /// `Some(count)` if the trajectory index exists and the given `traj_id` is present;
-    /// `None` otherwise.
-    pub fn len_trajectory(&self, traj_id: &TrajId) -> Option<usize> {
-        self.index.len_trajectory(traj_id)
+    /// This accessor is `pub(crate)` so that unit tests inside the crate can
+    /// inspect the `ObsDatasetIndex` fields (e.g. `obs_index_by_night` and
+    /// `obs_index_by_trajectory`) without exposing them as part of the public API.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn index_ref(&self) -> &ObsDatasetIndex {
+        &self.index
     }
 
     /// Register a new trajectory in the trajectory index.
@@ -455,17 +225,19 @@ impl ObsDataset {
         );
     }
 
-    /// Register a new trajectory in the trajectory index.
+    /// Register a new trajectory in the trajectory index using raw vector positions.
     ///
-    /// Associates `traj_id` with the positions of `obs_indices` in the internal
-    /// observations vector.  If the dataset was not built with a trajectory index
-    /// (i.e. the source data had no `traj_id` column), this method is a no-op.
+    /// Associates `traj_id` with the positions given directly as a slice of
+    /// vector positions, rather than deriving them from [`Observation`]
+    /// structs as [`ObsDataset::push_new_trajectory`] does.  If the dataset
+    /// was not built with a trajectory index (i.e. the source data had no
+    /// `traj_id` column), this method is a no-op.
     ///
     /// # Arguments
     ///
-    /// - `traj_id` — the identifier of the trajectory to register.
-    /// - `obs_indices` — slice of [`Observation`] values whose internal vector
-    ///   positions will be recorded under `traj_id`.
+    /// - `traj_id`     — the identifier of the trajectory to register.
+    /// - `obs_indices` — slice of zero-based vector positions in the internal
+    ///   observations vector that belong to this trajectory.
     pub fn push_new_trajectory_by_index(&mut self, traj_id: TrajId, obs_indices: &[ObsIndex]) {
         self.index.push_trajectory(traj_id, obs_indices);
     }

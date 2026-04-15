@@ -1,3 +1,4 @@
+#![cfg(feature = "parallel")]
 //! Parallel iterators over [`ObsDataset`] and its internal index, powered by
 //! [rayon](https://docs.rs/rayon).
 //!
@@ -41,15 +42,15 @@
 //!
 //! [`ObsDataset`]: crate::observation_dataset::ObsDataset
 
-#![cfg(feature = "parallel")]
-
-use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
+use itertools::Either;
+use rayon::iter::{IntoParallelIterator, IntoParallelRefIterator, ParallelIterator};
 
 use crate::{
     NightId, TrajId,
     observation_dataset::{
         ObsDataset,
-        index::{ObsDatasetIndex, ObsIndex},
+        index::{ObsDatasetIndex, ObsIndex, ObsMapIndex},
+        iter::MemLayoutObservations,
         observation::Observation,
     },
 };
@@ -71,8 +72,10 @@ impl ObsDatasetIndex {
         &self,
         night_id: &NightId,
     ) -> Option<impl ParallelIterator<Item = ObsIndex> + '_> {
-        self.get_by_night(night_id)
-            .map(|indices| indices.par_iter().copied())
+        self.get_by_night(night_id).map(|indices| match indices {
+            ObsMapIndex::Contiguous { start, end } => Either::Left((*start..*end).into_par_iter()),
+            ObsMapIndex::Split(vec) => Either::Right(vec.par_iter().copied()),
+        })
     }
 
     /// Return a parallel iterator over `(NightId, ObsIndex)` pairs for every observation
@@ -91,9 +94,18 @@ impl ObsDatasetIndex {
         &self,
     ) -> Option<impl ParallelIterator<Item = (NightId, ObsIndex)> + '_> {
         self.obs_index_by_night.as_ref().map(|night_map| {
-            night_map.par_iter().flat_map(|(night_id, indices)| {
-                indices.par_iter().map(move |&idx| (*night_id, idx))
-            })
+            night_map
+                .par_iter()
+                .flat_map(|(night_id, indices)| match indices {
+                    ObsMapIndex::Contiguous { start, end } => Either::Left(
+                        (*start..*end)
+                            .into_par_iter()
+                            .map(move |idx| (*night_id, idx)),
+                    ),
+                    ObsMapIndex::Split(vec) => {
+                        Either::Right(vec.par_iter().map(move |&idx| (*night_id, idx)))
+                    }
+                })
         })
     }
 
@@ -115,7 +127,12 @@ impl ObsDatasetIndex {
         traj_id: &TrajId,
     ) -> Option<impl ParallelIterator<Item = ObsIndex> + '_> {
         self.get_by_trajectory(traj_id)
-            .map(|indices| indices.par_iter().copied())
+            .map(|indices| match indices {
+                ObsMapIndex::Contiguous { start, end } => {
+                    Either::Left((*start..*end).into_par_iter())
+                }
+                ObsMapIndex::Split(vec) => Either::Right(vec.par_iter().copied()),
+            })
     }
 
     /// Return a parallel iterator over `(TrajId, ObsIndex)` pairs for every observation in
@@ -134,9 +151,18 @@ impl ObsDatasetIndex {
         &self,
     ) -> Option<impl ParallelIterator<Item = (TrajId, ObsIndex)> + '_> {
         self.obs_index_by_trajectory.as_ref().map(|traj_map| {
-            traj_map.par_iter().flat_map(|(traj_id, indices)| {
-                indices.par_iter().map(move |&idx| (traj_id.clone(), idx))
-            })
+            traj_map
+                .par_iter()
+                .flat_map(|(traj_id, indices)| match indices {
+                    ObsMapIndex::Contiguous { start, end } => Either::Left(
+                        (*start..*end)
+                            .into_par_iter()
+                            .map(move |idx| (traj_id.clone(), idx)),
+                    ),
+                    ObsMapIndex::Split(vec) => {
+                        Either::Right(vec.par_iter().map(move |&idx| (traj_id.clone(), idx)))
+                    }
+                })
         })
     }
 }
@@ -223,9 +249,19 @@ impl ObsDataset {
     ///
     /// `Some(Vec<&Observation>)` if the night index exists and the given `night_id` is
     /// present; `None` otherwise.  The order of elements in the `Vec` is unspecified.
-    pub fn materialize_night_par(&self, night_id: &NightId) -> Option<Vec<&Observation>> {
-        self.par_iter_night_observations(night_id)
-            .map(|iter| iter.collect())
+    pub fn materialize_night_par(&self, night_id: &NightId) -> Option<MemLayoutObservations<'_>> {
+        let night_index = self.index.obs_index_by_night.as_ref()?.get(night_id)?;
+        match night_index {
+            ObsMapIndex::Split(indices) => Some(MemLayoutObservations::Split(
+                indices
+                    .par_iter()
+                    .map(|idx| &self.observations[*idx])
+                    .collect(),
+            )),
+            ObsMapIndex::Contiguous { start, end } => Some(MemLayoutObservations::Contiguous(
+                &self.observations[*start..*end],
+            )),
+        }
     }
 
     /// Return a parallel iterator over all observations belonging to a given trajectory, in
@@ -292,9 +328,22 @@ impl ObsDataset {
     ///
     /// `Some(Vec<&Observation>)` if the trajectory index exists and the given `traj_id` is
     /// present; `None` otherwise.  The order of elements in the `Vec` is unspecified.
-    pub fn materialize_trajectory_par(&self, traj_id: &TrajId) -> Option<Vec<&Observation>> {
-        self.par_iter_trajectory_observations(traj_id)
-            .map(|iter| iter.collect())
+    pub fn materialize_trajectory_par(
+        &self,
+        traj_id: &TrajId,
+    ) -> Option<MemLayoutObservations<'_>> {
+        let traj_index = self.index.obs_index_by_trajectory.as_ref()?.get(traj_id)?;
+        match traj_index {
+            ObsMapIndex::Split(indices) => Some(MemLayoutObservations::Split(
+                indices
+                    .par_iter()
+                    .map(|idx| &self.observations[*idx])
+                    .collect(),
+            )),
+            ObsMapIndex::Contiguous { start, end } => Some(MemLayoutObservations::Contiguous(
+                &self.observations[*start..*end],
+            )),
+        }
     }
 }
 
@@ -323,7 +372,7 @@ mod obsdataset_parallel_tests {
     // Test data helpers
     // -----------------------------------------------------------------------
 
-    /// Build a minimal `Observation` with a given id and its position in the Vec.
+    /// Build a minimal [`Observation`] with a given id and its position in the Vec.
     ///
     /// No observer is attached; all coordinate/photometry values are fixed constants
     /// so tests remain purely structural and do not depend on astrometric values.
@@ -359,12 +408,12 @@ mod obsdataset_parallel_tests {
         ];
 
         let mut night_map: NightIndexMap = AHashMap::new();
-        night_map.insert(NightId(1), vec![0, 1]);
-        night_map.insert(NightId(2), vec![2, 3]);
+        night_map.insert(NightId(1), ObsMapIndex::Split(vec![0, 1]));
+        night_map.insert(NightId(2), ObsMapIndex::Split(vec![2, 3]));
 
         let mut traj_map: TrajIndexMap = AHashMap::new();
-        traj_map.insert(TrajId::Int(10), vec![0, 2]);
-        traj_map.insert(TrajId::Int(20), vec![1, 3]);
+        traj_map.insert(TrajId::Int(10), ObsMapIndex::Split(vec![0, 2]));
+        traj_map.insert(TrajId::Int(20), ObsMapIndex::Split(vec![1, 3]));
 
         ObsDataset::new(
             obs,
@@ -393,6 +442,12 @@ mod obsdataset_parallel_tests {
     // Helper: extract the inner u32 from TrajId::Int for sorting.
     // Panics on TrajId::Str — only used in tests that exclusively use Int ids.
     // -----------------------------------------------------------------------
+    /// Extract the inner `u32` from a [`TrajId::Int`] for use as a sort key.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `id` is `TrajId::Str` — this helper is only used in tests
+    /// that exclusively build `Int` trajectory identifiers.
     fn traj_id_key(id: &TrajId) -> u32 {
         match id {
             TrajId::Int(n) => *n,

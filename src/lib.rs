@@ -99,6 +99,56 @@
 //! A partially-null geodetic triplet or a complete triplet without accuracy values causes
 //! the ingestion to return an error.
 //!
+//! ## Ingestion arguments (`FromPolarsArgs`)
+//!
+//! *Requires the `polars` feature.*
+//!
+//! Both [`observation_dataset::ObsDataset::from_polars`] and
+//! [`observation_dataset::ObsDataset::from_lazy`] accept a
+//! `FromPolarsArgs` value that controls how the ingestion pipeline behaves.
+//! Use `FromPolarsArgs::default()` to get sensible out-of-the-box settings,
+//! or construct the struct explicitly to override individual fields.
+//!
+//! | Field | Type | Default | Description |
+//! |-------|------|---------|-------------|
+//! | `error_model` | `Option<ObsErrorModel>` | `None` | Astrometric error model used to assign accuracies to MPC-coded observatories; `None` leaves MPC observer accuracies unset until [`ObsDataset::set_error_model`](observation_dataset::ObsDataset::set_error_model) is called |
+//! | `lru_cache_size` | `Option<usize>` | `Some(10_000)` | Capacity of the per-dataset LRU cache for observation look-up by `ObsId`; `None` falls back to an internal default |
+//! | `do_rechunk` | `Option<bool>` | `Some(false)` | When `true`, forces all multi-chunk columns to be merged into a single contiguous Arrow chunk before ingestion; set to `Some(false)` when the caller has already guaranteed single-chunk layout (e.g. after reading a Parquet file with `rechunk: true`) |
+//! | `contiguous_choice` | `Option<ContiguousChoice>` | `Some(ContiguousNight)` | Which grouping column (if any) to sort the frame by before iteration; sorting allows the corresponding index to use compact contiguous ranges instead of per-row index vectors (see below) |
+//!
+//! ### Contiguous index optimisation (`ContiguousChoice`)
+//!
+//! By default the ingestion pipeline sorts the input frame by `night_id`
+//! (`ContiguousChoice::ContiguousNight`) so that all observations belonging to
+//! the same night occupy a single contiguous block in the output `observations`
+//! vector.  This lets the night index store a compact `(start, end)` range for
+//! each night instead of a `Vec` of scattered positions, which saves memory and
+//! improves cache locality during sequential and parallel night iteration.
+//!
+//! Setting `contiguous_choice` to `ContiguousChoice::ContiguousTraj` applies the
+//! same optimisation to trajectories instead.  Setting it to `None` disables the
+//! sort entirely; both indices will use the `Vec`-based split representation.
+//!
+//! Only one grouping column can be made contiguous at a time.  The other
+//! column (if present in the frame) is always built as a split index.
+//!
+//! ```rust,ignore
+//! use photom::io::polars::{ContiguousChoice, FromPolarsArgs};
+//! use photom::observer::error_model::ObsErrorModel;
+//! use photom::observation_dataset::ObsDataset;
+//!
+//! // Sort by traj_id so trajectory iteration is cache-friendly.
+//! let dataset = ObsDataset::from_polars(
+//!     &df,
+//!     FromPolarsArgs {
+//!         error_model: Some(ObsErrorModel::FCCT14),
+//!         lru_cache_size: Some(5_000),
+//!         contiguous_choice: Some(ContiguousChoice::ContiguousTraj),
+//!         ..Default::default()
+//!     },
+//! )?;
+//! ```
+//!
 //! # Usage Examples
 //!
 //! ## Build a minimal `DataFrame` and load observations

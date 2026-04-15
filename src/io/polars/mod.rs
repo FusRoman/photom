@@ -109,7 +109,7 @@ use itertools::{Either, izip};
 use polars::{
     frame::DataFrame,
     lazy::frame::LazyFrame,
-    prelude::{ChunkedArray, Column, DataType, StringType, UInt32Type},
+    prelude::{ChunkedArray, Column, DataType, SortMultipleOptions, StringType, UInt32Type},
 };
 
 use crate::{
@@ -122,7 +122,7 @@ use crate::{
     },
     observation_dataset::{
         ObsDataset,
-        index::{NightIndexMap, TrajIndexMap},
+        index::{NightIndexMap, ObsMapIndex, TrajIndexMap},
         observation::Observation,
     },
     observer::{Observer, dataset::ObserverId, error_model::ObsErrorModel},
@@ -136,6 +136,11 @@ pub(crate) mod observer_field;
 // ── sealed trait for DataFrame / LazyFrame ───────────────────────────────────
 
 mod sealed {
+    /// Marker trait that prevents external implementations of [`super::IntoFrame`].
+    ///
+    /// This trait is intentionally empty and has no public API.  Its only
+    /// purpose is to bound [`super::IntoFrame`] so that the trait cannot be
+    /// implemented by types outside this crate (the sealed-trait pattern).
     pub trait Sealed {}
 }
 
@@ -255,6 +260,14 @@ pub(crate) fn u64_slice(col: &Column) -> Result<&[u64], PolarsError> {
 /// The two branches are unified through [`Either`] so that the concrete type
 /// is monomorphised at compile time with no virtual dispatch.
 ///
+/// # Arguments
+///
+/// - `df`   — the source [`DataFrame`] to search for the column.
+/// - `name` — name of the `Float64` column to look up.
+/// - `n`    — number of rows in `df`; used as the repeat count when the
+///   column is absent so that the returned iterator has the same length as
+///   the other column iterators.
+///
 /// # Errors
 ///
 /// Returns [`PolarsError::Polars`] if the column is present but cannot be
@@ -281,6 +294,14 @@ fn iter_opt_f64<'df>(
 /// The two branches are unified through [`Either`] so that the concrete type
 /// is monomorphised at compile time with no virtual dispatch.
 ///
+/// # Arguments
+///
+/// - `df`   — the source [`DataFrame`] to search for the column.
+/// - `name` — name of the `String` column to look up.
+/// - `n`    — number of rows in `df`; used as the repeat count when the
+///   column is absent so that the returned iterator has the same length as
+///   the other column iterators.
+///
 /// # Errors
 ///
 /// Returns [`PolarsError::Polars`] if the column is present but cannot be
@@ -297,6 +318,247 @@ fn iter_opt_str<'df>(
 }
 
 // ── observation ingestion ────────────────────────────────────────────────────────
+
+/// Selects which grouping column drives the contiguous-sort optimisation.
+///
+/// When this option is set and the corresponding column is present in the
+/// input frame, `load_observation_from_polars` sorts the frame by that
+/// column before ingestion so that all rows of the same group occupy a
+/// contiguous block in the output `observations` vector.  This allows the
+/// corresponding index entries to be stored as compact contiguous ranges
+/// rather than `Vec`-based split entries.
+///
+/// Only one column can be made contiguous at a time.  The other grouping
+/// column (if present) retains its split representation.
+pub enum ContiguousChoice {
+    /// Sort by the `night_id` column so that each night's observations form a
+    /// contiguous block.
+    ContiguousNight,
+    /// Sort by the `traj_id` column so that each trajectory's observations
+    /// form a contiguous block.
+    ContiguousTraj,
+}
+
+/// Configuration arguments for [`ObsDataset::from_polars`] and
+/// [`ObsDataset::from_lazy`].
+///
+/// Pass a value of this struct to control how the ingestion pipeline behaves.
+/// Use [`Default::default`] to obtain sensible defaults (10 000-entry LRU
+/// cache, automatic rechunk, contiguous sort by `night_id`).
+///
+/// # Fields
+///
+/// - `error_model` — the [`ObsErrorModel`] used to assign astrometric
+///   accuracies to MPC-coded observatories.  `None` disables MPC accuracy
+///   look-up; each MPC-coded observer will have `None` for its accuracy
+///   fields until a model is set later via
+///   [`ObsDataset::set_error_model`](crate::observation_dataset::ObsDataset::set_error_model).
+/// - `lru_cache_size` — capacity of the LRU cache used for observation
+///   look-up by [`ObsId`](crate::observation_dataset::ObsId).  `None`
+///   defaults to 1 000.
+/// - `do_rechunk` — when `true` (or `None`), any multi-chunk column is
+///   merged into a single contiguous Arrow chunk before ingestion.  Pass
+///   `Some(false)` only when the caller has already guaranteed single-chunk
+///   columns (e.g. after reading with `rechunk: true` in Parquet scan args).
+/// - `contiguous_choice` — see [`ContiguousChoice`].
+pub struct FromPolarsArgs {
+    /// Astrometric error model for MPC observatory accuracy look-up.
+    pub error_model: Option<ObsErrorModel>,
+    /// LRU cache capacity for observation look-up by identifier.
+    pub lru_cache_size: Option<usize>,
+    /// Whether to merge multi-chunk columns into a single contiguous chunk.
+    pub do_rechunk: Option<bool>,
+    /// Which grouping column (if any) to sort by for the contiguous-block optimisation.
+    pub contiguous_choice: Option<ContiguousChoice>,
+}
+
+impl Default for FromPolarsArgs {
+    /// Return a `FromPolarsArgs` with sensible defaults:
+    ///
+    /// - `error_model`: `None` — no MPC accuracy model; set explicitly after
+    ///   construction if MPC-coded observers are present.
+    /// - `lru_cache_size`: `Some(10_000)`.
+    /// - `do_rechunk`: `Some(false)` — the ingestion pipeline will rechunk
+    ///   automatically when it detects multi-chunk columns, so explicit
+    ///   pre-rechunking is not required.
+    /// - `contiguous_choice`: `Some(ContiguousChoice::ContiguousNight)` —
+    ///   sort by `night_id` for contiguous night blocks.
+    fn default() -> Self {
+        Self {
+            error_model: None,
+            lru_cache_size: 10000.into(),
+            do_rechunk: false.into(),
+            contiguous_choice: ContiguousChoice::ContiguousNight.into(),
+        }
+    }
+}
+
+// ── helper: DataFrame preparation ────────────────────────────────────────────
+
+/// Sort `df` by `col_name` (nulls last, stable) and rechunk the result into a
+/// single contiguous Arrow chunk.
+///
+/// Returns the sorted+rechunked [`DataFrame`] as an owned value.  The caller
+/// is responsible for keeping it alive as long as borrows into it are needed.
+///
+/// # Errors
+///
+/// Returns [`PolarsError::Polars`] if the Polars sort operation fails.
+fn sort_and_rechunk(df: &DataFrame, col_name: &str) -> Result<DataFrame, PolarsError> {
+    let mut sorted = df.sort(
+        [col_name],
+        SortMultipleOptions::default()
+            .with_nulls_last(true)
+            .with_maintain_order(true),
+    )?;
+    // Sorting produces a multi-chunk DataFrame; rechunk to restore the
+    // contiguous memory layout required by the zero-copy slice helpers.
+    sorted.rechunk_mut();
+    Ok(sorted)
+}
+
+// ── helper: observer interning ────────────────────────────────────────────────
+
+/// Resolve the observer for a single row and intern any geodetic [`Observer`]
+/// into `custom_observers` + `observer_lookup`.
+///
+/// Returns the [`ObserverId`] to store on the [`Observation`], or `None` when
+/// the row has no observer information.
+///
+/// # Errors
+///
+/// Propagates any error returned by [`resolve_observer`].
+#[inline]
+fn intern_observer(
+    raw: &RawObsRow<'_>,
+    row_idx: usize,
+    custom_observers: &mut Vec<Observer>,
+    observer_lookup: &mut AHashMap<Observer, usize>,
+) -> Result<Option<ObserverId>, PolarsError> {
+    match resolve_observer(raw, row_idx)? {
+        ResolvedObserver::Geodetic(observer) => {
+            let idx = match observer_lookup.get(&observer) {
+                Some(&i) => i,
+                None => {
+                    let i = custom_observers.len();
+                    custom_observers.push(observer.clone());
+                    observer_lookup.insert(observer, i);
+                    i
+                }
+            };
+            Ok(Some(ObserverId::IntId(idx)))
+        }
+        ResolvedObserver::Mpc(id) => Ok(Some(id)),
+        ResolvedObserver::None => Ok(None),
+    }
+}
+
+// ── helper: contiguous group tracker ─────────────────────────────────────────
+
+/// Tracks one "contiguous group" column during the single-pass row loop.
+///
+/// In contiguous mode the DataFrame is pre-sorted by the group key so that all
+/// rows belonging to the same key form a contiguous block.  This struct detects
+/// key transitions and finalises each block's index entry.
+///
+/// `K` is the key type (e.g. [`NightId`] or [`TrajId`]).
+/// `I` is the corresponding index entry type (e.g. a
+/// [`ObsMapIndex::Contiguous`](crate::observation_dataset::index::ObsMapIndex::Contiguous)
+/// value).
+struct ContiguousGroupTracker<K, I> {
+    /// The key and start row-index of the currently open group, or `None` when
+    /// no group is open yet.
+    current: Option<(K, usize)>,
+    /// Function that constructs a finished index entry from a `(start, end)`
+    /// half-open range of row positions.
+    make_entry: fn(usize, usize) -> I,
+}
+
+impl<K: Clone + Eq, I> ContiguousGroupTracker<K, I> {
+    /// Create a new tracker.
+    ///
+    /// # Arguments
+    ///
+    /// - `make_entry` — a function pointer that constructs a finished index
+    ///   entry from a `(start, end)` half-open range of row positions.
+    fn new(make_entry: fn(usize, usize) -> I) -> Self {
+        Self {
+            current: None,
+            make_entry,
+        }
+    }
+
+    /// Process one row during the single-pass ingestion loop.
+    ///
+    /// When `key` is `Some` and matches the current open group, nothing is
+    /// emitted yet.  When the key changes, the previous group is finalised and
+    /// its completed entry is returned so the caller can insert it into the
+    /// appropriate map.  When `key` is `None`, the current open group (if any)
+    /// is closed immediately (nulls are sorted last, so no more non-null rows
+    /// will follow).
+    ///
+    /// # Arguments
+    ///
+    /// - `row_idx` — zero-based index of the current row in the ingestion loop.
+    /// - `key`     — the grouping key for this row, or `None` if the cell is null.
+    ///
+    /// # Returns
+    ///
+    /// `Some((key, entry))` when the previous group is finalised by a key
+    /// transition or by encountering a null; `None` when the current group
+    /// continues.
+    fn on_row(&mut self, row_idx: usize, key: Option<K>) -> Option<(K, I)> {
+        match key {
+            Some(k) => match &self.current {
+                Some((ck, _)) if *ck == k => {
+                    // Same group — keep accumulating.
+                    None
+                }
+                Some((prev_key, start)) => {
+                    // Key changed — finalise previous group.
+                    let entry = (self.make_entry)(*start, row_idx);
+                    let finished = (prev_key.clone(), entry);
+                    self.current = Some((k, row_idx));
+                    Some(finished)
+                }
+                None => {
+                    // First non-null key seen.
+                    self.current = Some((k, row_idx));
+                    None
+                }
+            },
+            None => {
+                // Null key: close any open group.
+                self.current.take().map(|(key, start)| {
+                    let entry = (self.make_entry)(start, row_idx);
+                    (key, entry)
+                })
+            }
+        }
+    }
+
+    /// Finalise the last open group at the end of iteration.
+    ///
+    /// After the row loop completes, the last group may still be open because
+    /// there was no subsequent key transition to close it.  This method
+    /// consumes `self` and returns the remaining group entry, if any.
+    ///
+    /// # Arguments
+    ///
+    /// - `n` — total number of rows; used as the exclusive end of the last
+    ///   group's range.
+    ///
+    /// # Returns
+    ///
+    /// `Some((key, entry))` if a group was still open; `None` if the tracker
+    /// had already closed all groups or was never opened.
+    fn finalize(mut self, n: usize) -> Option<(K, I)> {
+        self.current.take().map(|(key, start)| {
+            let entry = (self.make_entry)(start, n);
+            (key, entry)
+        })
+    }
+}
 
 /// Load observations from a Polars [`DataFrame`] or [`LazyFrame`] into an
 /// [`ObsDataset`].
@@ -332,9 +594,7 @@ fn iter_opt_str<'df>(
 /// documented on [`load_observation_from_frame`].
 pub(crate) fn load_observation_from_polars<T: IntoFrame>(
     frame: T,
-    error_model: Option<ObsErrorModel>,
-    lru_cache_size: Option<usize>,
-    do_rechunk: Option<bool>,
+    args: FromPolarsArgs,
 ) -> Result<ObsDataset, PolarsError> {
     let df = frame.collect_frame()?;
     // Consolidate multi-chunk columns into a single contiguous chunk so that
@@ -346,11 +606,11 @@ pub(crate) fn load_observation_from_polars<T: IntoFrame>(
         .columns()
         .iter()
         .any(|c: &Column| c.as_materialized_series().chunks().len() > 1)
-        && do_rechunk.unwrap_or(true)
+        && args.do_rechunk.unwrap_or(true)
     {
         df.rechunk_mut();
     }
-    load_observation_from_frame(&df, error_model, lru_cache_size)
+    load_observation_from_frame(&df, args)
 }
 
 /// Internal ingestion logic that operates on an already-materialised
@@ -359,6 +619,18 @@ pub(crate) fn load_observation_from_polars<T: IntoFrame>(
 /// Builds [`Observation`]s and, when the optional `night_id` / `traj_id`
 /// columns are present, fills the corresponding index maps in a single pass
 /// over the rows.
+///
+/// ## Contiguous mode
+///
+/// When `args.contiguous_choice` is set and the corresponding column is
+/// present in the frame, the DataFrame is **sorted by that column** before
+/// ingestion so that all observations for a given group occupy a contiguous
+/// block in the output `observations` vector.  The chosen group's index
+/// entries are stored as [`NightIndex::Contiguous`] / [`TrajIndex::Contiguous`]
+/// (a compact `{ start, end }` range); the *other* group (if present) is
+/// stored in the cheaper [`NightIndex::Split`] / [`TrajIndex::Split`] form.
+///
+/// Only one of `night_id` and `traj_id` can be contiguous at a time.
 ///
 /// # Optional index columns
 ///
@@ -405,14 +677,34 @@ pub(crate) fn load_observation_from_polars<T: IntoFrame>(
 ///   its type is neither `UInt32` nor `String`.
 fn load_observation_from_frame(
     df: &DataFrame,
-    error_model: Option<ObsErrorModel>,
-    lru_cache_size: Option<usize>,
+    args: FromPolarsArgs,
 ) -> Result<ObsDataset, PolarsError> {
-    // ── base columns (non-nullable, zero-copy slices) ─────────────────────────
+    // ── step 1: determine which column (if any) drives the contiguous sort ────
+    let has_night_col = df.column("night_id").is_ok();
+    let has_traj_col = df.column("traj_id").is_ok();
+
+    let contiguous_col: Option<&str> = match &args.contiguous_choice {
+        Some(ContiguousChoice::ContiguousNight) if has_night_col => Some("night_id"),
+        Some(ContiguousChoice::ContiguousTraj) if has_traj_col => Some("traj_id"),
+        _ => None,
+    };
+
+    // ── step 2: optionally sort + rechunk the frame ───────────────────────────
+    // We need an owned DataFrame for the sort; when no sort is needed we borrow
+    // the original frame directly to avoid any copy.
+    let sorted_df_storage: DataFrame;
+    let df: &DataFrame = if let Some(col_name) = contiguous_col {
+        sorted_df_storage = sort_and_rechunk(df, col_name)?;
+        &sorted_df_storage
+    } else {
+        df
+    };
+
+    // ── step 3: materialise base columns (non-nullable, zero-copy slices) ─────
     let base = BaseFields::materialize_fields(df)?;
     let n = base.ids.len();
 
-    // ── optional observer columns ─────────────────────────────────────────────
+    // ── step 4: build lazy iterators over the optional observer columns ────────
     let obs_lon = iter_opt_f64(df, "obs_lon", n)?;
     let obs_lat = iter_opt_f64(df, "obs_lat", n)?;
     let obs_alt = iter_opt_f64(df, "obs_alt", n)?;
@@ -420,18 +712,14 @@ fn load_observation_from_frame(
     let obs_dec_acc = iter_opt_f64(df, "obs_dec_acc", n)?;
     let mpc_codes = iter_opt_str(df, "mpc_code_obs", n)?;
 
-    // ── optional index columns ────────────────────────────────────────────────
+    // ── step 5: borrow optional index ChunkedArrays from the frame ───────────
     //
-    // Instead of pre-collecting night_id / traj_id into a Vec<Option<…>>
-    // (which allocates a full copy of each column), we borrow the
-    // ChunkedArray directly from the DataFrame and iterate over it in the
-    // single assembly pass below.  The ChunkedArray borrows are kept alive
-    // for the duration of the loop by storing them in local `Option` variables
-    // that outlive the iterator.
+    // We borrow the ChunkedArray directly from the DataFrame rather than
+    // pre-collecting into a Vec, so no extra allocation is needed.
 
-    // night_id: UInt32 → NightId(u32).  Column absent ⟹ iterator of None.
+    // night_id: UInt32 → NightId(u32).  Column absent ⟹ None.
     let night_ca: Option<&ChunkedArray<UInt32Type>> = match df.column("night_id") {
-        Err(_) => None, // column absent — night index will be None
+        Err(_) => None,
         Ok(col) => Some(
             col.as_materialized_series()
                 .u32()
@@ -439,9 +727,7 @@ fn load_observation_from_frame(
         ),
     };
 
-    // traj_id: UInt64 or String.  Column absent ⟹ iterator of None.
-    // We store the two possible typed borrows in separate Options; exactly one
-    // (or neither) will be Some.
+    // traj_id: UInt32 or String.  Column absent ⟹ both None.
     let traj_u32_ca: Option<&ChunkedArray<UInt32Type>>;
     let traj_str_ca: Option<&ChunkedArray<StringType>>;
     match df.column("traj_id") {
@@ -458,31 +744,22 @@ fn load_observation_from_frame(
                 traj_u32_ca = None;
                 traj_str_ca = Some(col.as_materialized_series().str()?);
             }
-            other => {
-                return Err(PolarsError::TrajIdColumnTypeError(other.to_string()));
-            }
+            other => return Err(PolarsError::TrajIdColumnTypeError(other.to_string())),
         },
     }
 
-    // Build the index map sentinel booleans before entering the loop.
     let has_night = night_ca.is_some();
     let has_traj = traj_u32_ca.is_some() || traj_str_ca.is_some();
 
-    // ── per-row assembly ───────────────────────────────────────────────────────
-    let mut custom_observers: Vec<Observer> = Vec::with_capacity(16);
-    let mut observer_lookup: AHashMap<Observer, usize> = AHashMap::with_capacity(16);
+    // ── step 6: build monomorphised iterators over the index columns ──────────
+    //
+    // Either branches keep the concrete type statically known — no virtual
+    // dispatch, zero overhead vs. hand-written branches.
 
-    // Index maps — only allocated when the corresponding column is present.
-    let mut night_map: Option<NightIndexMap> = has_night.then(NightIndexMap::new);
-    let mut traj_map: Option<TrajIndexMap> = has_traj.then(TrajIndexMap::new);
-
-    // Inline iterators over the index columns — no intermediate Vec allocation.
     let night_iter = night_ca
         .map(|ca| Either::Left(ca.iter().map(|opt| opt.map(NightId))))
         .unwrap_or_else(|| Either::Right(std::iter::repeat_n(None, n)));
 
-    // Unified traj iterator: yields Option<TrajId> regardless of the column type.
-    // We use nested Either to keep the type monomorphised with no virtual dispatch.
     let traj_iter = match (traj_u32_ca, traj_str_ca) {
         (Some(ca), _) => Either::Left(Either::Left(
             ca.iter().map(|opt: Option<u32>| opt.map(TrajId::Int)),
@@ -494,10 +771,24 @@ fn load_observation_from_frame(
         (None, None) => Either::Right(std::iter::repeat_n(None::<TrajId>, n)),
     };
 
-    // Pre-allocate the output vector to avoid repeated reallocation.
-    // (Axe 3) We know the exact final size up-front.
+    // ── step 7: allocate output structures ────────────────────────────────────
+    let mut custom_observers: Vec<Observer> = Vec::with_capacity(16);
+    let mut observer_lookup: AHashMap<Observer, usize> = AHashMap::with_capacity(16);
+
+    let mut night_map: Option<NightIndexMap> = has_night.then(NightIndexMap::new);
+    let mut traj_map: Option<TrajIndexMap> = has_traj.then(TrajIndexMap::new);
+
+    let night_is_contiguous = matches!(contiguous_col, Some("night_id"));
+    let traj_is_contiguous = matches!(contiguous_col, Some("traj_id"));
+
+    let mut night_tracker: ContiguousGroupTracker<NightId, ObsMapIndex> =
+        ContiguousGroupTracker::new(|start, end| ObsMapIndex::Contiguous { start, end });
+    let mut traj_tracker: ContiguousGroupTracker<TrajId, ObsMapIndex> =
+        ContiguousGroupTracker::new(|start, end| ObsMapIndex::Contiguous { start, end });
+
     let mut observations: Vec<Observation> = Vec::with_capacity(n);
 
+    // ── step 8: single-pass row assembly ─────────────────────────────────────
     for (
         row_idx,
         (&id, &ra, &ra_err, &dec, &dec_err, &mag, &mag_err, &mjd_tt, filter),
@@ -521,6 +812,7 @@ fn load_observation_from_frame(
         night_iter,
         traj_iter,
     ) {
+        // 8a. Resolve and intern observer.
         let raw = RawObsRow {
             obs_lon,
             obs_lat,
@@ -529,33 +821,36 @@ fn load_observation_from_frame(
             obs_dec_acc,
             mpc_code,
         };
+        let observer_id =
+            intern_observer(&raw, row_idx, &mut custom_observers, &mut observer_lookup)?;
 
-        // Resolve the observer for this row according to the documented precedence.
-        let observer_id = match resolve_observer(&raw, row_idx)? {
-            ResolvedObserver::Geodetic(observer) => {
-                let idx = match observer_lookup.get(&observer) {
-                    Some(&i) => i,
-                    None => {
-                        let i = custom_observers.len();
-                        custom_observers.push(observer.clone());
-                        observer_lookup.insert(observer, i);
-                        i
-                    }
-                };
-                Some(ObserverId::IntId(idx))
+        // 8b. Update night index.
+        if let Some(map) = &mut night_map {
+            if night_is_contiguous {
+                if let Some((key, entry)) = night_tracker.on_row(row_idx, night_id) {
+                    map.insert(key, entry);
+                }
+            } else if let Some(nid) = night_id {
+                map.entry(nid)
+                    .or_insert_with(|| ObsMapIndex::Split(Vec::new()))
+                    .push_split(row_idx);
             }
-            ResolvedObserver::Mpc(id) => Some(id),
-            ResolvedObserver::None => None,
-        };
-
-        // Populate the optional index maps.
-        if let (Some(map), Some(nid)) = (&mut night_map, night_id) {
-            map.entry(nid).or_insert_with(Vec::new).push(row_idx);
-        }
-        if let (Some(map), Some(tid)) = (&mut traj_map, traj_id) {
-            map.entry(tid).or_insert_with(Vec::new).push(row_idx);
         }
 
+        // 8c. Update traj index.
+        if let Some(map) = &mut traj_map {
+            if traj_is_contiguous {
+                if let Some((key, entry)) = traj_tracker.on_row(row_idx, traj_id.clone()) {
+                    map.insert(key, entry);
+                }
+            } else if let Some(tid) = traj_id.clone() {
+                map.entry(tid)
+                    .or_insert_with(|| ObsMapIndex::Split(Vec::new()))
+                    .push_split(row_idx);
+            }
+        }
+
+        // 8d. Append observation.
         observations.push(Observation {
             index: row_idx,
             id,
@@ -570,13 +865,26 @@ fn load_observation_from_frame(
         });
     }
 
+    // ── step 9: finalise the last open contiguous group ───────────────────────
+    if night_is_contiguous
+        && let (Some(map), Some((key, entry))) = (&mut night_map, night_tracker.finalize(n))
+    {
+        map.insert(key, entry);
+    }
+    if traj_is_contiguous
+        && let (Some(map), Some((key, entry))) = (&mut traj_map, traj_tracker.finalize(n))
+    {
+        map.insert(key, entry);
+    }
+
+    // ── step 10: construct the dataset ────────────────────────────────────────
     Ok(ObsDataset::new(
         observations,
         custom_observers,
-        error_model,
+        args.error_model,
         night_map,
         traj_map,
-        lru_cache_size,
+        args.lru_cache_size,
     ))
 }
 
@@ -642,7 +950,14 @@ mod polars_reader_tests {
         let df = DataFrame::new_infer_height(base_columns_single_row())
             .expect("DataFrame construction must succeed for valid base columns");
 
-        let result = load_observation_from_polars(&df, Some(ObsErrorModel::FCCT14), Some(10), None);
+        let result = load_observation_from_polars(
+            &df,
+            FromPolarsArgs {
+                error_model: Some(ObsErrorModel::FCCT14),
+                lru_cache_size: Some(10),
+                ..Default::default()
+            },
+        );
 
         assert!(
             result.is_ok(),
@@ -672,7 +987,14 @@ mod polars_reader_tests {
 
         let df = DataFrame::new_infer_height(cols).expect("DataFrame construction must succeed");
 
-        let result = load_observation_from_polars(&df, Some(ObsErrorModel::FCCT14), Some(10), None);
+        let result = load_observation_from_polars(
+            &df,
+            FromPolarsArgs {
+                error_model: Some(ObsErrorModel::FCCT14),
+                lru_cache_size: Some(10),
+                ..Default::default()
+            },
+        );
 
         assert!(
             result.is_ok(),
@@ -714,7 +1036,14 @@ mod polars_reader_tests {
 
         let df = DataFrame::new_infer_height(cols).expect("DataFrame construction must succeed");
 
-        let result = load_observation_from_polars(&df, Some(ObsErrorModel::FCCT14), Some(10), None);
+        let result = load_observation_from_polars(
+            &df,
+            FromPolarsArgs {
+                error_model: Some(ObsErrorModel::FCCT14),
+                lru_cache_size: Some(10),
+                ..Default::default()
+            },
+        );
 
         assert!(
             result.is_ok(),
@@ -758,7 +1087,14 @@ mod polars_reader_tests {
 
         let df = DataFrame::new_infer_height(cols).expect("DataFrame construction must succeed");
 
-        let result = load_observation_from_polars(&df, Some(ObsErrorModel::FCCT14), Some(10), None);
+        let result = load_observation_from_polars(
+            &df,
+            FromPolarsArgs {
+                error_model: Some(ObsErrorModel::FCCT14),
+                lru_cache_size: Some(10),
+                ..Default::default()
+            },
+        );
 
         assert!(
             result.is_ok(),
@@ -803,7 +1139,14 @@ mod polars_reader_tests {
 
         let df = DataFrame::new_infer_height(cols).expect("DataFrame construction must succeed");
 
-        let result = load_observation_from_polars(&df, Some(ObsErrorModel::FCCT14), Some(10), None);
+        let result = load_observation_from_polars(
+            &df,
+            FromPolarsArgs {
+                error_model: Some(ObsErrorModel::FCCT14),
+                lru_cache_size: Some(10),
+                ..Default::default()
+            },
+        );
 
         // Use `match` instead of `unwrap_err()` because `ObsDataset` does not
         // implement `Debug`, which is required by `Result::unwrap_err`.
@@ -838,7 +1181,14 @@ mod polars_reader_tests {
 
         let df = DataFrame::new_infer_height(cols).expect("DataFrame construction must succeed");
 
-        let result = load_observation_from_polars(&df, Some(ObsErrorModel::FCCT14), Some(10), None);
+        let result = load_observation_from_polars(
+            &df,
+            FromPolarsArgs {
+                error_model: Some(ObsErrorModel::FCCT14),
+                lru_cache_size: Some(10),
+                ..Default::default()
+            },
+        );
 
         // Use `match` instead of `unwrap_err()` because `ObsDataset` does not
         // implement `Debug`, which is required by `Result::unwrap_err`.
@@ -867,7 +1217,14 @@ mod polars_reader_tests {
 
         let df = DataFrame::new_infer_height(cols).expect("DataFrame construction must succeed");
 
-        let result = load_observation_from_polars(&df, Some(ObsErrorModel::FCCT14), Some(10), None);
+        let result = load_observation_from_polars(
+            &df,
+            FromPolarsArgs {
+                error_model: Some(ObsErrorModel::FCCT14),
+                lru_cache_size: Some(10),
+                ..Default::default()
+            },
+        );
 
         // Use `match` instead of `unwrap_err()` because `ObsDataset` does not
         // implement `Debug`, which is required by `Result::unwrap_err`.
@@ -889,7 +1246,14 @@ mod polars_reader_tests {
 
         let df = DataFrame::new_infer_height(cols).expect("DataFrame construction must succeed");
 
-        let result = load_observation_from_polars(&df, Some(ObsErrorModel::FCCT14), Some(10), None);
+        let result = load_observation_from_polars(
+            &df,
+            FromPolarsArgs {
+                error_model: Some(ObsErrorModel::FCCT14),
+                lru_cache_size: Some(10),
+                ..Default::default()
+            },
+        );
 
         // Use `match` instead of `unwrap_err()` because `ObsDataset` does not
         // implement `Debug`, which is required by `Result::unwrap_err`.
@@ -926,7 +1290,14 @@ mod polars_reader_tests {
 
         let df = DataFrame::new_infer_height(cols).expect("DataFrame construction must succeed");
 
-        let result = load_observation_from_polars(&df, Some(ObsErrorModel::FCCT14), Some(10), None);
+        let result = load_observation_from_polars(
+            &df,
+            FromPolarsArgs {
+                error_model: Some(ObsErrorModel::FCCT14),
+                lru_cache_size: Some(10),
+                ..Default::default()
+            },
+        );
 
         assert!(
             result.is_ok(),
@@ -966,7 +1337,14 @@ mod polars_reader_tests {
 
         let df = DataFrame::new_infer_height(cols).expect("DataFrame construction must succeed");
 
-        let result = load_observation_from_polars(&df, Some(ObsErrorModel::FCCT14), Some(10), None);
+        let result = load_observation_from_polars(
+            &df,
+            FromPolarsArgs {
+                error_model: Some(ObsErrorModel::FCCT14),
+                lru_cache_size: Some(10),
+                ..Default::default()
+            },
+        );
 
         assert!(
             result.is_ok(),
@@ -1005,7 +1383,14 @@ mod polars_reader_tests {
 
         let df = DataFrame::new_infer_height(cols).expect("DataFrame construction must succeed");
 
-        let result = load_observation_from_polars(&df, Some(ObsErrorModel::FCCT14), Some(10), None);
+        let result = load_observation_from_polars(
+            &df,
+            FromPolarsArgs {
+                error_model: Some(ObsErrorModel::FCCT14),
+                lru_cache_size: Some(10),
+                ..Default::default()
+            },
+        );
 
         assert!(
             result.is_ok(),
@@ -1045,7 +1430,14 @@ mod polars_reader_tests {
 
         let df = DataFrame::new_infer_height(cols).expect("DataFrame construction must succeed");
 
-        let result = load_observation_from_polars(&df, Some(ObsErrorModel::FCCT14), Some(10), None);
+        let result = load_observation_from_polars(
+            &df,
+            FromPolarsArgs {
+                error_model: Some(ObsErrorModel::FCCT14),
+                lru_cache_size: Some(10),
+                ..Default::default()
+            },
+        );
 
         assert!(
             result.is_ok(),
@@ -1083,12 +1475,359 @@ mod polars_reader_tests {
 
         let df = DataFrame::new_infer_height(cols).expect("DataFrame construction must succeed");
 
-        let result = load_observation_from_polars(&df, Some(ObsErrorModel::FCCT14), Some(10), None);
+        let result = load_observation_from_polars(
+            &df,
+            FromPolarsArgs {
+                error_model: Some(ObsErrorModel::FCCT14),
+                lru_cache_size: Some(10),
+                ..Default::default()
+            },
+        );
 
         match result {
             Err(PolarsError::FilterColumnTypeError(_)) => { /* expected */ }
             Err(other) => panic!("Expected PolarsError::FilterColumnTypeError, got: {other:?}"),
             Ok(_) => panic!("Expected Err for unsupported filter column type, got Ok"),
+        }
+    }
+
+    // ── index variant tests ───────────────────────────────────────────────────
+    //
+    // The following tests explicitly assert which `ObsMapIndex` variant
+    // (`Contiguous` or `Split`) is produced by `load_observation_from_polars`
+    // under different `FromPolarsArgs.contiguous_choice` settings.
+    //
+    // These tests must live here (inside the crate) because `ObsMapIndex`,
+    // `ObsDatasetIndex.obs_index_by_night`, and `obs_index_by_trajectory` are
+    // all `pub(crate)` — integration tests in `tests/` cannot inspect them.
+
+    /// Build the nine mandatory base columns plus `night_id` and `traj_id` for
+    /// a four-row [`DataFrame`] (ids 1–4).
+    ///
+    /// Each row is given both a `night_id` and a `traj_id`.
+    ///
+    /// Layout (before any sort):
+    ///
+    /// | row | id | night_id | traj_id |
+    /// |-----|----|----------|---------|
+    /// |  0  |  1 |     1    |    10   |
+    /// |  1  |  2 |     1    |    20   |
+    /// |  2  |  3 |     2    |    10   |
+    /// |  3  |  4 |     2    |    20   |
+    fn four_row_cols_with_both_ids() -> Vec<Column> {
+        vec![
+            Column::new("id".into(), &[1u64, 2u64, 3u64, 4u64]),
+            Column::new("ra".into(), &[0.1f64, 0.2f64, 0.3f64, 0.4f64]),
+            Column::new("ra_err".into(), &[1e-4f64, 1e-4f64, 1e-4f64, 1e-4f64]),
+            Column::new("dec".into(), &[0.0f64, 0.0f64, 0.0f64, 0.0f64]),
+            Column::new("dec_err".into(), &[1e-4f64, 1e-4f64, 1e-4f64, 1e-4f64]),
+            Column::new("magnitude".into(), &[15.0f64, 15.0f64, 15.0f64, 15.0f64]),
+            Column::new("mag_err".into(), &[0.1f64, 0.1f64, 0.1f64, 0.1f64]),
+            Column::new("filter".into(), &["G", "G", "G", "G"]),
+            Column::new(
+                "mjd_tt".into(),
+                &[60000.0f64, 60001.0f64, 60002.0f64, 60003.0f64],
+            ),
+            // night_id: rows 0,1 → night 1; rows 2,3 → night 2
+            Column::new("night_id".into(), &[1u32, 1u32, 2u32, 2u32]),
+            // traj_id: rows 0,2 → traj 10; rows 1,3 → traj 20
+            Column::new("traj_id".into(), &[10u32, 20u32, 10u32, 20u32]),
+        ]
+    }
+
+    // ── test 13 ───────────────────────────────────────────────────────────────
+
+    /// When `contiguous_choice = ContiguousNight` and the DataFrame is already
+    /// sorted by `night_id`, the night index must use `ObsMapIndex::Contiguous`
+    /// for every night entry and the trajectory index must use `ObsMapIndex::Split`.
+    ///
+    /// The ingestion path sorts the frame by `night_id` before iterating, so
+    /// after sorting:
+    ///
+    /// | row | id | night_id | traj_id |
+    /// |-----|----|----------|---------|
+    /// |  0  |  1 |     1    |    10   |
+    /// |  1  |  2 |     1    |    20   |
+    /// |  2  |  3 |     2    |    10   |
+    /// |  3  |  4 |     2    |    20   |
+    ///
+    /// Night 1 occupies rows 0..2 → `Contiguous { start: 0, end: 2 }`.
+    /// Night 2 occupies rows 2..4 → `Contiguous { start: 2, end: 4 }`.
+    /// Traj 10 appears at rows 0 and 2 → `Split([0, 2])`.
+    /// Traj 20 appears at rows 1 and 3 → `Split([1, 3])`.
+    #[test]
+    fn test_index_contiguous_night() {
+        use crate::observation_dataset::index::ObsMapIndex;
+
+        let df = DataFrame::new_infer_height(four_row_cols_with_both_ids())
+            .expect("DataFrame construction must succeed");
+
+        let dataset = load_observation_from_polars(
+            &df,
+            FromPolarsArgs {
+                error_model: Some(ObsErrorModel::FCCT14),
+                lru_cache_size: Some(10),
+                contiguous_choice: Some(ContiguousChoice::ContiguousNight),
+                ..Default::default()
+            },
+        )
+        .expect("ingestion must succeed");
+
+        let index = dataset.index_ref();
+
+        // Night index: both entries must be Contiguous.
+        let night_map = index
+            .obs_index_by_night
+            .as_ref()
+            .expect("night index must be present");
+
+        for (night_id, entry) in night_map.iter() {
+            assert!(
+                matches!(entry, ObsMapIndex::Contiguous { .. }),
+                "night_id={night_id:?} expected Contiguous, got {entry:?}"
+            );
+        }
+
+        // Night 1 → [0, 2), Night 2 → [2, 4)
+        match night_map.get(&NightId(1)).expect("night 1 must be present") {
+            ObsMapIndex::Contiguous { start, end } => {
+                assert_eq!(*start, 0, "night 1 start");
+                assert_eq!(*end, 2, "night 1 end");
+            }
+            ObsMapIndex::Split(_) => panic!("night 1 must be Contiguous"),
+        }
+        match night_map.get(&NightId(2)).expect("night 2 must be present") {
+            ObsMapIndex::Contiguous { start, end } => {
+                assert_eq!(*start, 2, "night 2 start");
+                assert_eq!(*end, 4, "night 2 end");
+            }
+            ObsMapIndex::Split(_) => panic!("night 2 must be Contiguous"),
+        }
+
+        // Trajectory index: all entries must be Split.
+        let traj_map = index
+            .obs_index_by_trajectory
+            .as_ref()
+            .expect("traj index must be present");
+
+        for (traj_id, entry) in traj_map.iter() {
+            assert!(
+                matches!(entry, ObsMapIndex::Split(_)),
+                "traj_id={traj_id:?} expected Split, got {entry:?}"
+            );
+        }
+
+        // Both trajectories must have 2 observations each.
+        for tid in [&TrajId::Int(10), &TrajId::Int(20)] {
+            let entry = traj_map.get(tid).expect("traj entry must be present");
+            let len = match entry {
+                ObsMapIndex::Split(v) => v.len(),
+                ObsMapIndex::Contiguous { start, end } => end - start,
+            };
+            assert_eq!(len, 2, "traj {tid:?} must have 2 observations");
+        }
+    }
+
+    // ── test 14 ───────────────────────────────────────────────────────────────
+
+    /// When `contiguous_choice = ContiguousTraj` and the frame is sorted by
+    /// `traj_id`, the trajectory index must use `ObsMapIndex::Contiguous` and
+    /// the night index must use `ObsMapIndex::Split`.
+    ///
+    /// After sorting by `traj_id` (stable, nulls last):
+    ///
+    /// | row | id | traj_id | night_id |
+    /// |-----|----|---------|----------|
+    /// |  0  |  1 |    10   |     1    |
+    /// |  1  |  3 |    10   |     2    |
+    /// |  2  |  2 |    20   |     1    |
+    /// |  3  |  4 |    20   |     2    |
+    ///
+    /// Traj 10 → `Contiguous { start: 0, end: 2 }`.
+    /// Traj 20 → `Contiguous { start: 2, end: 4 }`.
+    /// Night 1 appears at rows 0 and 2 → `Split`.
+    /// Night 2 appears at rows 1 and 3 → `Split`.
+    #[test]
+    fn test_index_contiguous_traj() {
+        use crate::observation_dataset::index::ObsMapIndex;
+
+        let df = DataFrame::new_infer_height(four_row_cols_with_both_ids())
+            .expect("DataFrame construction must succeed");
+
+        let dataset = load_observation_from_polars(
+            &df,
+            FromPolarsArgs {
+                error_model: Some(ObsErrorModel::FCCT14),
+                lru_cache_size: Some(10),
+                contiguous_choice: Some(ContiguousChoice::ContiguousTraj),
+                ..Default::default()
+            },
+        )
+        .expect("ingestion must succeed");
+
+        let index = dataset.index_ref();
+
+        // Trajectory index: both entries must be Contiguous.
+        let traj_map = index
+            .obs_index_by_trajectory
+            .as_ref()
+            .expect("traj index must be present");
+
+        for (traj_id, entry) in traj_map.iter() {
+            assert!(
+                matches!(entry, ObsMapIndex::Contiguous { .. }),
+                "traj_id={traj_id:?} expected Contiguous, got {entry:?}"
+            );
+        }
+
+        match traj_map
+            .get(&TrajId::Int(10))
+            .expect("traj 10 must be present")
+        {
+            ObsMapIndex::Contiguous { start, end } => {
+                assert_eq!(*start, 0, "traj 10 start");
+                assert_eq!(*end, 2, "traj 10 end");
+            }
+            ObsMapIndex::Split(_) => panic!("traj 10 must be Contiguous"),
+        }
+        match traj_map
+            .get(&TrajId::Int(20))
+            .expect("traj 20 must be present")
+        {
+            ObsMapIndex::Contiguous { start, end } => {
+                assert_eq!(*start, 2, "traj 20 start");
+                assert_eq!(*end, 4, "traj 20 end");
+            }
+            ObsMapIndex::Split(_) => panic!("traj 20 must be Contiguous"),
+        }
+
+        // Night index: all entries must be Split.
+        let night_map = index
+            .obs_index_by_night
+            .as_ref()
+            .expect("night index must be present");
+
+        for (night_id, entry) in night_map.iter() {
+            assert!(
+                matches!(entry, ObsMapIndex::Split(_)),
+                "night_id={night_id:?} expected Split, got {entry:?}"
+            );
+        }
+
+        // Both nights must have 2 observations each.
+        for nid in [&NightId(1), &NightId(2)] {
+            let entry = night_map.get(nid).expect("night entry must be present");
+            let len = match entry {
+                ObsMapIndex::Split(v) => v.len(),
+                ObsMapIndex::Contiguous { start, end } => end - start,
+            };
+            assert_eq!(len, 2, "night {nid:?} must have 2 observations");
+        }
+    }
+
+    // ── test 15 ───────────────────────────────────────────────────────────────
+
+    /// When `contiguous_choice = None`, no sorting is applied and both the
+    /// night and trajectory indices must use `ObsMapIndex::Split` for all
+    /// entries.
+    #[test]
+    fn test_index_no_contiguous_choice() {
+        use crate::observation_dataset::index::ObsMapIndex;
+
+        let df = DataFrame::new_infer_height(four_row_cols_with_both_ids())
+            .expect("DataFrame construction must succeed");
+
+        let dataset = load_observation_from_polars(
+            &df,
+            FromPolarsArgs {
+                error_model: Some(ObsErrorModel::FCCT14),
+                lru_cache_size: Some(10),
+                contiguous_choice: None,
+                ..Default::default()
+            },
+        )
+        .expect("ingestion must succeed");
+
+        let index = dataset.index_ref();
+
+        // Night index: every entry must be Split.
+        let night_map = index
+            .obs_index_by_night
+            .as_ref()
+            .expect("night index must be present");
+        for (nid, entry) in night_map.iter() {
+            assert!(
+                matches!(entry, ObsMapIndex::Split(_)),
+                "night_id={nid:?} expected Split with no contiguous_choice, got {entry:?}"
+            );
+        }
+
+        // Trajectory index: every entry must be Split.
+        let traj_map = index
+            .obs_index_by_trajectory
+            .as_ref()
+            .expect("traj index must be present");
+        for (tid, entry) in traj_map.iter() {
+            assert!(
+                matches!(entry, ObsMapIndex::Split(_)),
+                "traj_id={tid:?} expected Split with no contiguous_choice, got {entry:?}"
+            );
+        }
+    }
+
+    // ── test 16 ───────────────────────────────────────────────────────────────
+
+    /// Verify that the `ContiguousGroupTracker` correctly finalises the last
+    /// open group: the `end` of the last `Contiguous` entry must equal `n`
+    /// (the total number of rows).
+    ///
+    /// Uses a three-row frame with a single night so that the only group spans
+    /// rows 0..3; the finalize step (step 9 in `load_observation_from_frame`)
+    /// must set `end = 3`.
+    #[test]
+    fn test_contiguous_finalization_end_equals_n() {
+        use crate::observation_dataset::index::ObsMapIndex;
+
+        let cols = vec![
+            Column::new("id".into(), &[1u64, 2u64, 3u64]),
+            Column::new("ra".into(), &[0.1f64, 0.2f64, 0.3f64]),
+            Column::new("ra_err".into(), &[1e-4f64, 1e-4f64, 1e-4f64]),
+            Column::new("dec".into(), &[0.0f64, 0.0f64, 0.0f64]),
+            Column::new("dec_err".into(), &[1e-4f64, 1e-4f64, 1e-4f64]),
+            Column::new("magnitude".into(), &[15.0f64, 15.0f64, 15.0f64]),
+            Column::new("mag_err".into(), &[0.1f64, 0.1f64, 0.1f64]),
+            Column::new("filter".into(), &["G", "G", "G"]),
+            Column::new("mjd_tt".into(), &[60000.0f64, 60001.0f64, 60002.0f64]),
+            // All three rows belong to the same night.
+            Column::new("night_id".into(), &[7u32, 7u32, 7u32]),
+        ];
+
+        let df = DataFrame::new_infer_height(cols).expect("DataFrame construction must succeed");
+
+        let dataset = load_observation_from_polars(
+            &df,
+            FromPolarsArgs {
+                error_model: Some(ObsErrorModel::FCCT14),
+                lru_cache_size: Some(10),
+                contiguous_choice: Some(ContiguousChoice::ContiguousNight),
+                ..Default::default()
+            },
+        )
+        .expect("ingestion must succeed");
+
+        let index = dataset.index_ref();
+        let night_map = index
+            .obs_index_by_night
+            .as_ref()
+            .expect("night index must be present");
+
+        // The single night must be Contiguous with start=0, end=3 (==n).
+        match night_map.get(&NightId(7)).expect("night 7 must be present") {
+            ObsMapIndex::Contiguous { start, end } => {
+                assert_eq!(*start, 0, "single-night group must start at 0");
+                assert_eq!(*end, 3, "single-night group end must equal n=3");
+            }
+            ObsMapIndex::Split(_) => panic!("expected Contiguous for single night"),
         }
     }
 }
@@ -1202,7 +1941,7 @@ mod polars_reader_prop_tests {
             let df = DataFrame::new_infer_height(cols)
                 .expect("DataFrame construction must succeed");
 
-            let result = load_observation_from_polars(&df, Some(ObsErrorModel::FCCT14), Some(10), None);
+            let result = load_observation_from_polars(&df, FromPolarsArgs { error_model: Some(ObsErrorModel::FCCT14), lru_cache_size: Some(10), ..Default::default() });
             prop_assert!(result.is_ok(), "Expected Ok, got: {:?}", result.err());
 
             let dataset = result.unwrap();
@@ -1219,7 +1958,7 @@ mod polars_reader_prop_tests {
             let df = DataFrame::new_infer_height(cols)
                 .expect("DataFrame construction must succeed");
 
-            let result = load_observation_from_polars(&df, Some(ObsErrorModel::FCCT14), None, None);
+            let result = load_observation_from_polars(&df, FromPolarsArgs { error_model: Some(ObsErrorModel::FCCT14), lru_cache_size: None, ..Default::default() });
             prop_assert!(result.is_ok(), "Expected Ok, got: {:?}", result.err());
 
             let dataset = result.unwrap();
@@ -1247,7 +1986,7 @@ mod polars_reader_prop_tests {
             let df = DataFrame::new_infer_height(cols)
                 .expect("DataFrame construction must succeed");
 
-            let result = load_observation_from_polars(&df, Some(ObsErrorModel::FCCT14), Some(10), None);
+            let result = load_observation_from_polars(&df, FromPolarsArgs { error_model: Some(ObsErrorModel::FCCT14), lru_cache_size: Some(10), ..Default::default() });
             prop_assert!(result.is_ok(), "Expected Ok for valid 3-byte code {:?}, got: {:?}", code, result.err());
 
             let dataset = result.unwrap();
@@ -1290,7 +2029,7 @@ mod polars_reader_prop_tests {
             let df = DataFrame::new_infer_height(cols)
                 .expect("DataFrame construction must succeed");
 
-            let result = load_observation_from_polars(&df, Some(ObsErrorModel::FCCT14), Some(10), None);
+            let result = load_observation_from_polars(&df, FromPolarsArgs { error_model: Some(ObsErrorModel::FCCT14), lru_cache_size: Some(10), ..Default::default() });
             prop_assert!(result.is_ok(), "Expected Ok for valid geodetic observer, got: {:?}", result.err());
 
             let dataset = result.unwrap();
@@ -1322,7 +2061,7 @@ mod polars_reader_prop_tests {
             let df = DataFrame::new_infer_height(cols)
                 .expect("DataFrame construction must succeed");
 
-            let result = load_observation_from_polars(&df, Some(ObsErrorModel::FCCT14), Some(10), None);
+            let result = load_observation_from_polars(&df, FromPolarsArgs { error_model: Some(ObsErrorModel::FCCT14), lru_cache_size: Some(10), ..Default::default() });
             match result {
                 Err(PolarsError::PartialTripletNull { .. }) => { /* expected */ }
                 Err(other) => prop_assert!(false, "Expected PartialTripletNull, got: {other:?}"),
@@ -1348,7 +2087,7 @@ mod polars_reader_prop_tests {
             let df = DataFrame::new_infer_height(cols)
                 .expect("DataFrame construction must succeed");
 
-            let result = load_observation_from_polars(&df, Some(ObsErrorModel::FCCT14), Some(10), None);
+            let result = load_observation_from_polars(&df, FromPolarsArgs { error_model: Some(ObsErrorModel::FCCT14), lru_cache_size: Some(10), ..Default::default() });
             match result {
                 Err(PolarsError::PartialTripletNull { .. }) => { /* expected */ }
                 Err(other) => prop_assert!(false, "Expected PartialTripletNull, got: {other:?}"),
@@ -1374,7 +2113,7 @@ mod polars_reader_prop_tests {
             let df = DataFrame::new_infer_height(cols)
                 .expect("DataFrame construction must succeed");
 
-            let result = load_observation_from_polars(&df, Some(ObsErrorModel::FCCT14), Some(10), None);
+            let result = load_observation_from_polars(&df, FromPolarsArgs { error_model: Some(ObsErrorModel::FCCT14), lru_cache_size: Some(10), ..Default::default() });
             match result {
                 Err(PolarsError::PartialTripletNull { .. }) => { /* expected */ }
                 Err(other) => prop_assert!(false, "Expected PartialTripletNull, got: {other:?}"),
@@ -1408,7 +2147,7 @@ mod polars_reader_prop_tests {
             let df = DataFrame::new_infer_height(cols)
                 .expect("DataFrame construction must succeed");
 
-            let result = load_observation_from_polars(&df, Some(ObsErrorModel::FCCT14), Some(10), None);
+            let result = load_observation_from_polars(&df, FromPolarsArgs { error_model: Some(ObsErrorModel::FCCT14), lru_cache_size: Some(10), ..Default::default() });
             match result {
                 Err(PolarsError::MissingAccuracyForGeodesic(_)) => { /* expected */ }
                 Err(other) => prop_assert!(false, "Expected MissingAccuracyForGeodesic, got: {other:?}"),
@@ -1446,7 +2185,7 @@ mod polars_reader_prop_tests {
             let df = DataFrame::new_infer_height(cols)
                 .expect("DataFrame construction must succeed");
 
-            let result = load_observation_from_polars(&df, Some(ObsErrorModel::FCCT14), Some(10), None);
+            let result = load_observation_from_polars(&df, FromPolarsArgs { error_model: Some(ObsErrorModel::FCCT14), lru_cache_size: Some(10), ..Default::default() });
             prop_assert!(result.is_ok(), "Expected Ok, got: {:?}", result.err());
 
             let dataset = result.unwrap();
@@ -1493,10 +2232,24 @@ mod lazy_frame_tests {
         let df = base_df_single_row();
         let lf = df.clone().lazy();
 
-        let eager = load_observation_from_polars(df, Some(ObsErrorModel::FCCT14), Some(10), None)
-            .expect("eager path must succeed");
-        let lazy = load_observation_from_polars(lf, Some(ObsErrorModel::FCCT14), Some(10), None)
-            .expect("lazy path must succeed");
+        let eager = load_observation_from_polars(
+            df,
+            FromPolarsArgs {
+                error_model: Some(ObsErrorModel::FCCT14),
+                lru_cache_size: Some(10),
+                ..Default::default()
+            },
+        )
+        .expect("eager path must succeed");
+        let lazy = load_observation_from_polars(
+            lf,
+            FromPolarsArgs {
+                error_model: Some(ObsErrorModel::FCCT14),
+                lru_cache_size: Some(10),
+                ..Default::default()
+            },
+        )
+        .expect("lazy path must succeed");
 
         let eager_obs: Vec<&Observation> = eager.iter_observations().collect();
         let lazy_obs: Vec<&Observation> = lazy.iter_observations().collect();
@@ -1518,8 +2271,14 @@ mod lazy_frame_tests {
         df.with_column(Column::new("mpc_code_obs".into(), mpc_col))
             .expect("column addition must succeed");
 
-        let result =
-            load_observation_from_polars(df.lazy(), Some(ObsErrorModel::FCCT14), Some(10), None);
+        let result = load_observation_from_polars(
+            df.lazy(),
+            FromPolarsArgs {
+                error_model: Some(ObsErrorModel::FCCT14),
+                lru_cache_size: Some(10),
+                ..Default::default()
+            },
+        );
 
         assert!(result.is_ok(), "expected Ok, got: {:?}", result.err());
         let dataset = result.unwrap();
@@ -1566,8 +2325,15 @@ mod index_tests {
     fn night_index_absent_when_no_column() {
         let df =
             DataFrame::new_infer_height(base_cols(2)).expect("DataFrame construction must succeed");
-        let ds = load_observation_from_polars(&df, Some(ObsErrorModel::FCCT14), None, None)
-            .expect("ingestion must succeed");
+        let ds = load_observation_from_polars(
+            &df,
+            FromPolarsArgs {
+                error_model: Some(ObsErrorModel::FCCT14),
+                lru_cache_size: None,
+                ..Default::default()
+            },
+        )
+        .expect("ingestion must succeed");
 
         assert!(
             ds.iter_night_observations(&NightId(0)).is_none(),
@@ -1592,8 +2358,15 @@ mod index_tests {
         cols.push(Column::new("night_id".into(), nights));
 
         let df = DataFrame::new_infer_height(cols).expect("DataFrame construction must succeed");
-        let ds = load_observation_from_polars(&df, Some(ObsErrorModel::FCCT14), None, None)
-            .expect("ingestion must succeed");
+        let ds = load_observation_from_polars(
+            &df,
+            FromPolarsArgs {
+                error_model: Some(ObsErrorModel::FCCT14),
+                lru_cache_size: None,
+                ..Default::default()
+            },
+        )
+        .expect("ingestion must succeed");
 
         // Night 10 → rows 0 and 2 → obs ids 1 and 3.
         let night10: Vec<u64> = ds
@@ -1625,8 +2398,15 @@ mod index_tests {
         cols.push(Column::new("night_id".into(), nights));
 
         let df = DataFrame::new_infer_height(cols).expect("DataFrame construction must succeed");
-        let ds = load_observation_from_polars(&df, Some(ObsErrorModel::FCCT14), None, None)
-            .expect("ingestion must succeed");
+        let ds = load_observation_from_polars(
+            &df,
+            FromPolarsArgs {
+                error_model: Some(ObsErrorModel::FCCT14),
+                lru_cache_size: None,
+                ..Default::default()
+            },
+        )
+        .expect("ingestion must succeed");
 
         // All 3 observations must be in the dataset.
         assert_eq!(
@@ -1658,7 +2438,14 @@ mod index_tests {
         cols.push(Column::new("night_id".into(), bad.as_slice()));
 
         let df = DataFrame::new_infer_height(cols).expect("DataFrame construction must succeed");
-        let result = load_observation_from_polars(&df, Some(ObsErrorModel::FCCT14), None, None);
+        let result = load_observation_from_polars(
+            &df,
+            FromPolarsArgs {
+                error_model: Some(ObsErrorModel::FCCT14),
+                lru_cache_size: None,
+                ..Default::default()
+            },
+        );
 
         match result {
             Err(PolarsError::NightIdColumnTypeError(_)) => { /* expected */ }
@@ -1674,8 +2461,15 @@ mod index_tests {
     fn traj_index_absent_when_no_column() {
         let df =
             DataFrame::new_infer_height(base_cols(2)).expect("DataFrame construction must succeed");
-        let ds = load_observation_from_polars(&df, Some(ObsErrorModel::FCCT14), None, None)
-            .expect("ingestion must succeed");
+        let ds = load_observation_from_polars(
+            &df,
+            FromPolarsArgs {
+                error_model: Some(ObsErrorModel::FCCT14),
+                lru_cache_size: None,
+                ..Default::default()
+            },
+        )
+        .expect("ingestion must succeed");
 
         assert!(
             ds.iter_trajectory_observations(&TrajId::Int(0)).is_none(),
@@ -1700,8 +2494,15 @@ mod index_tests {
         cols.push(Column::new("traj_id".into(), trajs));
 
         let df = DataFrame::new_infer_height(cols).expect("DataFrame construction must succeed");
-        let ds = load_observation_from_polars(&df, Some(ObsErrorModel::FCCT14), None, None)
-            .expect("ingestion must succeed");
+        let ds = load_observation_from_polars(
+            &df,
+            FromPolarsArgs {
+                error_model: Some(ObsErrorModel::FCCT14),
+                lru_cache_size: None,
+                ..Default::default()
+            },
+        )
+        .expect("ingestion must succeed");
 
         let mut t100: Vec<u64> = ds
             .iter_trajectory_observations(&TrajId::Int(100))
@@ -1739,8 +2540,15 @@ mod index_tests {
         cols.push(Column::new("traj_id".into(), trajs));
 
         let df = DataFrame::new_infer_height(cols).expect("DataFrame construction must succeed");
-        let ds = load_observation_from_polars(&df, Some(ObsErrorModel::FCCT14), None, None)
-            .expect("ingestion must succeed");
+        let ds = load_observation_from_polars(
+            &df,
+            FromPolarsArgs {
+                error_model: Some(ObsErrorModel::FCCT14),
+                lru_cache_size: None,
+                ..Default::default()
+            },
+        )
+        .expect("ingestion must succeed");
 
         let alpha: Vec<u64> = ds
             .iter_trajectory_observations(&TrajId::Str("alpha".to_owned()))
@@ -1769,8 +2577,15 @@ mod index_tests {
         cols.push(Column::new("traj_id".into(), trajs));
 
         let df = DataFrame::new_infer_height(cols).expect("DataFrame construction must succeed");
-        let ds = load_observation_from_polars(&df, Some(ObsErrorModel::FCCT14), None, None)
-            .expect("ingestion must succeed");
+        let ds = load_observation_from_polars(
+            &df,
+            FromPolarsArgs {
+                error_model: Some(ObsErrorModel::FCCT14),
+                lru_cache_size: None,
+                ..Default::default()
+            },
+        )
+        .expect("ingestion must succeed");
 
         assert_eq!(
             ds.iter_observations().count(),
@@ -1799,7 +2614,14 @@ mod index_tests {
         cols.push(Column::new("traj_id".into(), bad.as_slice()));
 
         let df = DataFrame::new_infer_height(cols).expect("DataFrame construction must succeed");
-        let result = load_observation_from_polars(&df, Some(ObsErrorModel::FCCT14), None, None);
+        let result = load_observation_from_polars(
+            &df,
+            FromPolarsArgs {
+                error_model: Some(ObsErrorModel::FCCT14),
+                lru_cache_size: None,
+                ..Default::default()
+            },
+        );
 
         match result {
             Err(PolarsError::TrajIdColumnTypeError(_)) => { /* expected */ }
@@ -1821,8 +2643,15 @@ mod index_tests {
         cols.push(Column::new("traj_id".into(), trajs));
 
         let df = DataFrame::new_infer_height(cols).expect("DataFrame construction must succeed");
-        let ds = load_observation_from_polars(&df, Some(ObsErrorModel::FCCT14), None, None)
-            .expect("ingestion must succeed");
+        let ds = load_observation_from_polars(
+            &df,
+            FromPolarsArgs {
+                error_model: Some(ObsErrorModel::FCCT14),
+                lru_cache_size: None,
+                ..Default::default()
+            },
+        )
+        .expect("ingestion must succeed");
 
         // Night 1 → obs ids 1, 2.
         let n1: Vec<u64> = ds

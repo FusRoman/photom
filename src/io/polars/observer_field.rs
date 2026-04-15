@@ -1,3 +1,32 @@
+//! Per-row observer resolution from Polars observer columns.
+//!
+//! This module converts the nullable observer columns extracted from a Polars
+//! [`DataFrame`](polars::frame::DataFrame) into typed observer identities.
+//! It is used exclusively by the ingestion pipeline in
+//! [`crate::io::polars`].
+//!
+//! ## Resolution rules
+//!
+//! For each row the columns are examined in the following precedence order:
+//!
+//! 1. `mpc_code_obs` non-null → [`ResolvedObserver::Mpc`] (three-byte ASCII
+//!    code; takes precedence over the geodetic triplet).
+//! 2. `obs_lon`, `obs_lat`, and `obs_alt` all non-null → [`ResolvedObserver::Geodetic`]
+//!    (custom ground-based site; `obs_ra_acc` and `obs_dec_acc` must also be
+//!    non-null).
+//! 3. All observer columns null or absent → [`ResolvedObserver::None`].
+//!
+//! A partially-null geodetic triplet (one or two columns present, the others
+//! absent) is always rejected with [`crate::io::polars::error::PolarsError::PartialTripletNull`].
+//!
+//! ## Public items
+//!
+//! | Item | Kind | Description |
+//! |------|------|-------------|
+//! | [`RawObsRow`] | struct | Data carrier holding the nullable observer inputs for one row |
+//! | [`ResolvedObserver`] | enum | Typed observer identity returned by [`resolve_observer`] |
+//! | [`resolve_observer`] | fn (pub crate) | Resolve one row's observer columns into a [`ResolvedObserver`] |
+
 // ── per-row observer resolution ───────────────────────────────────────────────
 
 use crate::{

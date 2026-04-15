@@ -1,3 +1,19 @@
+//! A single astrometric and photometric measurement.
+//!
+//! This module defines [`Observation`], the fundamental record type stored
+//! inside an [`ObsDataset`](crate::observation_dataset::ObsDataset).  Each
+//! value bundles a sky position, a photometric measurement, a detection epoch,
+//! and an optional reference to the observatory that recorded it.
+//!
+//! ## Field access
+//!
+//! All fields of [`Observation`] are `pub(crate)` to prevent external mutation.
+//! Read-only access is provided through dedicated getter methods:
+//! [`Observation::index`], [`Observation::id`], [`Observation::equ_coord`],
+//! [`Observation::photometry`], and [`Observation::mjd_tt`].  The `observer`
+//! field is accessed indirectly via
+//! [`ObsDataset::get_observer`](crate::observation_dataset::ObsDataset::get_observer).
+
 use crate::{
     MJDTT,
     astrometry::EquCoord,
