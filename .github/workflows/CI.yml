@@ -29,22 +29,36 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        features: [no-features, polars, parallel, polars-parallel]
-        command: [clippy, check, doc]
+        features:
+          - no-features
+          - polars
+          - parallel
+          - ades
+          - polars-parallel
+          - polars-ades
+          - parallel-ades
+          - polars-parallel-ades
+        command: [clippy, check]
         include:
           - features: no-features
             cargo_flags: --no-default-features
           - features: polars
-            cargo_flags: --features polars
+            cargo_flags: --no-default-features --features polars
           - features: parallel
-            cargo_flags: --features parallel
+            cargo_flags: --no-default-features --features parallel
+          - features: ades
+            cargo_flags: --no-default-features --features ades
           - features: polars-parallel
-            cargo_flags: --features polars,parallel
+            cargo_flags: --no-default-features --features polars,parallel
+          - features: polars-ades
+            cargo_flags: --no-default-features --features polars,ades
+          - features: parallel-ades
+            cargo_flags: --no-default-features --features parallel,ades
+          - features: polars-parallel-ades
+            cargo_flags: --no-default-features --features polars,parallel,ades
           - command: clippy
             components: clippy
           - command: check
-            components: ""
-          - command: doc
             components: ""
     steps:
       - name: Checkout
@@ -69,14 +83,28 @@ jobs:
         if: matrix.command == 'check'
         run: cargo check --all-targets ${{ matrix.cargo_flags }}
 
+  doc:
+    name: doc (all-features)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
       - name: cargo doc
-        if: matrix.command == 'doc'
-        run: RUSTDOCFLAGS="-D warnings" cargo doc --no-deps ${{ matrix.cargo_flags }}
+        run: RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features
 
   semver:
     name: Semver checks
     runs-on: ubuntu-latest
-    needs: [fmt, ci]
+    needs: [fmt, ci, doc]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -89,20 +117,36 @@ jobs:
   coverage:
     name: Coverage (${{ matrix.features }})
     runs-on: ubuntu-latest
-    needs: [fmt, ci]
+    needs: [fmt, ci, doc]
     strategy:
       fail-fast: false
       matrix:
-        features: [no-features, polars, parallel, polars-parallel]
+        features:
+          - no-features
+          - polars
+          - parallel
+          - ades
+          - polars-parallel
+          - polars-ades
+          - parallel-ades
+          - polars-parallel-ades
         include:
           - features: no-features
             cargo_flags: --no-default-features
           - features: polars
-            cargo_flags: --features polars
+            cargo_flags: --no-default-features --features polars
           - features: parallel
-            cargo_flags: --features parallel
+            cargo_flags: --no-default-features --features parallel
+          - features: ades
+            cargo_flags: --no-default-features --features ades
           - features: polars-parallel
-            cargo_flags: --features polars,parallel
+            cargo_flags: --no-default-features --features polars,parallel
+          - features: polars-ades
+            cargo_flags: --no-default-features --features polars,ades
+          - features: parallel-ades
+            cargo_flags: --no-default-features --features parallel,ades
+          - features: polars-parallel-ades
+            cargo_flags: --no-default-features --features polars,parallel,ades
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -160,7 +204,11 @@ jobs:
             --add-tracefile lcov-no-features.info \
             --add-tracefile lcov-polars.info \
             --add-tracefile lcov-parallel.info \
+            --add-tracefile lcov-ades.info \
             --add-tracefile lcov-polars-parallel.info \
+            --add-tracefile lcov-polars-ades.info \
+            --add-tracefile lcov-parallel-ades.info \
+            --add-tracefile lcov-polars-parallel-ades.info \
             --output-file lcov.info
 
       - name: Upload to Codecov
