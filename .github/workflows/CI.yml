@@ -34,10 +34,18 @@ jobs:
           - polars
           - parallel
           - ades
+          - mpc_80_col
           - polars-parallel
           - polars-ades
+          - polars-mpc_80_col
           - parallel-ades
+          - parallel-mpc_80_col
+          - ades-mpc_80_col
           - polars-parallel-ades
+          - polars-parallel-mpc_80_col
+          - polars-ades-mpc_80_col
+          - parallel-ades-mpc_80_col
+          - polars-parallel-ades-mpc_80_col
         command: [clippy, check]
         include:
           - features: no-features
@@ -48,14 +56,30 @@ jobs:
             cargo_flags: --no-default-features --features parallel
           - features: ades
             cargo_flags: --no-default-features --features ades
+          - features: mpc_80_col
+            cargo_flags: --no-default-features --features mpc_80_col
           - features: polars-parallel
             cargo_flags: --no-default-features --features polars,parallel
           - features: polars-ades
             cargo_flags: --no-default-features --features polars,ades
+          - features: polars-mpc_80_col
+            cargo_flags: --no-default-features --features polars,mpc_80_col
           - features: parallel-ades
             cargo_flags: --no-default-features --features parallel,ades
+          - features: parallel-mpc_80_col
+            cargo_flags: --no-default-features --features parallel,mpc_80_col
+          - features: ades-mpc_80_col
+            cargo_flags: --no-default-features --features ades,mpc_80_col
           - features: polars-parallel-ades
             cargo_flags: --no-default-features --features polars,parallel,ades
+          - features: polars-parallel-mpc_80_col
+            cargo_flags: --no-default-features --features polars,parallel,mpc_80_col
+          - features: polars-ades-mpc_80_col
+            cargo_flags: --no-default-features --features polars,ades,mpc_80_col
+          - features: parallel-ades-mpc_80_col
+            cargo_flags: --no-default-features --features parallel,ades,mpc_80_col
+          - features: polars-parallel-ades-mpc_80_col
+            cargo_flags: --no-default-features --features polars,parallel,ades,mpc_80_col
           - command: clippy
             components: clippy
           - command: check
@@ -126,10 +150,18 @@ jobs:
           - polars
           - parallel
           - ades
+          - mpc_80_col
           - polars-parallel
           - polars-ades
+          - polars-mpc_80_col
           - parallel-ades
+          - parallel-mpc_80_col
+          - ades-mpc_80_col
           - polars-parallel-ades
+          - polars-parallel-mpc_80_col
+          - polars-ades-mpc_80_col
+          - parallel-ades-mpc_80_col
+          - polars-parallel-ades-mpc_80_col
         include:
           - features: no-features
             cargo_flags: --no-default-features
@@ -139,14 +171,30 @@ jobs:
             cargo_flags: --no-default-features --features parallel
           - features: ades
             cargo_flags: --no-default-features --features ades
+          - features: mpc_80_col
+            cargo_flags: --no-default-features --features mpc_80_col
           - features: polars-parallel
             cargo_flags: --no-default-features --features polars,parallel
           - features: polars-ades
             cargo_flags: --no-default-features --features polars,ades
+          - features: polars-mpc_80_col
+            cargo_flags: --no-default-features --features polars,mpc_80_col
           - features: parallel-ades
             cargo_flags: --no-default-features --features parallel,ades
+          - features: parallel-mpc_80_col
+            cargo_flags: --no-default-features --features parallel,mpc_80_col
+          - features: ades-mpc_80_col
+            cargo_flags: --no-default-features --features ades,mpc_80_col
           - features: polars-parallel-ades
             cargo_flags: --no-default-features --features polars,parallel,ades
+          - features: polars-parallel-mpc_80_col
+            cargo_flags: --no-default-features --features polars,parallel,mpc_80_col
+          - features: polars-ades-mpc_80_col
+            cargo_flags: --no-default-features --features polars,ades,mpc_80_col
+          - features: parallel-ades-mpc_80_col
+            cargo_flags: --no-default-features --features parallel,ades,mpc_80_col
+          - features: polars-parallel-ades-mpc_80_col
+            cargo_flags: --no-default-features --features polars,parallel,ades,mpc_80_col
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -205,10 +253,18 @@ jobs:
             --add-tracefile lcov-polars.info \
             --add-tracefile lcov-parallel.info \
             --add-tracefile lcov-ades.info \
+            --add-tracefile lcov-mpc_80_col.info \
             --add-tracefile lcov-polars-parallel.info \
             --add-tracefile lcov-polars-ades.info \
+            --add-tracefile lcov-polars-mpc_80_col.info \
             --add-tracefile lcov-parallel-ades.info \
+            --add-tracefile lcov-parallel-mpc_80_col.info \
+            --add-tracefile lcov-ades-mpc_80_col.info \
             --add-tracefile lcov-polars-parallel-ades.info \
+            --add-tracefile lcov-polars-parallel-mpc_80_col.info \
+            --add-tracefile lcov-polars-ades-mpc_80_col.info \
+            --add-tracefile lcov-parallel-ades-mpc_80_col.info \
+            --add-tracefile lcov-polars-parallel-ades-mpc_80_col.info \
             --output-file lcov.info
 
       - name: Upload to Codecov

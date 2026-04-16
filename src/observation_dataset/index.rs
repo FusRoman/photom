@@ -9,6 +9,7 @@
 //! | `ObservationIndexMap` | `ObsId` | Maps each observation identifier to its position in the observations `Vec` |
 //! | `NightIndexMap` | `NightId` | Maps each night identifier to the positions of all observations recorded that night |
 //! | `TrajIndexMap` | `TrajId` | Maps each trajectory identifier to the positions of all observations belonging to that trajectory |
+//! | `TrajAliasMap` | `String` | Maps alternate designation strings to their canonical `TrajId` |
 //!
 //! All maps are backed by `AHashMap` for fast, non-cryptographic hashing.
 //!
@@ -71,6 +72,15 @@ pub type NightIndexMap = AHashMap<NightId, ObsMapIndex>;
 /// Hash map from trajectory identifier to the list of observation positions assigned to that trajectory.
 pub type TrajIndexMap = AHashMap<TrajId, ObsMapIndex>;
 
+/// Maps alternate designation strings to their canonical [`TrajId`].
+///
+/// Populated by ingestion backends (e.g. the MPC 80-column reader) when a
+/// single file contains multiple designations for the same physical object —
+/// for example an asteroid that carries both its provisional designation and
+/// its permanent number.  The canonical `TrajId` is the primary key used in
+/// [`TrajIndexMap`]; aliases are secondary look-up names that resolve to it.
+pub type TrajAliasMap = AHashMap<String, TrajId>;
+
 /// Composite index for an `ObsDataset`.
 ///
 /// Bundles three independent look-up maps:
@@ -83,6 +93,8 @@ pub type TrajIndexMap = AHashMap<TrajId, ObsMapIndex>;
 /// - An optional map from `TrajId` to the vector positions of all
 ///   observations in that trajectory; absent when the source data contains
 ///   no `traj_id` column.
+/// - An alias map from alternate designation strings to their canonical
+///   `TrajId`; empty when no aliases have been registered.
 #[derive(Debug)]
 pub struct ObsDatasetIndex {
     /// Mapping from `ObsId` to the index in the `observations` vector, used for look-up by observation identifier.
@@ -97,6 +109,12 @@ pub struct ObsDatasetIndex {
     ///
     /// `None` when the source data contained no `traj_id` column.
     pub(crate) obs_index_by_trajectory: Option<TrajIndexMap>,
+
+    /// Maps alternate designation strings to their canonical `TrajId`.
+    ///
+    /// Empty for most datasets; populated by the MPC 80-column reader when a
+    /// file contains multiple designations for the same physical object.
+    traj_aliases: TrajAliasMap,
 }
 
 impl ObsDatasetIndex {
@@ -123,6 +141,7 @@ impl ObsDatasetIndex {
             obs_index_by_id,
             obs_index_by_night,
             obs_index_by_trajectory,
+            traj_aliases: TrajAliasMap::new(),
         }
     }
 
@@ -322,6 +341,34 @@ impl ObsDatasetIndex {
                     }
                 })
         })
+    }
+
+    /// Register an alternate designation string that resolves to a canonical [`TrajId`].
+    ///
+    /// After this call, [`ObsDatasetIndex::resolve_alias`] will return `Some(primary)`
+    /// for `alias`.  If the alias was already registered it is overwritten.
+    ///
+    /// # Arguments
+    ///
+    /// - `alias` — the alternate designation string (e.g. a provisional MPC designation).
+    /// - `primary` — the canonical `TrajId` that `alias` maps to.
+    #[cfg(feature = "mpc_80_col")]
+    pub(crate) fn register_alias(&mut self, alias: String, primary: TrajId) {
+        self.traj_aliases.insert(alias, primary);
+    }
+
+    /// Look up the canonical [`TrajId`] for an alternate designation string.
+    ///
+    /// # Arguments
+    ///
+    /// - `alias` — the alternate designation string to resolve.
+    ///
+    /// # Returns
+    ///
+    /// `Some(&TrajId)` if `alias` has been registered via [`ObsDatasetIndex::register_alias`];
+    /// `None` otherwise.
+    pub(crate) fn resolve_alias(&self, alias: &str) -> Option<&TrajId> {
+        self.traj_aliases.get(alias)
     }
 
     /// Insert or replace the trajectory entry for a given `TrajId`.

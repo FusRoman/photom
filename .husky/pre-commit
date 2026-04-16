@@ -7,10 +7,18 @@ FEATURE_SETS="
 polars
 parallel
 ades
+mpc_80_col
 polars,parallel
 polars,ades
+polars,mpc_80_col
 parallel,ades
+parallel,mpc_80_col
+ades,mpc_80_col
 polars,parallel,ades
+polars,parallel,mpc_80_col
+polars,ades,mpc_80_col
+parallel,ades,mpc_80_col
+polars,parallel,ades,mpc_80_col
 "
 
 # ---------------------------------------------------------------------------

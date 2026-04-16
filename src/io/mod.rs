@@ -12,3 +12,6 @@ pub mod polars;
 
 #[cfg(feature = "ades")]
 pub mod ades;
+
+#[cfg(feature = "mpc_80_col")]
+pub mod mpc_80_col;

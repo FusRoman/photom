@@ -37,6 +37,9 @@ pub mod observation;
 #[cfg(feature = "ades")]
 pub mod ades;
 
+#[cfg(feature = "mpc_80_col")]
+pub mod mpc_80_col;
+
 #[cfg(feature = "parallel")]
 pub mod parallel;
 
@@ -195,6 +198,34 @@ impl ObsDataset {
     /// The number of [`Observation`] values stored in the dataset.
     pub fn observation_count(&self) -> usize {
         self.observations.len()
+    }
+
+    /// Resolve an alternate trajectory designation to its canonical [`TrajId`].
+    ///
+    /// Some ingestion backends (e.g. the MPC 80-column reader) register
+    /// alternate designations that are not used as primary trajectory keys —
+    /// for example a provisional designation that was later superseded by a
+    /// permanent number, or two provisional designations that were linked as
+    /// the same physical object.
+    ///
+    /// # Arguments
+    ///
+    /// - `alias` — the alternate designation string to resolve.
+    ///
+    /// # Returns
+    ///
+    /// `Some(&TrajId)` if `alias` is a known alternate designation;
+    /// `None` if no alias with that name has been registered.
+    pub fn resolve_alias(&self, alias: &str) -> Option<&TrajId> {
+        self.index.resolve_alias(alias)
+    }
+
+    /// Register an alternate designation that resolves to `primary`.
+    ///
+    /// Intended for use by ingestion backends; not part of the public API.
+    #[cfg(feature = "mpc_80_col")]
+    pub(crate) fn register_alias(&mut self, alias: String, primary: TrajId) {
+        self.index.register_alias(alias, primary);
     }
 
     /// Return a shared reference to the internal composite index.

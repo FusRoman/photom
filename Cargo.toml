@@ -55,6 +55,7 @@ proptest = "1.11.0"
 polars = ["dep:polars"]
 parallel = ["dep:rayon"]
 ades = ["dep:hifitime", "dep:quick-xml", "dep:serde", "dep:camino"]
+mpc_80_col = ["dep:hifitime", "dep:camino"]
 
 [package.metadata.docs.rs]
 features = ["polars", "parallel"]

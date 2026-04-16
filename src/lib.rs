@@ -16,6 +16,10 @@
 //! - **ADES ingestion** (`ades` feature) — load observations directly from MPC ADES XML
 //!   files ([`observation_dataset::ObsDataset::from_ades`]), supporting both structured
 //!   (`obsBlock`/`obsContext`) and flat formats, with automatic MPC observer resolution.
+//! - **MPC 80-column ingestion** (`mpc_80_col` feature) — load observations from the
+//!   classic MPC fixed-width 80-column ASCII format
+//!   ([`observation_dataset::ObsDataset::from_mpc_80_col`]), with automatic trajectory
+//!   grouping and nom-based field parsing.
 //! - **Multi-observer support** — MPC observatory codes (resolved lazily from the MPC
 //!   website), custom geodetic sites (interned and deduplicated), or unknown observer.
 //! - **Trajectory grouping** — group observations by a `traj_id` column; supports both
@@ -42,6 +46,10 @@
 #![cfg_attr(
     feature = "ades",
     doc = "| [`io::ades`] | ADES XML ingestion backend ([`io::ades`]) |"
+)]
+#![cfg_attr(
+    feature = "mpc_80_col",
+    doc = "| [`io::mpc_80_col`] | MPC 80-column ingestion backend ([`io::mpc_80_col`]) |"
 )]
 //!
 //! # Type Aliases
