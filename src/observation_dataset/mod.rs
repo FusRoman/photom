@@ -34,6 +34,9 @@ pub(crate) mod index;
 pub mod iter;
 pub mod observation;
 
+#[cfg(feature = "ades")]
+pub mod ades;
+
 #[cfg(feature = "parallel")]
 pub mod parallel;
 
@@ -199,7 +202,7 @@ impl ObsDataset {
     /// This accessor is `pub(crate)` so that unit tests inside the crate can
     /// inspect the `ObsDatasetIndex` fields (e.g. `obs_index_by_night` and
     /// `obs_index_by_trajectory`) without exposing them as part of the public API.
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[allow(dead_code)]
     pub(crate) fn index_ref(&self) -> &ObsDatasetIndex {
         &self.index
     }

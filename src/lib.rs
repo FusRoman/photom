@@ -13,6 +13,9 @@
 //!   `LazyFrame` with full schema validation.
 //! - **Parallel iteration** (`parallel` feature) — process observations, nights, and
 //!   trajectories in parallel via [rayon](https://docs.rs/rayon) with zero data copying.
+//! - **ADES ingestion** (`ades` feature) — load observations directly from MPC ADES XML
+//!   files ([`observation_dataset::ObsDataset::from_ades`]), supporting both structured
+//!   (`obsBlock`/`obsContext`) and flat formats, with automatic MPC observer resolution.
 //! - **Multi-observer support** — MPC observatory codes (resolved lazily from the MPC
 //!   website), custom geodetic sites (interned and deduplicated), or unknown observer.
 //! - **Trajectory grouping** — group observations by a `traj_id` column; supports both
@@ -36,6 +39,10 @@
     feature = "polars",
     doc = "| [`io`] | Internal ingestion backends (Polars adapter, schema validation) |"
 )]
+#![cfg_attr(
+    feature = "ades",
+    doc = "| [`io::ades`] | ADES XML ingestion backend ([`io::ades`]) |"
+)]
 //!
 //! # Type Aliases
 //!
@@ -44,6 +51,7 @@
 //!
 //! | Alias | Underlying type | Unit |
 //! |-------|-----------------|------|
+//! | [`Arcseconds`] | `f64` | Angle in arcseconds |
 //! | [`Radians`] | `f64` | Angle in radians |
 //! | [`Degrees`] | `f64` | Angle in degrees |
 //! | [`MJDTT`] | `f64` | Modified Julian Date (Terrestrial Time) in days |
@@ -315,6 +323,49 @@
 //! [`observation_dataset::ObsDataset`].  All parallel methods take `&self`, so they do
 //! not conflict with outstanding shared borrows of the dataset.
 //!
+//! # The `ades` Feature
+//!
+//! ADES ingestion is gated behind the optional `ades` feature.  To enable it, add the
+//! following to your `Cargo.toml`:
+//!
+//! ```toml
+//! [dependencies]
+//! photom = { version = "0.1", features = ["ades"] }
+//! ```
+//!
+//! Without this feature the crate is still fully usable: all types, constants, and
+//! astrometric utilities are available; only the `from_ades` constructor on
+//! [`observation_dataset::ObsDataset`] is absent.
+//!
+//! The `ades` feature can be combined freely with the `polars` and `parallel` features:
+//!
+//! ```toml
+//! photom = { version = "0.1", features = ["polars", "parallel", "ades"] }
+//! ```
+//!
+//! ## Loading an ADES file
+//!
+//! ```rust,ignore
+//! use photom::observation_dataset::ObsDataset;
+//!
+//! // error_ra and error_dec are optional fallback uncertainties in arcseconds,
+//! // used when the XML record does not supply rmsRA/rmsDec or precRA/precDec.
+//! let dataset = ObsDataset::from_ades("observations.xml", Some(0.5), Some(0.5))?;
+//! ```
+//!
+//! ## Uncertainty resolution (per observation, in precedence order)
+//!
+//! 1. `rmsRA` / `rmsDec` present in the XML record → used directly (arcseconds).
+//! 2. `precRA` / `precDec` present → used as the uncertainty (arcseconds).
+//! 3. Fallback `error_ra` / `error_dec` arguments → applied uniformly when neither
+//!    of the above fields is available.
+//!
+//! ## Observer representation
+//!
+//! Each observation's `stn` field is stored as an
+//! [`observer::dataset::ObserverId::MpcCode`] and resolved lazily from the MPC
+//! observatory list the first time accuracy values are requested.
+//!
 //! # Minimum Supported Rust Version
 //!
 //! `photom` requires **Rust 1.94.0** or later.
@@ -326,6 +377,8 @@ pub mod observation_dataset;
 pub mod observer;
 pub mod photometry;
 
+/// Arcseconds.
+pub type Arcseconds = f64;
 /// Radians.
 pub type Radians = f64;
 /// Degrees.

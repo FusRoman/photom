@@ -40,6 +40,8 @@ pub type ObservationIndexMap = AHashMap<ObsId, ObsIndex>;
 #[derive(Debug)]
 pub enum ObsMapIndex {
     /// Observations for this night occupy a single contiguous block of positions in the main vector, from `start` (inclusive) to `end` (exclusive).
+    // Constructed only by the `polars` ingestion path; matched everywhere.
+    #[cfg_attr(not(feature = "polars"), allow(dead_code))]
     Contiguous { start: ObsIndex, end: ObsIndex },
     /// Observations for this night are scattered across multiple non-contiguous positions in the main vector, stored as a list of indices.
     Split(Vec<ObsIndex>),
@@ -52,6 +54,7 @@ impl ObsMapIndex {
     ///
     /// Panics if called on a `Contiguous` entry (contiguous entries are built by range, not by
     /// individual push).
+    #[cfg_attr(not(feature = "polars"), allow(dead_code))]
     pub(crate) fn push_split(&mut self, idx: ObsIndex) {
         match self {
             ObsMapIndex::Split(vec) => vec.push(idx),

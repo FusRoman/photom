@@ -12,3 +12,6 @@ pub const EARTH_MINOR_AXIS: f64 = 6_356_752.3;
 
 /// Earth radius expressed in astronomical units
 pub const ERAU: f64 = (EARTH_MAJOR_AXIS / 1000.) / AU;
+
+/// Arcseconds to degrees conversion factor.
+pub const ARCSEC_TO_DEG: f64 = 1.0 / 3600.0;

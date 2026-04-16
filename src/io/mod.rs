@@ -1,4 +1,3 @@
-#![cfg(feature = "polars")]
 //! I/O backends for loading astronomical observation data into `photom` types.
 //!
 //! This module is gated behind the `polars` feature flag and exposes only the
@@ -8,4 +7,8 @@
 //!
 //! Without the `polars` feature this module is empty and invisible to the
 //! compiler.
+#[cfg(feature = "polars")]
 pub mod polars;
+
+#[cfg(feature = "ades")]
+pub mod ades;
