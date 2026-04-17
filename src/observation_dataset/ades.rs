@@ -1,7 +1,12 @@
 #![cfg(feature = "ades")]
+
 use camino::Utf8Path;
 
-use crate::{Arcseconds, io::ades::parse_ades_file, observation_dataset::ObsDataset};
+use crate::{
+    Arcseconds,
+    io::ades::{AdesError, parse_ades_file},
+    observation_dataset::ObsDataset,
+};
 
 impl ObsDataset {
     /// Build an [`ObsDataset`] by reading an ADES XML file.
@@ -24,25 +29,24 @@ impl ObsDataset {
     /// 2. `<precRA>` / `<precDec>` — precision-based uncertainties in arcseconds.
     /// 3. `error_ra` / `error_dec` — caller-supplied fallbacks in arcseconds.
     ///
-    /// If none of the three sources is available for a given observation the
-    /// function **panics**.
-    ///
     /// # Arguments
     ///
     /// - `ades_path` — path to the ADES XML file to read.
     /// - `error_ra`  — optional fallback 1-σ RA uncertainty in **arcseconds**.
     /// - `error_dec` — optional fallback 1-σ Dec uncertainty in **arcseconds**.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// - If the file cannot be read.
-    /// - If the XML cannot be parsed as either ADES variant.
-    /// - If a required uncertainty value is missing and no fallback was given.
+    /// Returns [`AdesError::Io`] if the file cannot be read,
+    /// [`AdesError::ParseXml`] if the XML cannot be parsed as either ADES
+    /// variant, or [`AdesError::MissingTrajId`] / [`AdesError::MissingRaError`]
+    /// / [`AdesError::MissingDecError`] if a required field is absent for a
+    /// given observation.
     pub fn from_ades(
         ades_path: &Utf8Path,
         error_ra: Option<Arcseconds>,
         error_dec: Option<Arcseconds>,
-    ) -> Self {
+    ) -> Result<Self, AdesError> {
         parse_ades_file(ades_path, error_ra, error_dec)
     }
 }

@@ -385,6 +385,12 @@ pub mod observation_dataset;
 pub mod observer;
 pub mod photometry;
 
+#[cfg(feature = "mpc_80_col")]
+pub use io::mpc_80_col::Mpc80ColError;
+
+#[cfg(feature = "ades")]
+pub use io::ades::AdesError;
+
 /// Arcseconds.
 pub type Arcseconds = f64;
 /// Radians.

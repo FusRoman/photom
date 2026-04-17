@@ -16,26 +16,26 @@ fn data(name: &str) -> camino::Utf8PathBuf {
 
 #[test]
 fn test_8467_obs_count() {
-    let ds = ObsDataset::from_mpc_80_col(data("8467.obs").as_path());
+    let ds = ObsDataset::from_mpc_80_col(data("8467.obs").as_path()).unwrap();
     assert_eq!(ds.observation_count(), 61);
 }
 
 #[test]
 fn test_8467_single_trajectory() {
-    let ds = ObsDataset::from_mpc_80_col(data("8467.obs").as_path());
+    let ds = ObsDataset::from_mpc_80_col(data("8467.obs").as_path()).unwrap();
     let count = ds.iter_traj_id().map(|it| it.count()).unwrap_or(0);
     assert_eq!(count, 1);
 }
 
 #[test]
 fn test_8467_traj_id_is_integer() {
-    let ds = ObsDataset::from_mpc_80_col(data("8467.obs").as_path());
+    let ds = ObsDataset::from_mpc_80_col(data("8467.obs").as_path()).unwrap();
     assert_eq!(ds.len_trajectory(&TrajId::Int(8467)).unwrap_or(0), 61);
 }
 
 #[test]
 fn test_8467_mjd_positive() {
-    let ds = ObsDataset::from_mpc_80_col(data("8467.obs").as_path());
+    let ds = ObsDataset::from_mpc_80_col(data("8467.obs").as_path()).unwrap();
     for obs in ds.iter_observations() {
         assert!(
             obs.mjd_tt() > 0.0,
@@ -47,7 +47,7 @@ fn test_8467_mjd_positive() {
 
 #[test]
 fn test_8467_ra_in_range() {
-    let ds = ObsDataset::from_mpc_80_col(data("8467.obs").as_path());
+    let ds = ObsDataset::from_mpc_80_col(data("8467.obs").as_path()).unwrap();
     use std::f64::consts::PI;
     for obs in ds.iter_observations() {
         let ra = obs.equ_coord().ra;
@@ -57,7 +57,7 @@ fn test_8467_ra_in_range() {
 
 #[test]
 fn test_8467_dec_in_range() {
-    let ds = ObsDataset::from_mpc_80_col(data("8467.obs").as_path());
+    let ds = ObsDataset::from_mpc_80_col(data("8467.obs").as_path()).unwrap();
     use std::f64::consts::FRAC_PI_2;
     for obs in ds.iter_observations() {
         let dec = obs.equ_coord().dec;
@@ -70,7 +70,7 @@ fn test_8467_dec_in_range() {
 
 #[test]
 fn test_8467_uncertainties_positive() {
-    let ds = ObsDataset::from_mpc_80_col(data("8467.obs").as_path());
+    let ds = ObsDataset::from_mpc_80_col(data("8467.obs").as_path()).unwrap();
     for obs in ds.iter_observations() {
         let coord = obs.equ_coord();
         assert!(coord.ra_error > 0.0, "RA uncertainty should be > 0");
@@ -84,13 +84,13 @@ fn test_8467_uncertainties_positive() {
 
 #[test]
 fn test_k25d50b_obs_count() {
-    let ds = ObsDataset::from_mpc_80_col(data("K25D50B.obs").as_path());
+    let ds = ObsDataset::from_mpc_80_col(data("K25D50B.obs").as_path()).unwrap();
     assert_eq!(ds.observation_count(), 20);
 }
 
 #[test]
 fn test_k25d50b_traj_id_is_string() {
-    let ds = ObsDataset::from_mpc_80_col(data("K25D50B.obs").as_path());
+    let ds = ObsDataset::from_mpc_80_col(data("K25D50B.obs").as_path()).unwrap();
     assert_eq!(
         ds.len_trajectory(&TrajId::Str("K25D50B".to_string()))
             .unwrap_or(0),
@@ -107,20 +107,20 @@ fn test_k25d50b_traj_id_is_string() {
 
 #[test]
 fn test_2015ab_single_trajectory() {
-    let ds = ObsDataset::from_mpc_80_col(data("2015AB.obs").as_path());
+    let ds = ObsDataset::from_mpc_80_col(data("2015AB.obs").as_path()).unwrap();
     let count = ds.iter_traj_id().map(|it| it.count()).unwrap_or(0);
     assert_eq!(count, 1, "2015AB.obs must produce a single trajectory");
 }
 
 #[test]
 fn test_2015ab_total_obs_count() {
-    let ds = ObsDataset::from_mpc_80_col(data("2015AB.obs").as_path());
+    let ds = ObsDataset::from_mpc_80_col(data("2015AB.obs").as_path()).unwrap();
     assert_eq!(ds.observation_count(), 37);
 }
 
 #[test]
 fn test_2015ab_primary_traj_id() {
-    let ds = ObsDataset::from_mpc_80_col(data("2015AB.obs").as_path());
+    let ds = ObsDataset::from_mpc_80_col(data("2015AB.obs").as_path()).unwrap();
     // All observations are under the primary TrajId K09R05F.
     assert_eq!(
         ds.len_trajectory(&TrajId::Str("K09R05F".to_string()))
@@ -131,7 +131,7 @@ fn test_2015ab_primary_traj_id() {
 
 #[test]
 fn test_2015ab_k15a00b_is_alias() {
-    let ds = ObsDataset::from_mpc_80_col(data("2015AB.obs").as_path());
+    let ds = ObsDataset::from_mpc_80_col(data("2015AB.obs").as_path()).unwrap();
     // K15A00B must resolve to the primary K09R05F.
     let resolved = ds.resolve_alias("K15A00B");
     assert_eq!(
@@ -143,7 +143,7 @@ fn test_2015ab_k15a00b_is_alias() {
 
 #[test]
 fn test_2015ab_k09r05f_not_alias() {
-    let ds = ObsDataset::from_mpc_80_col(data("2015AB.obs").as_path());
+    let ds = ObsDataset::from_mpc_80_col(data("2015AB.obs").as_path()).unwrap();
     // K09R05F is the primary and should not be an alias.
     assert!(
         ds.resolve_alias("K09R05F").is_none(),
@@ -157,26 +157,26 @@ fn test_2015ab_k09r05f_not_alias() {
 
 #[test]
 fn test_33803_obs_count() {
-    let ds = ObsDataset::from_mpc_80_col(data("33803.obs").as_path());
+    let ds = ObsDataset::from_mpc_80_col(data("33803.obs").as_path()).unwrap();
     assert_eq!(ds.observation_count(), 129);
 }
 
 #[test]
 fn test_33803_single_trajectory() {
-    let ds = ObsDataset::from_mpc_80_col(data("33803.obs").as_path());
+    let ds = ObsDataset::from_mpc_80_col(data("33803.obs").as_path()).unwrap();
     let count = ds.iter_traj_id().map(|it| it.count()).unwrap_or(0);
     assert_eq!(count, 1);
 }
 
 #[test]
 fn test_33803_traj_id() {
-    let ds = ObsDataset::from_mpc_80_col(data("33803.obs").as_path());
+    let ds = ObsDataset::from_mpc_80_col(data("33803.obs").as_path()).unwrap();
     assert_eq!(ds.len_trajectory(&TrajId::Int(33803)).unwrap_or(0), 129);
 }
 
 #[test]
 fn test_33803_uncertainties_positive() {
-    let ds = ObsDataset::from_mpc_80_col(data("33803.obs").as_path());
+    let ds = ObsDataset::from_mpc_80_col(data("33803.obs").as_path()).unwrap();
     for obs in ds.iter_observations() {
         let coord = obs.equ_coord();
         assert!(coord.ra_error > 0.0, "RA uncertainty should be > 0");

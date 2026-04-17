@@ -17,6 +17,8 @@ use nom::{
     combinator::{map_res, opt},
 };
 
+use thiserror::Error;
+
 use crate::{
     Degrees, TrajId,
     astrometry::EquCoord,
@@ -30,6 +32,22 @@ use crate::{
     photometry::{Filter, Photometry},
 };
 
+/// Errors that can occur while reading an MPC 80-column observation file.
+#[derive(Debug, Error)]
+pub enum Mpc80ColError {
+    /// The file could not be opened or read.
+    #[error("I/O error reading MPC 80-col file: {0}")]
+    Io(#[from] std::io::Error),
+
+    /// A line that should be 80+ columns was malformed and could not be parsed.
+    #[error("failed to parse MPC 80-col line {line_no}: {reason}\n  line: {line}")]
+    InvalidLine {
+        line_no: usize,
+        line: String,
+        reason: String,
+    },
+}
+
 // ---------------------------------------------------------------------------
 // Public entry point
 // ---------------------------------------------------------------------------
@@ -38,8 +56,8 @@ use crate::{
 ///
 /// Lines that carry satellite secondary-line data (column 15, 1-indexed,
 /// equals `'s'`) are silently skipped.  Lines shorter than 80 characters
-/// are also silently skipped.  All other parse errors cause a panic
-/// (consistent with the project's fail-fast policy).
+/// are also silently skipped.  All other parse errors are returned as
+/// [`Mpc80ColError`].
 ///
 /// Because a single MPC 80-column file always describes **one physical
 /// object**, all observations are grouped under a single canonical
@@ -53,9 +71,8 @@ use crate::{
 ///
 /// Every *other* designation string found in the file is registered as an
 /// alias via [`ObsDataset::resolve_alias`], pointing to the canonical key.
-pub(crate) fn parse_mpc_80_col_file(path: &Utf8Path) -> ObsDataset {
-    let content = std::fs::read_to_string(path)
-        .unwrap_or_else(|e| panic!("Failed to read MPC 80-col file '{path}': {e}"));
+pub(crate) fn parse_mpc_80_col_file(path: &Utf8Path) -> Result<ObsDataset, Mpc80ColError> {
+    let content = std::fs::read_to_string(path)?;
     parse_mpc_80_col_str(&content)
 }
 
@@ -63,19 +80,22 @@ pub(crate) fn parse_mpc_80_col_file(path: &Utf8Path) -> ObsDataset {
 ///
 /// Same semantics as [`parse_mpc_80_col_file`] but accepts an
 /// already-loaded string, which is useful for unit tests.
-pub(crate) fn parse_mpc_80_col_str(content: &str) -> ObsDataset {
+pub(crate) fn parse_mpc_80_col_str(content: &str) -> Result<ObsDataset, Mpc80ColError> {
     // ── Pass 1: parse all valid lines ──────────────────────────────────────
     let mut records: Vec<(TrajId, LineRecord)> = Vec::new();
 
-    for line in content.lines() {
+    for (line_no, line) in content.lines().enumerate() {
         if line.len() < 80 {
             continue;
         }
         if line.as_bytes()[14] == b's' {
             continue;
         }
-        let record = parse_line(line)
-            .unwrap_or_else(|e| panic!("Failed to parse MPC 80-col line: {e}\nLine: {line}"));
+        let record = parse_line(line).map_err(|reason| Mpc80ColError::InvalidLine {
+            line_no: line_no + 1,
+            line: line.to_string(),
+            reason,
+        })?;
         let traj_id = record.traj_id.clone();
         records.push((traj_id, record));
     }
@@ -120,7 +140,7 @@ pub(crate) fn parse_mpc_80_col_str(content: &str) -> ObsDataset {
         dataset.register_alias(alias, primary.clone());
     }
 
-    dataset
+    Ok(dataset)
 }
 
 // ---------------------------------------------------------------------------

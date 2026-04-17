@@ -2,7 +2,10 @@
 
 use camino::Utf8Path;
 
-use crate::{io::mpc_80_col::parse_mpc_80_col_file, observation_dataset::ObsDataset};
+use crate::{
+    io::mpc_80_col::{Mpc80ColError, parse_mpc_80_col_file},
+    observation_dataset::ObsDataset,
+};
 
 impl ObsDataset {
     /// Build an [`ObsDataset`] by reading an **MPC 80-column** observation file.
@@ -50,11 +53,11 @@ impl ObsDataset {
     /// - Lines where column 15 (0-indexed: 14) equals `'s'` are secondary
     ///   satellite-position lines and are silently ignored.
     ///
-    /// ## Panics
+    /// ## Errors
     ///
-    /// Panics if the file cannot be read, or if a line cannot be parsed
-    /// (consistent with the project's fail-fast policy for corrupted inputs).
-    pub fn from_mpc_80_col(path: &Utf8Path) -> ObsDataset {
+    /// Returns [`Mpc80ColError::Io`] if the file cannot be read, or
+    /// [`Mpc80ColError::InvalidLine`] if a line cannot be parsed.
+    pub fn from_mpc_80_col(path: &Utf8Path) -> Result<ObsDataset, Mpc80ColError> {
         parse_mpc_80_col_file(path)
     }
 }

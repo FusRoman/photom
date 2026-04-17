@@ -5,6 +5,7 @@ pub mod ades_structure;
 use ahash::AHashMap;
 use camino::Utf8Path;
 use quick_xml::de::from_str;
+use thiserror::Error;
 
 use crate::{
     Arcseconds, Degrees, TrajId,
@@ -20,6 +21,43 @@ use crate::{
 };
 
 use ades_structure::{FlatAdes, OpticalObs, StructuredAdes};
+
+// ---------------------------------------------------------------------------
+// Error type
+// ---------------------------------------------------------------------------
+
+/// Errors that can occur while reading an ADES XML observation file.
+#[derive(Debug, Error)]
+pub enum AdesError {
+    /// The file could not be opened or read.
+    #[error("I/O error reading ADES file: {0}")]
+    Io(#[from] std::io::Error),
+
+    /// The XML could not be parsed as either the flat or structured ADES variant.
+    #[error(
+        "failed to parse ADES document:\n  flat error: {flat_err}\n  structured error: {structured_err}"
+    )]
+    ParseXml {
+        flat_err: String,
+        structured_err: String,
+    },
+
+    /// An observation has no `permID`, `provID`, or `trkSub` field.
+    #[error("ADES observation #{index} has no permID, provID, or trkSub")]
+    MissingTrajId { index: usize },
+
+    /// An observation has no RA uncertainty and no fallback was provided.
+    #[error(
+        "ADES observation #{index} has no RA uncertainty (rmsRA / precRA) and no fallback was provided"
+    )]
+    MissingRaError { index: usize },
+
+    /// An observation has no Dec uncertainty and no fallback was provided.
+    #[error(
+        "ADES observation #{index} has no Dec uncertainty (rmsDec / precDec) and no fallback was provided"
+    )]
+    MissingDecError { index: usize },
+}
 
 // ---------------------------------------------------------------------------
 // Public (crate-level) entry point
@@ -40,18 +78,18 @@ use ades_structure::{FlatAdes, OpticalObs, StructuredAdes};
 /// - `error_dec` — optional fallback 1-σ Dec uncertainty in **arcseconds**,
 ///   used for any observation that has neither `rmsDec` nor `precDec`.
 ///
-/// # Panics
+/// # Errors
 ///
-/// Panics if the file cannot be read, if neither ADES variant parses
-/// successfully, or if a required uncertainty value is absent and no fallback
-/// was supplied.
+/// Returns [`AdesError::Io`] if the file cannot be read,
+/// [`AdesError::ParseXml`] if neither ADES variant parses successfully, or
+/// [`AdesError::MissingTrajId`] / [`AdesError::MissingRaError`] /
+/// [`AdesError::MissingDecError`] if a required field is absent.
 pub(crate) fn parse_ades_file(
     ades_path: &Utf8Path,
     error_ra: Option<f64>,
     error_dec: Option<f64>,
-) -> ObsDataset {
-    let xml = std::fs::read_to_string(ades_path)
-        .unwrap_or_else(|e| panic!("Failed to read ADES file '{ades_path}': {e}"));
+) -> Result<ObsDataset, AdesError> {
+    let xml = std::fs::read_to_string(ades_path)?;
     parse_ades_xml(&xml, error_ra, error_dec)
 }
 
@@ -62,14 +100,15 @@ pub(crate) fn parse_ades_xml(
     xml: &str,
     error_ra: Option<f64>,
     error_dec: Option<f64>,
-) -> ObsDataset {
+) -> Result<ObsDataset, AdesError> {
     match from_str::<FlatAdes>(xml) {
         Ok(flat) => build_from_flat(&flat.opticals, error_ra, error_dec),
         Err(flat_err) => match from_str::<StructuredAdes>(xml) {
             Ok(structured) => build_from_structured(&structured, error_ra, error_dec),
-            Err(structured_err) => panic!(
-                "Failed to parse ADES document:\n  flat error: {flat_err}\n  structured error: {structured_err}"
-            ),
+            Err(structured_err) => Err(AdesError::ParseXml {
+                flat_err: flat_err.to_string(),
+                structured_err: structured_err.to_string(),
+            }),
         },
     }
 }
@@ -84,7 +123,7 @@ fn build_from_flat(
     opticals: &[OpticalObs],
     error_ra: Option<f64>,
     error_dec: Option<f64>,
-) -> ObsDataset {
+) -> Result<ObsDataset, AdesError> {
     let records: Vec<(&OpticalObs, Option<[u8; 3]>)> = opticals.iter().map(|o| (o, None)).collect();
     build_dataset(records, error_ra, error_dec)
 }
@@ -95,7 +134,7 @@ fn build_from_structured(
     structured: &StructuredAdes,
     error_ra: Option<f64>,
     error_dec: Option<f64>,
-) -> ObsDataset {
+) -> Result<ObsDataset, AdesError> {
     let mut records: Vec<(&OpticalObs, Option<[u8; 3]>)> = Vec::new();
     for block in &structured.obs_blocks {
         let ctx_bytes = mpc_str_to_bytes(&block.obs_context.observatory.mpc_code);
@@ -126,7 +165,7 @@ fn build_dataset(
     records: Vec<(&OpticalObs, Option<[u8; 3]>)>,
     error_ra: Option<Arcseconds>,
     error_dec: Option<Arcseconds>,
-) -> ObsDataset {
+) -> Result<ObsDataset, AdesError> {
     let mut observations: Vec<Observation> = Vec::with_capacity(records.len());
     let mut traj_index: AHashMap<TrajId, Vec<usize>> =
         AHashMap::with_capacity(records.len() / 4 + 1);
@@ -135,9 +174,21 @@ fn build_dataset(
         // MPC code: context wins over observation-level stn.
         let mpc_code = ctx_mpc.unwrap_or_else(|| optical.mpc_code_bytes());
 
+        // Trajectory identifier.
+        let traj_id = optical
+            .traj_id()
+            .ok_or(AdesError::MissingTrajId { index: idx })?;
+
         // Positional uncertainties: arcsec → degrees.
-        let ra_err_deg: Degrees = optical.ra_error_arcsec(error_ra) * ARCSEC_TO_DEG;
-        let dec_err_deg: Degrees = optical.dec_error_arcsec(error_dec) * ARCSEC_TO_DEG;
+        let ra_err_arcsec = optical
+            .ra_error_arcsec(error_ra)
+            .ok_or(AdesError::MissingRaError { index: idx })?;
+        let dec_err_arcsec = optical
+            .dec_error_arcsec(error_dec)
+            .ok_or(AdesError::MissingDecError { index: idx })?;
+
+        let ra_err_deg: Degrees = ra_err_arcsec * ARCSEC_TO_DEG;
+        let dec_err_deg: Degrees = dec_err_arcsec * ARCSEC_TO_DEG;
 
         // Equatorial coordinates in radians.
         let equ_coord = EquCoord::from_degrees(optical.ra, ra_err_deg, optical.dec, dec_err_deg);
@@ -161,7 +212,7 @@ fn build_dataset(
             observer: Some(ObserverId::MpcCode(mpc_code)),
         });
 
-        traj_index.entry(optical.traj_id()).or_default().push(idx);
+        traj_index.entry(traj_id).or_default().push(idx);
     }
 
     let traj_index_map: TrajIndexMap = traj_index
@@ -169,14 +220,14 @@ fn build_dataset(
         .map(|(traj_id, indices)| (traj_id, ObsMapIndex::Split(indices)))
         .collect();
 
-    ObsDataset::new(
+    Ok(ObsDataset::new(
         observations,
         vec![], // no custom geodetic observers
         None,   // error model resolved lazily on first MPC look-up
         None,   // no night index
         Some(traj_index_map),
         None, // default LRU cache size (1 000)
-    )
+    ))
 }
 
 // ---------------------------------------------------------------------------

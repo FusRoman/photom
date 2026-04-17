@@ -26,7 +26,7 @@ fn fixture(name: &str) -> camino::Utf8PathBuf {
 #[test]
 fn ades_example1_observation_count() {
     let path = fixture("example_ades.xml");
-    let ds = ObsDataset::from_ades(&path, None, None);
+    let ds = ObsDataset::from_ades(&path, None, None).unwrap();
     assert_eq!(
         ds.observation_count(),
         4,
@@ -37,7 +37,7 @@ fn ades_example1_observation_count() {
 #[test]
 fn ades_example1_trajectory_count() {
     let path = fixture("example_ades.xml");
-    let ds = ObsDataset::from_ades(&path, None, None);
+    let ds = ObsDataset::from_ades(&path, None, None).unwrap();
     // All four observations have different permIDs → 4 distinct trajectories.
     let traj_count = ds.iter_traj_id().map(|it| it.count()).unwrap_or(0);
     assert_eq!(
@@ -49,7 +49,7 @@ fn ades_example1_trajectory_count() {
 #[test]
 fn ades_example1_observations_have_positive_mjd() {
     let path = fixture("example_ades.xml");
-    let ds = ObsDataset::from_ades(&path, None, None);
+    let ds = ObsDataset::from_ades(&path, None, None).unwrap();
     for obs in ds.iter_observations() {
         assert!(
             obs.mjd_tt() > 0.0,
@@ -62,7 +62,7 @@ fn ades_example1_observations_have_positive_mjd() {
 #[test]
 fn ades_example1_errors_are_nonzero() {
     let path = fixture("example_ades.xml");
-    let ds = ObsDataset::from_ades(&path, None, None);
+    let ds = ObsDataset::from_ades(&path, None, None).unwrap();
     for obs in ds.iter_observations() {
         let coord = obs.equ_coord();
         assert!(coord.ra_error > 0.0, "RA error should be > 0");
@@ -75,7 +75,7 @@ fn ades_example1_errors_are_nonzero() {
 #[test]
 fn ades_example2_observation_count() {
     let path = fixture("example_ades2.xml");
-    let ds = ObsDataset::from_ades(&path, None, None);
+    let ds = ObsDataset::from_ades(&path, None, None).unwrap();
     // 3 obs (291) + 2 obs (T12) + 4 obs (568) = 9
     assert_eq!(
         ds.observation_count(),
@@ -87,7 +87,7 @@ fn ades_example2_observation_count() {
 #[test]
 fn ades_example2_trajectory_count() {
     let path = fixture("example_ades2.xml");
-    let ds = ObsDataset::from_ades(&path, None, None);
+    let ds = ObsDataset::from_ades(&path, None, None).unwrap();
     // Distinct object IDs: P10kefK, "2016 RD34", "2016 JB29"
     let traj_count = ds.iter_traj_id().map(|it| it.count()).unwrap_or(0);
     assert_eq!(
@@ -99,7 +99,7 @@ fn ades_example2_trajectory_count() {
 #[test]
 fn ades_example2_p10kefk_observation_count() {
     let path = fixture("example_ades2.xml");
-    let ds = ObsDataset::from_ades(&path, None, None);
+    let ds = ObsDataset::from_ades(&path, None, None).unwrap();
     let count = ds
         .len_trajectory(&TrajId::Str("P10kefK".to_string()))
         .unwrap_or(0);
@@ -109,7 +109,7 @@ fn ades_example2_p10kefk_observation_count() {
 #[test]
 fn ades_example2_rd34_observation_count() {
     let path = fixture("example_ades2.xml");
-    let ds = ObsDataset::from_ades(&path, None, None);
+    let ds = ObsDataset::from_ades(&path, None, None).unwrap();
     let count = ds
         .len_trajectory(&TrajId::Str("2016 RD34".to_string()))
         .unwrap_or(0);
@@ -119,7 +119,7 @@ fn ades_example2_rd34_observation_count() {
 #[test]
 fn ades_example2_jb29_observation_count() {
     let path = fixture("example_ades2.xml");
-    let ds = ObsDataset::from_ades(&path, None, None);
+    let ds = ObsDataset::from_ades(&path, None, None).unwrap();
     let count = ds
         .len_trajectory(&TrajId::Str("2016 JB29".to_string()))
         .unwrap_or(0);
@@ -129,7 +129,7 @@ fn ades_example2_jb29_observation_count() {
 #[test]
 fn ades_example2_mjd_tt_is_positive() {
     let path = fixture("example_ades2.xml");
-    let ds = ObsDataset::from_ades(&path, None, None);
+    let ds = ObsDataset::from_ades(&path, None, None).unwrap();
     for obs in ds.iter_observations() {
         assert!(
             obs.mjd_tt() > 0.0,
@@ -144,7 +144,7 @@ fn ades_example2_prec_based_errors_are_nonzero() {
     // example_ades2.xml uses precRA/precDec, not rmsRA/rmsDec.
     // Verify the reader uses those as fallback uncertainty sources.
     let path = fixture("example_ades2.xml");
-    let ds = ObsDataset::from_ades(&path, None, None);
+    let ds = ObsDataset::from_ades(&path, None, None).unwrap();
     for obs in ds.iter_observations() {
         let coord = obs.equ_coord();
         assert!(
@@ -166,6 +166,6 @@ fn ades_fallback_error_overrides_missing_rms() {
     // fallback / 3600 * π/180 (arcsec → degrees → radians).
     // Here we just verify the dataset loads successfully and all errors > 0.
     let path = fixture("example_ades2.xml");
-    let ds = ObsDataset::from_ades(&path, Some(1.0), Some(1.0));
+    let ds = ObsDataset::from_ades(&path, Some(1.0), Some(1.0)).unwrap();
     assert_eq!(ds.observation_count(), 9);
 }

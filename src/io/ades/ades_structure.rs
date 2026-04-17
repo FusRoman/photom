@@ -113,51 +113,41 @@ pub(crate) struct OpticalObs {
 }
 
 impl OpticalObs {
-    /// Return the trajectory identifier for this observation.
+    /// Return the trajectory identifier for this observation, or `None` if
+    /// none of `permID`, `provID`, or `trkSub` is set.
     ///
-    /// Precedence: `permID` > `provID` > `trkSub`.  If none of these fields
-    /// is set the function panics — a well-formed ADES file must supply at
-    /// least one object identifier per observation.
+    /// Precedence: `permID` > `provID` > `trkSub`.
     ///
     /// If the resolved identifier parses as a `u32` it is returned as
     /// `TrajId::Int`; otherwise as `TrajId::Str`.
-    pub(crate) fn traj_id(&self) -> TrajId {
+    pub(crate) fn traj_id(&self) -> Option<TrajId> {
         let id = self
             .perm_id
             .clone()
             .or_else(|| self.prov_id.clone())
-            .unwrap_or_else(|| {
-                self.trk_sub
-                    .clone()
-                    .expect("ADES optical observation has no permID, provID, or trkSub")
-            });
+            .or_else(|| self.trk_sub.clone())?;
 
         if let Ok(n) = id.parse::<u32>() {
-            TrajId::Int(n)
+            Some(TrajId::Int(n))
         } else {
-            TrajId::Str(id)
+            Some(TrajId::Str(id))
         }
     }
 
-    /// Resolve the RA uncertainty (in arcseconds).
+    /// Resolve the RA uncertainty in arcseconds, or `None` if none of
+    /// `rmsRA`, `precRA`, or the supplied `fallback` is present.
     ///
-    /// Uses `rmsRA` when available, then falls back to `precRA`, and finally
-    /// to `fallback` (a caller-supplied default).  Panics if none of the
-    /// three is present.
-    pub(crate) fn ra_error_arcsec(&self, fallback: Option<f64>) -> f64 {
-        self.rms_ra.or(self.prec_ra).or(fallback).expect(
-            "ADES observation has no RA uncertainty (rmsRA / precRA) and no fallback was provided",
-        )
+    /// Priority: `rmsRA` > `precRA` > `fallback`.
+    pub(crate) fn ra_error_arcsec(&self, fallback: Option<f64>) -> Option<f64> {
+        self.rms_ra.or(self.prec_ra).or(fallback)
     }
 
-    /// Resolve the Dec uncertainty (in arcseconds).
+    /// Resolve the Dec uncertainty in arcseconds, or `None` if none of
+    /// `rmsDec`, `precDec`, or the supplied `fallback` is present.
     ///
-    /// Uses `rmsDec` when available, then falls back to `precDec`, and
-    /// finally to `fallback`.  Panics if none of the three is present.
-    pub(crate) fn dec_error_arcsec(&self, fallback: Option<f64>) -> f64 {
-        self.rms_dec.or(self.prec_dec).or(fallback).expect(
-            "ADES observation has no Dec uncertainty (rmsDec / precDec) and no fallback was provided",
-        )
+    /// Priority: `rmsDec` > `precDec` > `fallback`.
+    pub(crate) fn dec_error_arcsec(&self, fallback: Option<f64>) -> Option<f64> {
+        self.rms_dec.or(self.prec_dec).or(fallback)
     }
 
     /// Convert the `stn` field to a 3-byte MPC code array.
