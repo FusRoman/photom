@@ -132,6 +132,17 @@ pub struct ObsDataset {
 }
 
 impl ObsDataset {
+    /// Create an empty `ObsDataset` with no observations, no observers, and an empty LRU cache.
+    ///
+    /// # Arguments
+    /// - `lru_cache_size` — optional capacity for the LRU cache; `None` defaults to 1 000.
+    ///
+    /// # Returns
+    /// An empty `ObsDataset` with the specified LRU cache capacity.
+    pub fn empty(lru_cache_size: Option<usize>) -> Self {
+        Self::new(vec![], vec![], None, None, None, lru_cache_size)
+    }
+
     /// Look up a single observation by its [`ObsId`].
     ///
     /// Returns a shared reference to the matching [`Observation`], or `None`
@@ -222,14 +233,6 @@ impl ObsDataset {
     /// `None` if no alias with that name has been registered.
     pub fn resolve_alias(&self, alias: &str) -> Option<&TrajId> {
         self.index.resolve_alias(alias)
-    }
-
-    /// Register an alternate designation that resolves to `primary`.
-    ///
-    /// Intended for use by ingestion backends; not part of the public API.
-    #[cfg(feature = "mpc_80_col")]
-    pub(crate) fn register_alias(&mut self, alias: String, primary: TrajId) {
-        self.index.register_alias(alias, primary);
     }
 
     /// Return a shared reference to the internal composite index.

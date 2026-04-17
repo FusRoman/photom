@@ -56,6 +56,31 @@ pub struct Observation {
     pub(crate) observer: Option<ObserverId>,
 }
 
+/// Implement equality and ordering based on the unique identifier and detection epoch.
+impl PartialEq for Observation {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+}
+
+impl Eq for Observation {}
+
+/// Implement ordering based on detection epoch (MJDTT), then by unique identifier (ObsId) to break ties.
+impl Ord for Observation {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.mjd_tt
+            .total_cmp(&other.mjd_tt)
+            .then(self.id.cmp(&other.id))
+    }
+}
+
+/// Implement partial ordering consistent with the total ordering defined in `Ord`.
+impl PartialOrd for Observation {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
 impl Observation {
     /// Return the zero-based position of this observation in its parent dataset's storage vector.
     ///

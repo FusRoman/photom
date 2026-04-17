@@ -21,7 +21,7 @@
 /// human-readable strings such as `"V"`, `"r'"`, or `"Gaia-G"`, while others
 /// store an integer filter code.  This enum accommodates both representations
 /// without loss of information.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Filter {
     /// A human-readable filter label (e.g. `"V"`, `"r'"`, `"Gaia-G"`).
     String(String),
@@ -35,7 +35,7 @@ pub enum Filter {
 /// 1-σ measurement uncertainty, and the bandpass filter through which the
 /// observation was taken.  All magnitude values follow the standard
 /// astronomical convention (lower value = brighter source).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, PartialOrd)]
 pub struct Photometry {
     /// Apparent magnitude of the detected source.
     pub magnitude: f64,

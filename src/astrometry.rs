@@ -25,7 +25,7 @@ use crate::{Degrees, Radians};
 /// The coordinate pair `(ra, dec)` locates a point on the celestial sphere;
 /// the companion pair `(ra_error, dec_error)` carries the 1-σ measurement
 /// uncertainties of that position.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
 pub struct EquCoord {
     /// Right ascension in **radians**, in the range $[0, 2\pi)$.
     pub ra: Radians,

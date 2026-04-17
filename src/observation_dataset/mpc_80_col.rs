@@ -3,12 +3,19 @@
 use camino::{Utf8Path, Utf8PathBuf};
 
 use crate::{
-    ObsDatasetBuilder,
+    ObsDatasetBuilder, TrajId,
     io::mpc_80_col::{Mpc80ColError, parse_mpc_80_col_file},
     observation_dataset::ObsDataset,
 };
 
 impl ObsDataset {
+    /// Register an alternate designation that resolves to `primary`.
+    ///
+    /// Intended for use by ingestion backends; not part of the public API.
+    pub(crate) fn register_alias(&mut self, alias: String, primary: TrajId) {
+        self.index.register_alias(alias, primary);
+    }
+
     /// Build an [`ObsDataset`] by reading an **MPC 80-column** observation file.
     ///
     /// The format is the fixed-width ASCII format distributed by the Minor
