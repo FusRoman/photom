@@ -22,6 +22,7 @@
 /// store an integer filter code.  This enum accommodates both representations
 /// without loss of information.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Filter {
     /// A human-readable filter label (e.g. `"V"`, `"r'"`, `"Gaia-G"`).
     String(String),
@@ -36,6 +37,7 @@ pub enum Filter {
 /// observation was taken.  All magnitude values follow the standard
 /// astronomical convention (lower value = brighter source).
 #[derive(Debug, Clone, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Photometry {
     /// Apparent magnitude of the detected source.
     pub magnitude: f64,

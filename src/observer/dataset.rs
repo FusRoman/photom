@@ -46,6 +46,7 @@ use crate::{
 ///   observatory code (e.g. `b"I41"`).  The corresponding [`Observer`]
 ///   metadata is resolved lazily from the MPC catalogue on the first access.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ObserverId {
     /// Index into the dataset's internal list of custom geodetic observers.
     IntId(usize),
@@ -69,7 +70,7 @@ pub enum ObserverId {
 pub(crate) struct ObserverDataset {
     /// Geodetic observers supplied by the input data, stored once and
     /// referenced by index to avoid duplication.
-    custom_observers: Vec<Observer>,
+    pub(crate) custom_observers: Vec<Observer>,
 
     /// Lazily-initialised MPC observatory lookup table.
     ///

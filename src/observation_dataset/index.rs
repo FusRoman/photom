@@ -371,6 +371,24 @@ impl ObsDatasetIndex {
         self.traj_aliases.get(alias)
     }
 
+    /// Iterate over all registered trajectory aliases.
+    ///
+    /// Yields `(alias, canonical_traj_id)` pairs in unspecified order.
+    /// Used by the serde serialisation path to persist the alias map.
+    #[cfg(feature = "serde")]
+    pub(crate) fn iter_aliases(&self) -> impl Iterator<Item = (&str, &TrajId)> {
+        self.traj_aliases.iter().map(|(k, v)| (k.as_str(), v))
+    }
+
+    /// Replace the trajectory alias map with the provided one.
+    ///
+    /// Used by the serde deserialisation path to restore aliases that were
+    /// serialised via [`ObsDatasetIndex::iter_aliases`].
+    #[cfg(feature = "serde")]
+    pub(crate) fn set_aliases(&mut self, aliases: TrajAliasMap) {
+        self.traj_aliases = aliases;
+    }
+
     /// Merge another `ObsDatasetIndex` into this one, applying `offset` to all
     /// stored vector positions (and observation ids used as map keys).
     ///

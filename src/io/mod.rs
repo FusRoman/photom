@@ -22,3 +22,6 @@ pub mod mpc_80_col;
 
 #[cfg(feature = "datafusion")]
 pub mod datafusion;
+
+#[cfg(feature = "serde")]
+pub mod serde;

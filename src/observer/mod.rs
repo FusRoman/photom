@@ -47,6 +47,7 @@ use crate::{
 /// Use [`Observer::new`] to build from geodetic latitude and elevation, or
 /// [`Observer::from_parallax`] to supply the parallax constants directly.
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Observer {
     /// Geodetic longitude in **radians** east of Greenwich.
     pub longitude: NotNan<Radians>,

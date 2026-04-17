@@ -28,6 +28,7 @@ use crate::{
 /// measurement, the detection epoch, and an optional reference to the
 /// observatory that recorded it.
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Observation {
     /// Zero-based index of this observation in the source dataset, assigned during construction.
     pub(crate) index: ObsIndex,

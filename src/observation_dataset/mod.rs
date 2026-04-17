@@ -115,20 +115,20 @@ pub enum ObsDatasetError {
 #[derive(Debug)]
 pub struct ObsDataset {
     /// Full list of observations in insertion order.
-    observations: Vec<Observation>,
+    pub(crate) observations: Vec<Observation>,
 
     /// Index mappings for efficient look-up by various identifiers.
-    index: ObsDatasetIndex,
+    pub(crate) index: ObsDatasetIndex,
 
     /// Observer values for both custom geodetic observers (indexed by `ObserverId::IntId`)
     /// and MPC-coded observers (resolved lazily via `ObserverId::MpcCode`).
-    observer_dataset: ObserverDataset,
+    pub(crate) observer_dataset: ObserverDataset,
 
     /// LRU cache keyed by [`ObsId`] with a fixed capacity of 1 000 entries.
     ///
     /// Entries are cloned into the cache on first access and evicted in
     /// least-recently-used order when the cache is full.
-    lru_cache_obs: LruCache<ObsId, Observation>,
+    pub(crate) lru_cache_obs: LruCache<ObsId, Observation>,
 }
 
 impl ObsDataset {
@@ -377,6 +377,55 @@ impl ObsDataset {
                 obs_index_by_trajectory,
             ),
             observer_dataset: ObserverDataset::new(custom_observers, error_model),
+            lru_cache_obs: LruCache::new(
+                NonZeroUsize::new(lru_cache_size.unwrap_or(1000)).unwrap(),
+            ),
+        }
+    }
+
+    /// Construct an [`ObsDataset`] from an already-built [`ObserverDataset`].
+    ///
+    /// This is the internal counterpart of [`ObsDataset::new`] used during
+    /// deserialisation: the `observer_dataset` is supplied fully formed (having
+    /// been deserialised separately) instead of being assembled from raw
+    /// `custom_observers` and `error_model` parameters.
+    ///
+    /// Index maps are rebuilt from `observations`, and the LRU cache starts
+    /// empty.
+    ///
+    /// # Arguments
+    ///
+    /// - `observations`            — the full list of observations in insertion order.
+    /// - `observer_dataset`        — pre-built observer dataset (custom observers +
+    ///   error model, MPC cache uninitialised).
+    /// - `obs_index_by_night`      — optional pre-built night index.
+    /// - `obs_index_by_trajectory` — optional pre-built trajectory index.
+    /// - `traj_aliases`            — trajectory alias map (alternate designation →
+    ///   canonical [`TrajId`]); pass an empty map when no aliases were serialised.
+    /// - `lru_cache_size`          — optional capacity for the LRU cache; `None`
+    ///   defaults to 1 000.
+    #[cfg(feature = "serde")]
+    pub(crate) fn new_from_parts(
+        observations: Vec<Observation>,
+        observer_dataset: ObserverDataset,
+        obs_index_by_night: Option<NightIndexMap>,
+        obs_index_by_trajectory: Option<TrajIndexMap>,
+        traj_aliases: index::TrajAliasMap,
+        lru_cache_size: Option<usize>,
+    ) -> Self {
+        let mut obs_index_by_id = ObservationIndexMap::with_capacity(observations.len());
+        for (idx, obs) in observations.iter().enumerate() {
+            obs_index_by_id.insert(obs.id, idx);
+        }
+
+        let mut dataset_index =
+            ObsDatasetIndex::new(obs_index_by_id, obs_index_by_night, obs_index_by_trajectory);
+        dataset_index.set_aliases(traj_aliases);
+
+        Self {
+            observations,
+            index: dataset_index,
+            observer_dataset,
             lru_cache_obs: LruCache::new(
                 NonZeroUsize::new(lru_cache_size.unwrap_or(1000)).unwrap(),
             ),

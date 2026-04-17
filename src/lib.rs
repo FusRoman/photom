@@ -24,6 +24,12 @@
 //!   any Parquet file reachable by URI (`file://`, `http://`, `https://`, `hdfs://`) using
 //!   Apache Arrow / DataFusion ([`observation_dataset::ObsDataset::from_parquet_uri`] and
 //!   its async counterpart), with automatic contiguous index optimisation.
+//! - **Serialisation / deserialisation** (`serde` feature) — persist and restore an
+//!   [`observation_dataset::ObsDataset`] (and all constituent types) via
+//!   [serde](https://docs.rs/serde).  Runtime-only state — the LRU cache contents, the
+//!   lazy MPC observatory cache, and all derived index maps — is excluded from the
+//!   serialised form and rebuilt transparently on deserialisation.  Only the LRU cache
+//!   *capacity* is preserved so the restored dataset has identical eviction behaviour.
 //! - **Multi-observer support** — MPC observatory codes (resolved lazily from the MPC
 //!   website), custom geodetic sites (interned and deduplicated), or unknown observer.
 //! - **Trajectory grouping** — group observations by a `traj_id` column; supports both
@@ -504,6 +510,9 @@ pub use io::mpc_80_col::Mpc80ColError;
 #[cfg(feature = "ades")]
 pub use io::ades::AdesError;
 
+#[cfg(feature = "serde")]
+pub use io::serde::{IndexLayout, ObsDatasetSeed};
+
 pub use observation_dataset::builder::{LoadWarning, ObsDatasetBuilder};
 
 /// Arcseconds.
@@ -523,6 +532,7 @@ pub type Meters = f64;
 /// (e.g. `60312`).  The value must be stable across runs because it is used
 /// as a directory name in on-disk outputs.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct NightId(pub u32);
 
 // ── TrajId ────────────────────────────────────────────────────────────────────
@@ -539,6 +549,7 @@ pub struct NightId(pub u32);
 /// `String` column produces [`TrajId::Str`] keys.  Mixing both types in a
 /// single dataset is not supported; the column must be uniformly one type.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum TrajId {
     /// A 32-bit unsigned integer identifier (e.g. a catalogue number).
     Int(u32),

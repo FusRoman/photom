@@ -26,6 +26,7 @@ use crate::{Degrees, Radians};
 /// the companion pair `(ra_error, dec_error)` carries the 1-σ measurement
 /// uncertainties of that position.
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct EquCoord {
     /// Right ascension in **radians**, in the range $[0, 2\pi)$.
     pub ra: Radians,

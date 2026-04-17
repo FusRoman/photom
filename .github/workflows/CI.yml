@@ -36,7 +36,8 @@ jobs:
           - ades
           - mpc_80_col
           - datafusion
-          - polars-parallel-ades-mpc_80_col-datafusion
+          - serde
+          - polars-parallel-ades-mpc_80_col-datafusion-serde
         command: [clippy, check]
         include:
           - features: no-features
@@ -51,8 +52,10 @@ jobs:
             cargo_flags: --no-default-features --features mpc_80_col
           - features: datafusion
             cargo_flags: --no-default-features --features datafusion
-          - features: polars-parallel-ades-mpc_80_col-datafusion
-            cargo_flags: --no-default-features --features polars,parallel,ades,mpc_80_col,datafusion
+          - features: serde
+            cargo_flags: --no-default-features --features serde
+          - features: polars-parallel-ades-mpc_80_col-datafusion-serde
+            cargo_flags: --no-default-features --features polars,parallel,ades,mpc_80_col,datafusion,serde
           - command: clippy
             components: clippy
           - command: check
@@ -125,7 +128,8 @@ jobs:
           - ades
           - mpc_80_col
           - datafusion
-          - polars-parallel-ades-mpc_80_col-datafusion
+          - serde
+          - polars-parallel-ades-mpc_80_col-datafusion-serde
         include:
           - features: no-features
             cargo_flags: --no-default-features
@@ -139,8 +143,10 @@ jobs:
             cargo_flags: --no-default-features --features mpc_80_col
           - features: datafusion
             cargo_flags: --no-default-features --features datafusion
-          - features: polars-parallel-ades-mpc_80_col-datafusion
-            cargo_flags: --no-default-features --features polars,parallel,ades,mpc_80_col,datafusion
+          - features: serde
+            cargo_flags: --no-default-features --features serde
+          - features: polars-parallel-ades-mpc_80_col-datafusion-serde
+            cargo_flags: --no-default-features --features polars,parallel,ades,mpc_80_col,datafusion,serde
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -201,7 +207,8 @@ jobs:
             --add-tracefile lcov-ades.info \
             --add-tracefile lcov-mpc_80_col.info \
             --add-tracefile lcov-datafusion.info \
-            --add-tracefile lcov-polars-parallel-ades-mpc_80_col-datafusion.info \
+            --add-tracefile lcov-serde.info \
+            --add-tracefile lcov-polars-parallel-ades-mpc_80_col-datafusion-serde.info \
             --output-file lcov.info
 
       - name: Upload to Codecov

@@ -9,32 +9,8 @@ parallel
 ades
 mpc_80_col
 datafusion
-polars,parallel
-polars,ades
-polars,mpc_80_col
-polars,datafusion
-parallel,ades
-parallel,mpc_80_col
-parallel,datafusion
-ades,mpc_80_col
-ades,datafusion
-mpc_80_col,datafusion
-polars,parallel,ades
-polars,parallel,mpc_80_col
-polars,parallel,datafusion
-polars,ades,mpc_80_col
-polars,ades,datafusion
-polars,mpc_80_col,datafusion
-parallel,ades,mpc_80_col
-parallel,ades,datafusion
-parallel,mpc_80_col,datafusion
-ades,mpc_80_col,datafusion
-polars,parallel,ades,mpc_80_col
-polars,parallel,ades,datafusion
-polars,parallel,mpc_80_col,datafusion
-polars,ades,mpc_80_col,datafusion
-parallel,ades,mpc_80_col,datafusion
-polars,parallel,ades,mpc_80_col,datafusion
+serde
+polars,parallel,ades,mpc_80_col,datafusion,serde
 "
 
 # ---------------------------------------------------------------------------

@@ -4,6 +4,7 @@ Rust library for loading, structuring, and querying astronomical observation dat
 
 ## Features
 
+- **Serialisation / deserialisation** (`serde` feature) — persist an [`ObsDataset`] to JSON (or any other `serde`-compatible format) and restore it without losing observations, custom observers, or LRU cache capacity. Runtime-only state (LRU contents, MPC network cache) is automatically re-initialised on deserialisation.
 - **Polars ingestion** (`polars` feature) — load observations from a `DataFrame` or `LazyFrame` with full schema validation.
 - **Parallel iteration** (`parallel` feature) — iterate over observations, nights, and trajectories in parallel via [rayon](https://docs.rs/rayon), with zero data copying.
 - **ADES ingestion** (`ades` feature) — load observations directly from MPC ADES XML files, with automatic MPC observer resolution.
@@ -27,12 +28,71 @@ Enable individual features as needed:
 
 ```toml
 [dependencies]
-photom = { version = "0.1", features = ["polars", "parallel", "ades", "mpc_80_col", "datafusion"] }
+photom = { version = "0.1", features = ["polars", "parallel", "ades", "mpc_80_col", "datafusion", "serde"] }
 ```
 
 All features are independent and can be combined freely.
 
 ## Quick Start
+
+### Serialise and deserialise a dataset (serde feature)
+
+`ObsDataset` implements the standard `serde::Serialize` / `serde::Deserialize`
+traits and works with any serde-compatible format (JSON, MessagePack, …).
+
+```rust
+use photom::observation_dataset::ObsDataset;
+
+// Serialise — format-agnostic (use any serde serializer).
+let json = serde_json::to_string(&dataset)?;
+std::fs::write("dataset.json", &json)?;
+
+// Deserialise with the default index layout (Split — always safe).
+let json = std::fs::read_to_string("dataset.json")?;
+let restored: ObsDataset = serde_json::from_str(&json)?;
+
+// Binary format (rmp-serde / MessagePack).
+let bytes: Vec<u8> = rmp_serde::to_vec(&dataset)?;
+let restored: ObsDataset = rmp_serde::from_slice(&bytes)?;
+```
+
+#### Choosing the index layout at deserialisation
+
+For potentially faster look-ups you can request a contiguous index layout via
+[`ObsDatasetSeed`] (a [`serde::de::DeserializeSeed`] implementation).
+Any format that exposes its `Deserializer` struct publicly works — both
+`serde_json` and `rmp-serde` do:
+
+```rust
+use photom::{IndexLayout, ObsDatasetSeed};
+use serde::de::DeserializeSeed as _;
+
+// JSON
+let mut de = serde_json::Deserializer::from_str(&json);
+let restored = ObsDatasetSeed { layout: IndexLayout::TryContiguous }
+    .deserialize(&mut de)?;
+
+// MessagePack (rmp-serde — compact binary)
+let mut de = rmp_serde::Deserializer::new(bytes.as_slice());
+let restored = ObsDatasetSeed { layout: IndexLayout::TryContiguous }
+    .deserialize(&mut de)?;
+```
+
+`TryContiguous` falls back to `Split` automatically for any index group whose
+observations are not stored contiguously.
+
+**What is persisted**
+
+| State | Persisted? | Notes |
+|---|---|---|
+| Observations | Yes | Full list in insertion order |
+| Custom geodetic observers | Yes | All sites and their coordinates |
+| Astrometric error model | Yes | `FCCT14`, `CBM10`, `VFCC17`, or `None` |
+| LRU cache capacity | Yes | Preserves eviction behaviour |
+| LRU cache contents | No | Repopulated on access |
+| MPC network cache | No | Fetched lazily on first use |
+| Trajectory aliases | Yes | Fully round-tripped |
+| Night / trajectory indices | Yes | Membership stored per-observation; rebuilt on load |
 
 ### Load observations from a Polars DataFrame
 

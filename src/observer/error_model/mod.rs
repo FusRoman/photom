@@ -72,6 +72,7 @@ pub type ErrorModelData = HashMap<(MpcCode, CatalogCode), (f32, f32)>;
 /// [`ObsErrorModel::read_error_model_file`] to parse the file for the
 /// selected variant into an [`ErrorModelData`] map.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ObsErrorModel {
     /// Farnocchia, Chesley, Chamberlin & Tholen (2014).
     FCCT14,
