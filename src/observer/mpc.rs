@@ -3,7 +3,7 @@
 //! This module defines the type aliases used to identify observatories by
 //! their Minor Planet Center (MPC) three-character code, provides the lookup
 //! table type that maps each code to an [`Observer`], and exposes
-//! [`init_observatories`], which fetches and parses the official MPC
+//! `init_observatories`, which fetches and parses the official MPC
 //! observatory list from the network.
 //!
 //! ## Public items
@@ -13,7 +13,9 @@
 //! | [`MpcCode`] | type alias | Three-byte ASCII MPC observatory code |
 //! | [`MpcCodeObs`] | type alias | Hash map from [`MpcCode`] to [`Observer`] |
 //! | [`MPCError`] | enum | Errors arising from the MPC network request |
-//! | [`init_observatories`] | fn | Fetch and parse the MPC observatory list |
+//! | `init_observatories` | fn | Fetch and parse the MPC observatory list |
+
+use std::path::PathBuf;
 
 use ahash::AHashMap;
 use thiserror::Error;
@@ -33,7 +35,7 @@ pub type MpcCode = [u8; 3];
 
 /// Hash map from [`MpcCode`] to [`Observer`] metadata.
 ///
-/// Built by [`init_observatories`] from the official MPC observatory list.
+/// Built by `init_observatories` from the official MPC observatory list.
 /// Uses [`ahash`] for fast, non-cryptographic hashing.
 pub type MpcCodeObs = AHashMap<MpcCode, Observer>;
 
@@ -43,6 +45,14 @@ pub enum MPCError {
     /// The HTTP request to the MPC website failed.
     #[error(transparent)]
     UreqError(#[from] ureq::Error),
+
+    /// A filesystem I/O error occurred while reading or writing the cache.
+    #[error("cache I/O error: {0}")]
+    Io(#[from] std::io::Error),
+
+    /// The platform cache directory could not be determined.
+    #[error("could not determine platform cache directory")]
+    CacheDirUnavailable,
 }
 
 /// Parse a fixed-width `f32` field from a slice of an MPC observatory line.
@@ -108,6 +118,28 @@ fn parse_remain(remain: &str, code: &str) -> Option<(f32, f32, f32, String)> {
     Some((longitude, cos, sin, name))
 }
 
+/// Return the path to the MPC observatory cache file.
+///
+/// Resolution order:
+/// 1. `cache_dir_override` — explicit path supplied by the caller (used in tests).
+/// 2. `PHOTOM_MPC_CACHE_DIR` environment variable (used for CI overrides).
+/// 3. The platform cache directory reported by [`directories::BaseDirs`],
+///    under the sub-path `photom/mpc_obs.html`.
+///
+/// Returns [`MPCError::CacheDirUnavailable`] when no source is usable.
+fn cache_file_path(cache_dir_override: Option<&std::path::Path>) -> Result<PathBuf, MPCError> {
+    if let Some(dir) = cache_dir_override {
+        return Ok(dir.join("mpc_obs.html"));
+    }
+
+    if let Ok(dir) = std::env::var("PHOTOM_MPC_CACHE_DIR") {
+        return Ok(PathBuf::from(dir).join("mpc_obs.html"));
+    }
+
+    let base = directories::BaseDirs::new().ok_or(MPCError::CacheDirUnavailable)?;
+    Ok(base.cache_dir().join("photom").join("mpc_obs.html"))
+}
+
 /// Fetch the MPC observatory list from the network and build the lookup table.
 ///
 /// Issues an HTTP GET to `https://minorplanetcenter.net/iau/lists/ObsCodes.html`,
@@ -117,13 +149,28 @@ fn parse_remain(remain: &str, code: &str) -> Option<(f32, f32, f32, String)> {
 /// `"c"` as the default.  Lines that are malformed or whose three-character
 /// code cannot be converted to a [`MpcCode`] are silently skipped.
 ///
+/// ## Caching
+///
+/// The raw MPC document is cached on disk so subsequent calls avoid a network
+/// round-trip.  On the first call (or when the cache is missing / unreadable)
+/// the document is fetched via `ureq_agent`, then written atomically to:
+///
+/// * `<platform-cache-dir>/photom/mpc_obs.html` (via [`directories::BaseDirs`]), or
+/// * the directory pointed to by the `PHOTOM_MPC_CACHE_DIR` environment
+///   variable when set (useful for CI overrides).
+///
+/// The cache stores the raw HTML/text body so that a different `error_model`
+/// can still be applied at construction time.  If the cache file cannot be
+/// written the error is silently ignored and the in-memory document is still
+/// returned.
+///
 /// The returned map is pre-allocated with capacity for 2 048 entries to avoid
 /// rehashing on a typical MPC list (currently ~2 000 observatories).
 ///
 /// # Arguments
 ///
 /// - `ureq_agent` — a configured [`ureq::Agent`] (e.g. with a global timeout)
-///   used to perform the HTTP request.
+///   used to perform the HTTP request when the cache is cold.
 /// - `error_model` — pre-loaded [`ErrorModelData`] table used to assign
 ///   astrometric uncertainties to each observatory.
 ///
@@ -133,18 +180,129 @@ fn parse_remain(remain: &str, code: &str) -> Option<(f32, f32, f32, String)> {
 ///
 /// # Errors
 ///
-/// Returns [`MPCError::UreqError`] if the HTTP request fails or the response
-/// body cannot be read.
+/// | Variant | Cause |
+/// |---------|-------|
+/// | [`MPCError::UreqError`] | HTTP request failed or body unreadable |
+/// | [`MPCError::CacheDirUnavailable`] | platform cache dir cannot be determined |
 pub fn init_observatories(
     ureq_agent: Agent,
     error_model: &ErrorModelData,
 ) -> Result<MpcCodeObs, MPCError> {
-    let mpc_document = ureq_agent
+    init_observatories_impl(ureq_agent, error_model, None)
+}
+
+/// Internal implementation; `cache_dir_override` is used by tests to avoid
+/// touching the real system cache directory.
+fn init_observatories_impl(
+    ureq_agent: Agent,
+    error_model: &ErrorModelData,
+    cache_dir_override: Option<&std::path::Path>,
+) -> Result<MpcCodeObs, MPCError> {
+    let cache_path = cache_file_path(cache_dir_override)?;
+
+    // --- Try reading from cache -----------------------------------------------
+    let mpc_document = match std::fs::read_to_string(&cache_path) {
+        Ok(content) => content,
+        Err(_) => mpc_obs_request(ureq_agent, &cache_path)?,
+    };
+
+    // --- Parse ----------------------------------------------------------------
+    parse_mpc_obs_result(&mpc_document, error_model)
+}
+
+/// Fetch the raw MPC observatory document from the network and write it to
+/// `cache_path` atomically.
+///
+/// Issues an HTTP GET to `https://minorplanetcenter.net/iau/lists/ObsCodes.html`
+/// and reads the full response body into a `String`.  The body is then written
+/// to a sibling `.html.tmp` file in the same directory as `cache_path` and
+/// atomically renamed into place so readers never observe a partial file.
+/// Parent directories are created with [`std::fs::create_dir_all`] if they do
+/// not yet exist.  Any filesystem error during the write is printed to `stderr`
+/// and silently ignored — the in-memory document is still returned.
+///
+/// # Arguments
+///
+/// - `ureq_agent` — a configured [`ureq::Agent`] used to perform the HTTP GET.
+/// - `cache_path` — destination path for the cached document; the parent
+///   directory and a sibling `.html.tmp` file are derived from this path.
+///
+/// # Returns
+///
+/// The raw HTTP response body as a `String` on success.
+///
+/// # Errors
+///
+/// | Variant | Cause |
+/// |---------|-------|
+/// | [`MPCError::UreqError`] | HTTP request failed or response body could not be read |
+fn mpc_obs_request(ureq_agent: Agent, cache_path: &std::path::Path) -> Result<String, MPCError> {
+    // Cache miss (or unreadable): fetch from network.
+    let fetched = ureq_agent
         .get("https://minorplanetcenter.net/iau/lists/ObsCodes.html")
         .call()?
         .body_mut()
         .read_to_string()?;
 
+    // --- Write cache atomically ----------------------------------------
+    // Write to a sibling .tmp file first, then rename so readers never
+    // see a partial file.
+    if let Some(parent) = cache_path.parent() {
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            // Non-fatal: proceed without caching.
+            eprintln!(
+                "photom: could not create MPC cache directory {}: {e}",
+                parent.display()
+            );
+        } else {
+            let tmp_path = cache_path.with_extension("html.tmp");
+            match std::fs::write(&tmp_path, fetched.as_bytes()) {
+                Ok(()) => {
+                    if let Err(e) = std::fs::rename(&tmp_path, cache_path) {
+                        eprintln!("photom: could not rename MPC cache file: {e}");
+                        // Best-effort cleanup; ignore secondary errors.
+                        let _ = std::fs::remove_file(&tmp_path);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("photom: could not write MPC cache: {e}");
+                }
+            }
+        }
+    }
+
+    Ok(fetched)
+}
+
+/// Parse a raw MPC observatory document into an [`MpcCodeObs`] lookup table.
+///
+/// Iterates over `mpc_document` line by line, skipping the first two header
+/// lines (the HTML/text preamble of the MPC list).  Each remaining line is
+/// expected to follow the MPC fixed-width format: a three-character observatory
+/// code followed by longitude, $\rho\cos\phi'$, $\rho\sin\phi'$, and site name
+/// fields.  Lines that are too short to split at byte 3, whose three-character
+/// prefix cannot be converted to an [`MpcCode`], or whose numeric fields cannot
+/// be parsed into a valid [`Observer`] are silently skipped.
+///
+/// Astrometric uncertainties are looked up in `error_model` via [`get_bias_rms`]
+/// using catalog code `"c"` as the default for every observatory.  The returned
+/// map is pre-allocated with a capacity of 2 048 entries to avoid rehashing on
+/// a typical MPC list (currently ~2 000 observatories).
+///
+/// # Arguments
+///
+/// - `mpc_document` — raw text body of the MPC observatory list (e.g. as
+///   fetched by [`mpc_obs_request`] or read from the on-disk cache).
+/// - `error_model` — pre-loaded [`ErrorModelData`] table used to assign
+///   astrometric uncertainties to each observatory entry.
+///
+/// # Returns
+///
+/// An [`MpcCodeObs`] map from [`MpcCode`] to [`Observer`] on success.
+fn parse_mpc_obs_result(
+    mpc_document: &str,
+    error_model: &ErrorModelData,
+) -> Result<MpcCodeObs, MPCError> {
     // The MPC list currently has ~2 000 entries; pre-allocate to avoid rehashing.
     let mut observatories = MpcCodeObs::with_capacity(2048);
 
@@ -182,7 +340,6 @@ pub fn init_observatories(
             observatories.insert(mpc_code, observer);
         }
     }
-
     Ok(observatories)
 }
 
@@ -191,7 +348,7 @@ pub fn init_observatories(
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
-mod mpc_tests {
+mod mpc_obs_tests {
     use super::*;
     use crate::observer::Observer;
     use approx::assert_relative_eq;
@@ -441,11 +598,12 @@ Code  Long.   cos      sin    Name\n\
     /// as long as `Observer::from_parallax` succeeds.
     #[test]
     fn init_observatories_parses_mock_document() {
+        let tmp = tempfile::tempdir().expect("tempdir");
         let agent = mock_agent();
         let error_model: crate::observer::error_model::ErrorModelData =
             std::collections::HashMap::new(); // empty → all accuracies None
 
-        let result = init_observatories(agent, &error_model);
+        let result = init_observatories_impl(agent, &error_model, Some(tmp.path()));
         assert!(
             result.is_ok(),
             "Expected Ok from init_observatories, got: {:?}",
@@ -478,11 +636,12 @@ Code  Long.   cos      sin    Name\n\
     /// site name parsed from the mock document.
     #[test]
     fn init_observatories_observer_name_is_correct() {
+        let tmp = tempfile::tempdir().expect("tempdir");
         let agent = mock_agent();
         let error_model: crate::observer::error_model::ErrorModelData =
             std::collections::HashMap::new();
 
-        let map = init_observatories(agent, &error_model).unwrap();
+        let map = init_observatories_impl(agent, &error_model, Some(tmp.path())).unwrap();
 
         let greenwich = map.get(b"000").expect("Greenwich must be present");
         assert_eq!(
@@ -520,7 +679,10 @@ Code  Long.   cos      sin    Name\n\
             .build()
             .new_agent();
 
-        let map = init_observatories(agent, &std::collections::HashMap::new()).unwrap();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let map =
+            init_observatories_impl(agent, &std::collections::HashMap::new(), Some(tmp.path()))
+                .unwrap();
         assert!(
             map.is_empty(),
             "Expected empty map for a document with only header lines, got {} entries",
@@ -559,12 +721,103 @@ Code  Long.   cos      sin    Name\n\
             .build()
             .new_agent();
 
-        let map = init_observatories(agent, &std::collections::HashMap::new()).unwrap();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let map =
+            init_observatories_impl(agent, &std::collections::HashMap::new(), Some(tmp.path()))
+                .unwrap();
         // Only '000' should survive; the short line must be silently skipped.
         assert_eq!(map.len(), 1, "Expected exactly 1 entry, got {}", map.len());
         assert!(
             map.contains_key(b"000"),
             "Expected code '000' to be present"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Cache hit / miss tests
+    // -----------------------------------------------------------------------
+
+    /// A ureq middleware that panics if called — used to assert no network
+    /// request is made when the cache is warm.
+    struct PanicMiddleware;
+
+    impl ureq::middleware::Middleware for PanicMiddleware {
+        fn handle(
+            &self,
+            _request: ureq::http::Request<ureq::SendBody>,
+            _next: ureq::middleware::MiddlewareNext,
+        ) -> Result<ureq::http::Response<ureq::Body>, ureq::Error> {
+            panic!("network request was made despite a warm cache");
+        }
+    }
+
+    fn panic_agent() -> ureq::Agent {
+        ureq::config::Config::builder()
+            .middleware(PanicMiddleware)
+            .build()
+            .new_agent()
+    }
+
+    /// Verifies that when a valid cache file exists, `init_observatories`
+    /// reads from it and never calls the network (the panic agent would
+    /// explode if the network were touched).
+    #[test]
+    fn init_observatories_uses_cache_when_warm() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let cache_file = tmp.path().join("mpc_obs.html");
+
+        // Pre-populate the cache with the mock document.
+        std::fs::write(&cache_file, MOCK_MPC_DOCUMENT).expect("write cache");
+
+        let map = init_observatories_impl(
+            panic_agent(),
+            &std::collections::HashMap::new(),
+            Some(tmp.path()),
+        )
+        .expect("init_observatories must succeed with warm cache");
+
+        assert!(
+            map.contains_key(b"000"),
+            "Expected '000' (Greenwich) from cached document"
+        );
+        assert!(
+            map.contains_key(b"005"),
+            "Expected '005' (Meudon) from cached document"
+        );
+    }
+
+    /// Verifies that when the cache is absent, `init_observatories` calls the
+    /// network (via mock agent) and then writes the cache file to disk.
+    #[test]
+    fn init_observatories_writes_cache_on_miss() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let cache_file = tmp.path().join("mpc_obs.html");
+
+        // Ensure no pre-existing cache.
+        assert!(!cache_file.exists(), "cache must not exist before the test");
+
+        let map = init_observatories_impl(
+            mock_agent(),
+            &std::collections::HashMap::new(),
+            Some(tmp.path()),
+        )
+        .expect("init_observatories must succeed on cache miss");
+
+        // The network was called (mock returned MOCK_MPC_DOCUMENT).
+        assert!(
+            map.contains_key(b"000"),
+            "Expected '000' from network response"
+        );
+
+        // Cache file must now exist and contain the document.
+        assert!(
+            cache_file.exists(),
+            "cache file must be written after a miss"
+        );
+        let cached = std::fs::read_to_string(&cache_file).expect("read cache");
+        assert!(
+            cached.contains("Greenwich"),
+            "Cache file should contain the network response body"
         );
     }
 }
