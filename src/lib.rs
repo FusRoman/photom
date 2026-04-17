@@ -391,6 +391,8 @@ pub use io::mpc_80_col::Mpc80ColError;
 #[cfg(feature = "ades")]
 pub use io::ades::AdesError;
 
+pub use observation_dataset::builder::{LoadWarning, ObsDatasetBuilder};
+
 /// Arcseconds.
 pub type Arcseconds = f64;
 /// Radians.

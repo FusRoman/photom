@@ -371,6 +371,84 @@ impl ObsDatasetIndex {
         self.traj_aliases.get(alias)
     }
 
+    /// Merge another `ObsDatasetIndex` into this one, applying `offset` to all
+    /// stored vector positions (and observation ids used as map keys).
+    ///
+    /// Called by [`crate::observation_dataset::ObsDataset::merge_from`] after
+    /// the observations from the other dataset have been appended (and
+    /// re-numbered) into `self.observations`.
+    ///
+    /// # Merge rules
+    ///
+    /// - `obs_index_by_id`: every `(id, pos)` pair from `other` is inserted as
+    ///   `(id + offset, pos + offset)`.
+    /// - `obs_index_by_trajectory`:
+    ///   - If `self` has no trajectory index but `other` does, a new index is
+    ///     created from `other` (positions shifted by `offset`).
+    ///   - If both have a trajectory index, entries whose `TrajId` already
+    ///     exists in `self` have their position lists *appended to* (existing
+    ///     `Contiguous` entries are first converted to `Split`).  New entries
+    ///     are inserted directly.
+    ///   - If `other` has no trajectory index the existing one is unchanged.
+    /// - `traj_aliases`: merged with `extend`; keys from `other` overwrite
+    ///   any same-key entries already present in `self`.
+    #[cfg_attr(not(any(feature = "ades", feature = "mpc_80_col")), allow(dead_code))]
+    pub(crate) fn merge_from(&mut self, other: ObsDatasetIndex, offset: usize) {
+        // ── obs_index_by_id ────────────────────────────────────────────────
+        for (id, pos) in other.obs_index_by_id {
+            self.obs_index_by_id
+                .insert(id + offset as u64, pos + offset);
+        }
+
+        // ── obs_index_by_trajectory ────────────────────────────────────────
+        match (
+            self.obs_index_by_trajectory.as_mut(),
+            other.obs_index_by_trajectory,
+        ) {
+            (Some(self_traj), Some(other_traj)) => {
+                for (traj_id, other_idx) in other_traj {
+                    let shifted: Vec<ObsIndex> = match other_idx {
+                        ObsMapIndex::Split(v) => v.into_iter().map(|i| i + offset).collect(),
+                        ObsMapIndex::Contiguous { start, end } => {
+                            (start..end).map(|i| i + offset).collect()
+                        }
+                    };
+                    self_traj
+                        .entry(traj_id)
+                        .and_modify(|existing| match existing {
+                            ObsMapIndex::Split(v) => v.extend_from_slice(&shifted),
+                            ObsMapIndex::Contiguous { start, end } => {
+                                let mut v: Vec<ObsIndex> = (*start..*end).collect();
+                                v.extend_from_slice(&shifted);
+                                *existing = ObsMapIndex::Split(v);
+                            }
+                        })
+                        .or_insert_with(|| ObsMapIndex::Split(shifted));
+                }
+            }
+            (None, Some(other_traj)) => {
+                // self had no traj index — adopt other's (shifted).
+                let shifted: TrajIndexMap = other_traj
+                    .into_iter()
+                    .map(|(traj_id, idx)| {
+                        let v: Vec<ObsIndex> = match idx {
+                            ObsMapIndex::Split(v) => v.into_iter().map(|i| i + offset).collect(),
+                            ObsMapIndex::Contiguous { start, end } => {
+                                (start..end).map(|i| i + offset).collect()
+                            }
+                        };
+                        (traj_id, ObsMapIndex::Split(v))
+                    })
+                    .collect();
+                self.obs_index_by_trajectory = Some(shifted);
+            }
+            _ => {} // other had no traj index — nothing to do
+        }
+
+        // ── traj_aliases ───────────────────────────────────────────────────
+        self.traj_aliases.extend(other.traj_aliases);
+    }
+
     /// Insert or replace the trajectory entry for a given `TrajId`.
     ///
     /// If the trajectory index was not built (i.e. `obs_index_by_trajectory` is `None`),

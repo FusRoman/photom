@@ -137,6 +137,22 @@ impl ObserverDataset {
         }
     }
 
+    /// Merge another [`ObserverDataset`] into this one.
+    ///
+    /// Custom observers from `other` are appended to `self.custom_observers`.
+    /// Returns the offset that was applied (i.e. the original length of
+    /// `self.custom_observers` before the merge), so the caller can shift any
+    /// `ObserverId::IntId` values from `other` accordingly.
+    ///
+    /// The MPC observers and error model from `other` are discarded; `self`
+    /// retains its own MPC cache and error model.
+    #[cfg_attr(not(any(feature = "ades", feature = "mpc_80_col")), allow(dead_code))]
+    pub(crate) fn merge_custom_observers(&mut self, other: ObserverDataset) -> usize {
+        let offset = self.custom_observers.len();
+        self.custom_observers.extend(other.custom_observers);
+        offset
+    }
+
     /// Returns a reference to the MPC observatory lookup table, initializing
     /// it on the first call by fetching data from the MPC website.
     ///

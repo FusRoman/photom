@@ -30,6 +30,7 @@
 //! | [`ObsDataset`] | struct | Collection of observations with lazy observer resolution |
 //! | [`ObsDatasetError`] | enum | Errors arising from dataset construction |
 
+pub mod builder;
 pub(crate) mod index;
 pub mod iter;
 pub mod observation;
@@ -374,6 +375,42 @@ impl ObsDataset {
                 NonZeroUsize::new(lru_cache_size.unwrap_or(1000)).unwrap(),
             ),
         }
+    }
+
+    /// Merge another `ObsDataset` into `self`, appending all of its observations.
+    ///
+    /// Each observation from `other` is renumbered before insertion:
+    /// - `obs.index` is incremented by `offset` (the current length of
+    ///   `self.observations`).
+    /// - `obs.id` is incremented by `offset` cast to `u64`.
+    /// - Any `ObserverId::IntId(i)` is shifted by the custom-observer offset
+    ///   returned by [`ObserverDataset::merge_custom_observers`].
+    ///
+    /// Trajectory and alias maps are merged via
+    /// [`ObsDatasetIndex::merge_from`].  The LRU cache of `self` is **not**
+    /// cleared; newly inserted entries will be served via the linear-scan
+    /// fallback until they are individually cached.
+    #[cfg_attr(not(any(feature = "ades", feature = "mpc_80_col")), allow(dead_code))]
+    pub(crate) fn merge_from(&mut self, other: ObsDataset) {
+        let offset = self.observations.len();
+
+        // Merge custom observers; get the IntId offset for this dataset.
+        let custom_offset = self
+            .observer_dataset
+            .merge_custom_observers(other.observer_dataset);
+
+        // Renumber and push observations from `other`.
+        for mut obs in other.observations {
+            obs.index += offset;
+            obs.id += offset as u64;
+            if let Some(crate::observer::dataset::ObserverId::IntId(ref mut i)) = obs.observer {
+                *i += custom_offset;
+            }
+            self.observations.push(obs);
+        }
+
+        // Merge indices (already accounts for offset internally).
+        self.index.merge_from(other.index, offset);
     }
 }
 
