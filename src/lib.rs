@@ -20,6 +20,10 @@
 //!   classic MPC fixed-width 80-column ASCII format
 //!   ([`observation_dataset::ObsDataset::from_mpc_80_col`]), with automatic trajectory
 //!   grouping and nom-based field parsing.
+//! - **Parquet ingestion via DataFusion** (`datafusion` feature) — load observations from
+//!   any Parquet file reachable by URI (`file://`, `http://`, `https://`, `hdfs://`) using
+//!   Apache Arrow / DataFusion ([`observation_dataset::ObsDataset::from_parquet_uri`] and
+//!   its async counterpart), with automatic contiguous index optimisation.
 //! - **Multi-observer support** — MPC observatory codes (resolved lazily from the MPC
 //!   website), custom geodetic sites (interned and deduplicated), or unknown observer.
 //! - **Trajectory grouping** — group observations by a `traj_id` column; supports both
@@ -51,6 +55,10 @@
     feature = "mpc_80_col",
     doc = "| [`io::mpc_80_col`] | MPC 80-column ingestion backend ([`io::mpc_80_col`]) |"
 )]
+#![cfg_attr(
+    feature = "datafusion",
+    doc = "| [`io::datafusion`] | DataFusion/Arrow Parquet ingestion backend ([`io::datafusion`]) |"
+)]
 //!
 //! # Type Aliases
 //!
@@ -78,10 +86,10 @@
 //! | Column | Polars type | Description |
 //! |--------|-------------|-------------|
 //! | `id` | `UInt64` | Unique observation identifier |
-//! | `ra` | `Float64` | Right ascension (degrees) |
-//! | `ra_err` | `Float64` | Right ascension uncertainty (degrees) |
-//! | `dec` | `Float64` | Declination (degrees) |
-//! | `dec_err` | `Float64` | Declination uncertainty (degrees) |
+//! | `ra` | `Float64` | Right ascension (radians) |
+//! | `ra_err` | `Float64` | Right ascension uncertainty (radians) |
+//! | `dec` | `Float64` | Declination (radians) |
+//! | `dec_err` | `Float64` | Declination uncertainty (radians) |
 //! | `magnitude` | `Float64` | Apparent magnitude |
 //! | `mag_err` | `Float64` | Magnitude uncertainty |
 //! | `filter` | `String` | Photometric filter label |
@@ -91,8 +99,8 @@
 //!
 //! | Column | Polars type | Description |
 //! |--------|-------------|-------------|
-//! | `obs_lon` | `Float64` | Geodetic longitude (degrees east) |
-//! | `obs_lat` | `Float64` | Geodetic latitude (degrees) |
+//! | `obs_lon` | `Float64` | Geodetic longitude (radians, east positive) |
+//! | `obs_lat` | `Float64` | Geodetic latitude (radians) |
 //! | `obs_alt` | `Float64` | Altitude above ellipsoid (metres) |
 //! | `obs_ra_acc` | `Float64` | RA accuracy (radians) — required when the geodetic triplet is set |
 //! | `obs_dec_acc` | `Float64` | Dec accuracy (radians) — required when the geodetic triplet is set |
@@ -175,14 +183,14 @@
 //! use photom::observer::error_model::ObsErrorModel;
 //!
 //! // Construct a two-row DataFrame matching the required schema.
-//! // RA and Dec are in degrees; accuracies are in degrees (base columns)
-//! // or radians (observer accuracy columns).
+//! // RA and Dec are in radians; errors are in radians.
+//! // Observer accuracy columns (obs_ra_acc, obs_dec_acc) are also in radians.
 //! let df = df! {
 //!     "id"        => &[1_u64, 2_u64],
-//!     "ra"        => &[83.82_f64, 84.10_f64],   // degrees
-//!     "ra_err"    => &[0.001_f64, 0.001_f64],   // degrees
-//!     "dec"       => &[22.01_f64, 22.05_f64],   // degrees
-//!     "dec_err"   => &[0.001_f64, 0.001_f64],   // degrees
+//!     "ra"        => &[1.4633_f64, 1.4682_f64],   // radians
+//!     "ra_err"    => &[1.745e-5_f64, 1.745e-5_f64], // radians (~1 arcsec)
+//!     "dec"       => &[0.3840_f64, 0.3847_f64],   // radians
+//!     "dec_err"   => &[1.745e-5_f64, 1.745e-5_f64], // radians (~1 arcsec)
 //!     "magnitude" => &[19.3_f64, 19.5_f64],
 //!     "mag_err"   => &[0.05_f64, 0.05_f64],
 //!     "filter"    => &["r", "r"],
@@ -208,10 +216,10 @@
 //!
 //! let df = df! {
 //!     "id"           => &[1_u64],
-//!     "ra"           => &[83.82_f64],
-//!     "ra_err"       => &[0.001_f64],
-//!     "dec"          => &[22.01_f64],
-//!     "dec_err"      => &[0.001_f64],
+//!     "ra"           => &[1.4633_f64],          // radians
+//!     "ra_err"       => &[1.745e-5_f64],        // radians
+//!     "dec"          => &[0.3840_f64],           // radians
+//!     "dec_err"      => &[1.745e-5_f64],        // radians
 //!     "magnitude"    => &[19.3_f64],
 //!     "mag_err"      => &[0.05_f64],
 //!     "filter"       => &["r"],
@@ -232,10 +240,10 @@
 //! // traj_id can be UInt32 or String; null rows are loaded but not grouped.
 //! let df = df! {
 //!     "id"        => &[1_u64, 2_u64, 3_u64],
-//!     "ra"        => &[83.82_f64, 84.10_f64, 10.0_f64],
-//!     "ra_err"    => &[0.001_f64; 3],
-//!     "dec"       => &[22.01_f64, 22.05_f64, 5.0_f64],
-//!     "dec_err"   => &[0.001_f64; 3],
+//!     "ra"        => &[1.4633_f64, 1.4682_f64, 0.1745_f64],  // radians
+//!     "ra_err"    => &[1.745e-5_f64; 3],                      // radians
+//!     "dec"       => &[0.3840_f64, 0.3847_f64, 0.0873_f64],  // radians
+//!     "dec_err"   => &[1.745e-5_f64; 3],                      // radians
 //!     "magnitude" => &[19.3_f64, 19.5_f64, 18.0_f64],
 //!     "mag_err"   => &[0.05_f64; 3],
 //!     "filter"    => &["r", "r", "g"],
@@ -373,6 +381,111 @@
 //! Each observation's `stn` field is stored as an
 //! [`observer::dataset::ObserverId::MpcCode`] and resolved lazily from the MPC
 //! observatory list the first time accuracy values are requested.
+//!
+//! # The `datafusion` Feature
+//!
+//! Parquet ingestion via Apache Arrow and DataFusion is gated behind the optional
+//! `datafusion` feature.  When enabled it brings in the `datafusion` and `object_store`
+//! crates and exposes both an async entry-point
+//! (`ObsDataset::from_parquet_uri`) and a synchronous blocking wrapper on the
+//! same function, so callers without an async runtime can still use the loader.
+//! To enable it, add the following to your `Cargo.toml`:
+//!
+//! ```toml
+//! [dependencies]
+//! photom = { version = "0.1", features = ["datafusion"] }
+//! ```
+//!
+//! Without this feature the crate is still fully usable: all types, constants, and
+//! astrometric utilities remain available; only the `from_parquet_uri` constructor on
+//! [`observation_dataset::ObsDataset`] is absent.
+//!
+//! The `datafusion` feature can be combined freely with the other optional features:
+//!
+//! ```toml
+//! photom = { version = "0.1", features = ["polars", "parallel", "ades", "datafusion"] }
+//! ```
+//!
+//! ## Parquet URI scheme
+//!
+//! The loader accepts any URI that `object_store` can resolve.  The following schemes are
+//! supported out of the box:
+//!
+//! | Scheme | Backend |
+//! |--------|---------|
+//! | `file://` | Local filesystem |
+//! | `http://` | Plain HTTP object store |
+//! | `https://` | TLS-encrypted HTTP object store |
+//! | `hdfs://` | Hadoop Distributed File System (requires the `hdfs` Cargo feature on `object_store`) |
+//!
+//! ## Parquet column schema
+//!
+//! The Parquet file must contain the following Arrow-typed columns.  Column names and
+//! Arrow types must match exactly; the loader returns an error for any schema mismatch.
+//!
+//! ### Mandatory base columns (non-nullable)
+//!
+//! | Column | Arrow type | Description |
+//! |--------|------------|-------------|
+//! | `id` | `UInt64` | Unique observation identifier |
+//! | `ra` | `Float64` | Right ascension (radians) |
+//! | `ra_err` | `Float64` | Right ascension uncertainty (radians) |
+//! | `dec` | `Float64` | Declination (radians) |
+//! | `dec_err` | `Float64` | Declination uncertainty (radians) |
+//! | `magnitude` | `Float64` | Apparent magnitude |
+//! | `mag_err` | `Float64` | Magnitude uncertainty |
+//! | `filter` | `Utf8`, `UInt8`, `UInt16`, or `UInt32` | Photometric filter label or code |
+//! | `mjd_tt` | `Float64` | Epoch (MJD, Terrestrial Time) |
+//!
+//! ### Optional observer columns (nullable; column may be absent)
+//!
+//! | Column | Arrow type | Description |
+//! |--------|------------|-------------|
+//! | `obs_lon` | `Float64` | Geodetic longitude (radians, east positive) |
+//! | `obs_lat` | `Float64` | Geodetic latitude (radians) |
+//! | `obs_alt` | `Float64` | Altitude above ellipsoid (metres) |
+//! | `obs_ra_acc` | `Float64` | RA accuracy (radians) — required when the geodetic triplet is set |
+//! | `obs_dec_acc` | `Float64` | Dec accuracy (radians) — required when the geodetic triplet is set |
+//! | `mpc_code_obs` | `Utf8` | Three-byte ASCII MPC code (takes precedence over geodetic columns) |
+//!
+//! ### Optional index columns
+//!
+//! | Column | Arrow type | Description |
+//! |--------|------------|-------------|
+//! | `night_id` | `UInt32` | Night identifier; nullable — null rows are included but not assigned to any night |
+//! | `traj_id` | `UInt32` or `Utf8` | Trajectory identifier; nullable — null rows are loaded but not assigned to any trajectory |
+//!
+//! ## Loading a Parquet file
+//!
+//! ```rust,ignore
+//! use photom::observation_dataset::ObsDataset;
+//! use photom::io::datafusion::LoadObsArgs;
+//!
+//! let dataset = ObsDataset::from_parquet_uri(
+//!     "file:///data/observations.parquet",
+//!     LoadObsArgs::default(),
+//! )?;
+//! ```
+//!
+//! ## Ingestion arguments (`LoadObsArgs`)
+//!
+//! Both the async and the blocking variants of `from_parquet_uri` accept a `LoadObsArgs`
+//! value that controls how the ingestion pipeline behaves.  Use `LoadObsArgs::default()`
+//! to get sensible out-of-the-box settings, or construct the struct explicitly to override
+//! individual fields.
+//!
+//! | Field | Type | Default | Description |
+//! |-------|------|---------|-------------|
+//! | `error_model` | `Option<ObsErrorModel>` | `None` | Astrometric error model used to assign accuracies to MPC-coded observatories; `None` leaves MPC observer accuracies unset until [`ObsDataset::set_error_model`](observation_dataset::ObsDataset::set_error_model) is called |
+//! | `lru_cache_size` | `Option<usize>` | `Some(10_000)` | Capacity of the per-dataset LRU cache for observation look-up by `ObsId`; `None` falls back to an internal default |
+//! | `contiguous_choice` | `Option<ContiguousChoice>` | `Some(ContiguousNight)` | Which grouping column (if any) to sort the query by before collecting; sorting allows the corresponding index to use compact contiguous ranges instead of per-row index vectors (see below) |
+//!
+//! The `contiguous_choice` field (defaulting to `ContiguousNight`) causes DataFusion to
+//! append an `ORDER BY` clause to the internal SQL query before collecting the record
+//! batches.  As a result, all observations belonging to the same night occupy a contiguous
+//! block in the output `observations` vector, enabling the night index to store a compact
+//! `(start, end)` range instead of a `Vec` of scattered positions.  This is the same
+//! contiguous index optimisation applied by the Polars loader via `FromPolarsArgs`.
 //!
 //! # Minimum Supported Rust Version
 //!

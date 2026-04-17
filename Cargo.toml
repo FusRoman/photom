@@ -45,20 +45,47 @@ quick-xml = { version = "0.39.2", features = [
 serde = { version = "1.0.228", features = [
     "derive",
 ], default-features = false, optional = true }
+serde_json = { version = "1", default-features = false, features = [
+    "std",
+], optional = true }
 camino = { version = "1.2.2", default-features = false, optional = true }
+
+datafusion = { version = "50", default-features = false, features = [
+    "parquet",
+], optional = true }
+object_store = { version = "0.12.5", features = [
+    "http",
+], default-features = false, optional = true }
+hdfs-native-object-store = { version = "0.15", default-features = false, optional = true }
+tokio = { version = "1", features = [
+    "rt-multi-thread",
+], default-features = false, optional = true }
+url = { version = "2", default-features = false, optional = true }
+arrow-array = { version = "56.2", default-features = false, optional = true }
 
 [dev-dependencies]
 approx = "0.5.1"
 husky-rs = "0.3.2"
 proptest = "1.11.0"
 tempfile = "3"
+parquet = { version = "56", default-features = false, features = ["arrow"] }
 
 [features]
 polars = ["dep:polars"]
 parallel = ["dep:rayon"]
 ades = ["dep:hifitime", "dep:quick-xml", "dep:serde", "dep:camino"]
 mpc_80_col = ["dep:hifitime", "dep:camino"]
+datafusion = [
+    "dep:datafusion",
+    "dep:object_store",
+    "dep:hdfs-native-object-store",
+    "dep:tokio",
+    "dep:url",
+    "dep:serde",
+    "dep:serde_json",
+    "dep:arrow-array",
+]
 
 [package.metadata.docs.rs]
-features = ["polars", "parallel"]
+features = ["polars", "parallel", "ades", "mpc_80_col", "datafusion"]
 rustdoc-args = ["--cfg", "docsrs"]

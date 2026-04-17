@@ -47,9 +47,9 @@ use crate::{
 /// per-row heap allocation is needed for the common case of an absent or null
 /// MPC code.
 pub(crate) struct RawObsRow<'df> {
-    /// Geodetic longitude in degrees east of Greenwich (`obs_lon` column).
+    /// Geodetic longitude in radians, east of Greenwich (`obs_lon` column).
     pub(crate) obs_lon: Option<f64>,
-    /// Geodetic latitude in degrees (`obs_lat` column).
+    /// Geodetic latitude in radians (`obs_lat` column).
     pub(crate) obs_lat: Option<f64>,
     /// Altitude above the reference ellipsoid in meters (`obs_alt` column).
     pub(crate) obs_alt: Option<f64>,

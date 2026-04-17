@@ -68,7 +68,42 @@ pub const MPC_CODE: &[u8; 3] = b"I41";
 #[allow(dead_code)]
 pub const OBSERVER_TOLERANCE: f64 = 1e-9;
 
-// ── fixture loaders ────────────────────────────────────────────────────────────
+// ── fixture loaders (datafusion) ───────────────────────────────────────────────
+
+#[cfg(feature = "datafusion")]
+use photom::io::datafusion::loader::LoadObsArgs;
+#[cfg(feature = "datafusion")]
+use photom::observation_dataset::ObsDataset as DfObsDataset;
+
+/// Load the integer-traj fixture via `ObsDataset::from_parquet_uri` (`file://`).
+#[cfg(feature = "datafusion")]
+#[allow(dead_code)]
+pub fn df_load_int() -> DfObsDataset {
+    let uri = format!(
+        "file://{}/{}",
+        std::env::current_dir()
+            .expect("current_dir must be accessible")
+            .display(),
+        PATH_INT
+    );
+    DfObsDataset::from_parquet_uri(&uri, LoadObsArgs::default())
+        .expect("from_parquet_uri must succeed for int file")
+}
+
+/// Load the string-traj fixture via `ObsDataset::from_parquet_uri` (`file://`).
+#[cfg(feature = "datafusion")]
+#[allow(dead_code)]
+pub fn df_load_str() -> DfObsDataset {
+    let uri = format!(
+        "file://{}/{}",
+        std::env::current_dir()
+            .expect("current_dir must be accessible")
+            .display(),
+        PATH_STR
+    );
+    DfObsDataset::from_parquet_uri(&uri, LoadObsArgs::default())
+        .expect("from_parquet_uri must succeed for str file")
+}
 
 #[cfg(feature = "polars")]
 use photom::{io::polars::FromPolarsArgs, observation_dataset::ObsDataset};
@@ -81,6 +116,7 @@ use polars::prelude::{LazyFrame, ScanArgsParquet};
 /// the fast path (Polars rechunks during scan; the ingestion pipeline skips
 /// its own rechunk step).
 #[cfg(feature = "polars")]
+#[allow(dead_code)]
 pub fn load_int() -> ObsDataset {
     let args = ScanArgsParquet {
         rechunk: true,
@@ -99,6 +135,7 @@ pub fn load_int() -> ObsDataset {
 
 /// Load the string-traj fixture via `ObsDataset::from_lazy`.
 #[cfg(feature = "polars")]
+#[allow(dead_code)]
 pub fn load_str() -> ObsDataset {
     let args = ScanArgsParquet {
         rechunk: true,

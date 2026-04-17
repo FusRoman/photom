@@ -35,17 +35,33 @@ jobs:
           - parallel
           - ades
           - mpc_80_col
+          - datafusion
           - polars-parallel
           - polars-ades
           - polars-mpc_80_col
+          - polars-datafusion
           - parallel-ades
           - parallel-mpc_80_col
+          - parallel-datafusion
           - ades-mpc_80_col
+          - ades-datafusion
+          - mpc_80_col-datafusion
           - polars-parallel-ades
           - polars-parallel-mpc_80_col
+          - polars-parallel-datafusion
           - polars-ades-mpc_80_col
+          - polars-ades-datafusion
+          - polars-mpc_80_col-datafusion
           - parallel-ades-mpc_80_col
+          - parallel-ades-datafusion
+          - parallel-mpc_80_col-datafusion
+          - ades-mpc_80_col-datafusion
           - polars-parallel-ades-mpc_80_col
+          - polars-parallel-ades-datafusion
+          - polars-parallel-mpc_80_col-datafusion
+          - polars-ades-mpc_80_col-datafusion
+          - parallel-ades-mpc_80_col-datafusion
+          - polars-parallel-ades-mpc_80_col-datafusion
         command: [clippy, check]
         include:
           - features: no-features
@@ -58,28 +74,60 @@ jobs:
             cargo_flags: --no-default-features --features ades
           - features: mpc_80_col
             cargo_flags: --no-default-features --features mpc_80_col
+          - features: datafusion
+            cargo_flags: --no-default-features --features datafusion
           - features: polars-parallel
             cargo_flags: --no-default-features --features polars,parallel
           - features: polars-ades
             cargo_flags: --no-default-features --features polars,ades
           - features: polars-mpc_80_col
             cargo_flags: --no-default-features --features polars,mpc_80_col
+          - features: polars-datafusion
+            cargo_flags: --no-default-features --features polars,datafusion
           - features: parallel-ades
             cargo_flags: --no-default-features --features parallel,ades
           - features: parallel-mpc_80_col
             cargo_flags: --no-default-features --features parallel,mpc_80_col
+          - features: parallel-datafusion
+            cargo_flags: --no-default-features --features parallel,datafusion
           - features: ades-mpc_80_col
             cargo_flags: --no-default-features --features ades,mpc_80_col
+          - features: ades-datafusion
+            cargo_flags: --no-default-features --features ades,datafusion
+          - features: mpc_80_col-datafusion
+            cargo_flags: --no-default-features --features mpc_80_col,datafusion
           - features: polars-parallel-ades
             cargo_flags: --no-default-features --features polars,parallel,ades
           - features: polars-parallel-mpc_80_col
             cargo_flags: --no-default-features --features polars,parallel,mpc_80_col
+          - features: polars-parallel-datafusion
+            cargo_flags: --no-default-features --features polars,parallel,datafusion
           - features: polars-ades-mpc_80_col
             cargo_flags: --no-default-features --features polars,ades,mpc_80_col
+          - features: polars-ades-datafusion
+            cargo_flags: --no-default-features --features polars,ades,datafusion
+          - features: polars-mpc_80_col-datafusion
+            cargo_flags: --no-default-features --features polars,mpc_80_col,datafusion
           - features: parallel-ades-mpc_80_col
             cargo_flags: --no-default-features --features parallel,ades,mpc_80_col
+          - features: parallel-ades-datafusion
+            cargo_flags: --no-default-features --features parallel,ades,datafusion
+          - features: parallel-mpc_80_col-datafusion
+            cargo_flags: --no-default-features --features parallel,mpc_80_col,datafusion
+          - features: ades-mpc_80_col-datafusion
+            cargo_flags: --no-default-features --features ades,mpc_80_col,datafusion
           - features: polars-parallel-ades-mpc_80_col
             cargo_flags: --no-default-features --features polars,parallel,ades,mpc_80_col
+          - features: polars-parallel-ades-datafusion
+            cargo_flags: --no-default-features --features polars,parallel,ades,datafusion
+          - features: polars-parallel-mpc_80_col-datafusion
+            cargo_flags: --no-default-features --features polars,parallel,mpc_80_col,datafusion
+          - features: polars-ades-mpc_80_col-datafusion
+            cargo_flags: --no-default-features --features polars,ades,mpc_80_col,datafusion
+          - features: parallel-ades-mpc_80_col-datafusion
+            cargo_flags: --no-default-features --features parallel,ades,mpc_80_col,datafusion
+          - features: polars-parallel-ades-mpc_80_col-datafusion
+            cargo_flags: --no-default-features --features polars,parallel,ades,mpc_80_col,datafusion
           - command: clippy
             components: clippy
           - command: check
@@ -151,17 +199,33 @@ jobs:
           - parallel
           - ades
           - mpc_80_col
+          - datafusion
           - polars-parallel
           - polars-ades
           - polars-mpc_80_col
+          - polars-datafusion
           - parallel-ades
           - parallel-mpc_80_col
+          - parallel-datafusion
           - ades-mpc_80_col
+          - ades-datafusion
+          - mpc_80_col-datafusion
           - polars-parallel-ades
           - polars-parallel-mpc_80_col
+          - polars-parallel-datafusion
           - polars-ades-mpc_80_col
+          - polars-ades-datafusion
+          - polars-mpc_80_col-datafusion
           - parallel-ades-mpc_80_col
+          - parallel-ades-datafusion
+          - parallel-mpc_80_col-datafusion
+          - ades-mpc_80_col-datafusion
           - polars-parallel-ades-mpc_80_col
+          - polars-parallel-ades-datafusion
+          - polars-parallel-mpc_80_col-datafusion
+          - polars-ades-mpc_80_col-datafusion
+          - parallel-ades-mpc_80_col-datafusion
+          - polars-parallel-ades-mpc_80_col-datafusion
         include:
           - features: no-features
             cargo_flags: --no-default-features
@@ -173,28 +237,60 @@ jobs:
             cargo_flags: --no-default-features --features ades
           - features: mpc_80_col
             cargo_flags: --no-default-features --features mpc_80_col
+          - features: datafusion
+            cargo_flags: --no-default-features --features datafusion
           - features: polars-parallel
             cargo_flags: --no-default-features --features polars,parallel
           - features: polars-ades
             cargo_flags: --no-default-features --features polars,ades
           - features: polars-mpc_80_col
             cargo_flags: --no-default-features --features polars,mpc_80_col
+          - features: polars-datafusion
+            cargo_flags: --no-default-features --features polars,datafusion
           - features: parallel-ades
             cargo_flags: --no-default-features --features parallel,ades
           - features: parallel-mpc_80_col
             cargo_flags: --no-default-features --features parallel,mpc_80_col
+          - features: parallel-datafusion
+            cargo_flags: --no-default-features --features parallel,datafusion
           - features: ades-mpc_80_col
             cargo_flags: --no-default-features --features ades,mpc_80_col
+          - features: ades-datafusion
+            cargo_flags: --no-default-features --features ades,datafusion
+          - features: mpc_80_col-datafusion
+            cargo_flags: --no-default-features --features mpc_80_col,datafusion
           - features: polars-parallel-ades
             cargo_flags: --no-default-features --features polars,parallel,ades
           - features: polars-parallel-mpc_80_col
             cargo_flags: --no-default-features --features polars,parallel,mpc_80_col
+          - features: polars-parallel-datafusion
+            cargo_flags: --no-default-features --features polars,parallel,datafusion
           - features: polars-ades-mpc_80_col
             cargo_flags: --no-default-features --features polars,ades,mpc_80_col
+          - features: polars-ades-datafusion
+            cargo_flags: --no-default-features --features polars,ades,datafusion
+          - features: polars-mpc_80_col-datafusion
+            cargo_flags: --no-default-features --features polars,mpc_80_col,datafusion
           - features: parallel-ades-mpc_80_col
             cargo_flags: --no-default-features --features parallel,ades,mpc_80_col
+          - features: parallel-ades-datafusion
+            cargo_flags: --no-default-features --features parallel,ades,datafusion
+          - features: parallel-mpc_80_col-datafusion
+            cargo_flags: --no-default-features --features parallel,mpc_80_col,datafusion
+          - features: ades-mpc_80_col-datafusion
+            cargo_flags: --no-default-features --features ades,mpc_80_col,datafusion
           - features: polars-parallel-ades-mpc_80_col
             cargo_flags: --no-default-features --features polars,parallel,ades,mpc_80_col
+          - features: polars-parallel-ades-datafusion
+            cargo_flags: --no-default-features --features polars,parallel,ades,datafusion
+          - features: polars-parallel-mpc_80_col-datafusion
+            cargo_flags: --no-default-features --features polars,parallel,mpc_80_col,datafusion
+          - features: polars-ades-mpc_80_col-datafusion
+            cargo_flags: --no-default-features --features polars,ades,mpc_80_col,datafusion
+          - features: parallel-ades-mpc_80_col-datafusion
+            cargo_flags: --no-default-features --features parallel,ades,mpc_80_col,datafusion
+          - features: polars-parallel-ades-mpc_80_col-datafusion
+            cargo_flags: --no-default-features --features polars,parallel,ades,mpc_80_col,datafusion
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -254,17 +350,33 @@ jobs:
             --add-tracefile lcov-parallel.info \
             --add-tracefile lcov-ades.info \
             --add-tracefile lcov-mpc_80_col.info \
+            --add-tracefile lcov-datafusion.info \
             --add-tracefile lcov-polars-parallel.info \
             --add-tracefile lcov-polars-ades.info \
             --add-tracefile lcov-polars-mpc_80_col.info \
+            --add-tracefile lcov-polars-datafusion.info \
             --add-tracefile lcov-parallel-ades.info \
             --add-tracefile lcov-parallel-mpc_80_col.info \
+            --add-tracefile lcov-parallel-datafusion.info \
             --add-tracefile lcov-ades-mpc_80_col.info \
+            --add-tracefile lcov-ades-datafusion.info \
+            --add-tracefile lcov-mpc_80_col-datafusion.info \
             --add-tracefile lcov-polars-parallel-ades.info \
             --add-tracefile lcov-polars-parallel-mpc_80_col.info \
+            --add-tracefile lcov-polars-parallel-datafusion.info \
             --add-tracefile lcov-polars-ades-mpc_80_col.info \
+            --add-tracefile lcov-polars-ades-datafusion.info \
+            --add-tracefile lcov-polars-mpc_80_col-datafusion.info \
             --add-tracefile lcov-parallel-ades-mpc_80_col.info \
+            --add-tracefile lcov-parallel-ades-datafusion.info \
+            --add-tracefile lcov-parallel-mpc_80_col-datafusion.info \
+            --add-tracefile lcov-ades-mpc_80_col-datafusion.info \
             --add-tracefile lcov-polars-parallel-ades-mpc_80_col.info \
+            --add-tracefile lcov-polars-parallel-ades-datafusion.info \
+            --add-tracefile lcov-polars-parallel-mpc_80_col-datafusion.info \
+            --add-tracefile lcov-polars-ades-mpc_80_col-datafusion.info \
+            --add-tracefile lcov-parallel-ades-mpc_80_col-datafusion.info \
+            --add-tracefile lcov-polars-parallel-ades-mpc_80_col-datafusion.info \
             --output-file lcov.info
 
       - name: Upload to Codecov

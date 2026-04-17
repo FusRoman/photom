@@ -49,6 +49,9 @@ pub mod polars;
 #[cfg(feature = "polars")]
 use crate::io::polars::error::PolarsError;
 
+#[cfg(feature = "datafusion")]
+pub mod datafusion;
+
 use std::num::NonZeroUsize;
 
 use lru::LruCache;
