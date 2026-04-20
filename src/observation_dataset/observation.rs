@@ -97,7 +97,7 @@ impl Observation {
     /// - `photometry` — photometric measurement: apparent magnitude, its uncertainty, and the filter through which the observation was taken.
     /// - `mjd_tt` — detection epoch as a Modified Julian Date in Terrestrial Time, expressed in **days**.
     /// - `observer` — optional reference to the observatory that recorded this observation. Use [`ObsDataset::get_observer`](crate::observation_dataset::ObsDataset::get_observer) to resolve this identifier to a full `Observer` value.
-    /// 
+    ///
     /// # Returns
     ///
     /// A new `Observation` instance with the specified fields and `index` set to `None`.
