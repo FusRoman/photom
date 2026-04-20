@@ -458,7 +458,7 @@ fn str_traj_index_iter_full_trajectory_total() {
 /// for a non-existent id.
 #[test]
 fn get_observation_first_row() {
-    let mut ds = load_int();
+    let ds = load_int();
 
     // The first observation in the int fixture.
     let first_id: u64 = 3_026_230_983_415_015_002;
@@ -505,7 +505,7 @@ fn get_obs_by_index_bounds() {
 /// up by the index stored inside that observation.
 #[test]
 fn get_observation_consistent_with_get_obs_by_index() {
-    let mut ds = load_int();
+    let ds = load_int();
 
     // Sample every 50 000th observation to keep the test fast.
     let sample_indices: Vec<usize> = (0..TOTAL_ROWS).step_by(50_000).collect();
@@ -531,7 +531,7 @@ fn get_observation_consistent_with_get_obs_by_index() {
 /// Repeated calls to `get_observation` for the same id return the same value.
 #[test]
 fn get_observation_repeated_calls_consistent() {
-    let mut ds = load_int();
+    let ds = load_int();
     let first_id: u64 = 3_026_230_983_415_015_002;
 
     let id1 = *ds.get_observation(first_id).unwrap().id();

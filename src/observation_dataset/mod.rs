@@ -141,7 +141,7 @@ impl ObsDataset {
     ///
     /// `Some(&Observation)` if an observation with the given `id` exists in this dataset;
     /// `None` otherwise.
-    pub fn get_observation(&mut self, id: ObsId) -> Option<&Observation> {
+    pub fn get_observation(&self, id: ObsId) -> Option<&Observation> {
         let idx = self.index.get_by_id(&id)?;
         self.observations.get(idx)
     }
@@ -632,21 +632,21 @@ mod observation_tests {
         /// Verifies that get_observation returns Some for an existing id.
         #[test]
         fn get_observation_returns_some_for_existing_id() {
-            let mut ds = make_dataset(vec![make_observation(1, None)], vec![]);
+            let ds = make_dataset(vec![make_observation(1, None)], vec![]);
             assert!(ds.get_observation(1).is_some());
         }
 
         /// Verifies that get_observation returns None for a missing id.
         #[test]
         fn get_observation_returns_none_for_missing_id() {
-            let mut ds = make_dataset(vec![make_observation(1, None)], vec![]);
+            let ds = make_dataset(vec![make_observation(1, None)], vec![]);
             assert!(ds.get_observation(9999).is_none());
         }
 
         /// Verifies that repeated calls for the same id return the same observation.
         #[test]
         fn get_observation_repeated_calls_return_same_id() {
-            let mut ds = make_dataset(vec![make_observation(7, None)], vec![]);
+            let ds = make_dataset(vec![make_observation(7, None)], vec![]);
             let first_id = ds.get_observation(7).map(|o| o.id);
             let second_id = ds.get_observation(7).map(|o| o.id);
             assert_eq!(first_id, second_id);
@@ -660,7 +660,7 @@ mod observation_tests {
                 make_observation(2, None),
                 make_observation(3, None),
             ];
-            let mut ds = make_dataset(obs, vec![]);
+            let ds = make_dataset(obs, vec![]);
             let found = ds.get_observation(2);
             assert!(found.is_some(), "Expected Some for id=2");
             assert_eq!(found.unwrap().id, 2);
@@ -673,7 +673,7 @@ mod observation_tests {
         fn get_observation_repeated_calls_still_findable() {
             // Looking up id=2 after id=1 should not prevent id=1 from being found.
             let obs = vec![make_observation(1, None), make_observation(2, None)];
-            let mut ds = ObsDataset::new(obs, vec![], Some(ObsErrorModel::FCCT14), None, None);
+            let ds = ObsDataset::new(obs, vec![], Some(ObsErrorModel::FCCT14), None, None);
 
             // Populate the index with id=1.
             assert!(ds.get_observation(1).is_some());

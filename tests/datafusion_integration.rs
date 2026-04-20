@@ -351,7 +351,7 @@ fn str_traj_index_traj_1975_obs_ids() {
 /// `get_observation` returns `Some` for the first id and `None` for a fake one.
 #[test]
 fn get_observation_first_row() {
-    let mut ds = df_load_int();
+    let ds = df_load_int();
     let first_id: u64 = 3_026_230_983_415_015_002;
 
     let obs = ds
@@ -386,7 +386,7 @@ fn get_obs_by_index_bounds() {
 /// `get_observation` is consistent with `get_obs_by_index` for a sample of rows.
 #[test]
 fn get_observation_consistent_with_get_obs_by_index() {
-    let mut ds = df_load_int();
+    let ds = df_load_int();
 
     for idx in (0..TOTAL_ROWS).step_by(50_000) {
         let by_index = ds

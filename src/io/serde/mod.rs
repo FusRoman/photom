@@ -559,7 +559,7 @@ mod obsdataset_serde_tests {
     #[test]
     fn round_trip_get_observation_by_id() {
         let ds = build_basic_dataset();
-        let mut restored = roundtrip(&ds);
+        let restored = roundtrip(&ds);
         assert!(restored.get_observation(0).is_some());
         assert!(restored.get_observation(1).is_some());
         assert!(restored.get_observation(99).is_none());

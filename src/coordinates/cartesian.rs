@@ -55,6 +55,14 @@ pub struct CartesianCoord {
     pub z: f64,
 }
 
+impl CartesianCoord {
+    /// Dot product of two Cartesian vectors.
+    #[inline]
+    pub fn dot(&self, other: &Self) -> f64 {
+        self.x * other.x + self.y * other.y + self.z * other.z
+    }
+}
+
 impl Add for CartesianCoord {
     type Output = CartesianCoord;
 
@@ -134,12 +142,12 @@ impl CartesianCoordCov {
 // Lossless conversion: positions only.
 // ---------------------------------------------------------------------------
 
-impl From<EquCoord> for CartesianCoord {
+impl From<&EquCoord> for CartesianCoord {
     /// Project an equatorial direction onto the unit sphere.
     ///
     /// Uncertainties carried by `coord` are **discarded**. Use
     /// [`EquCoord::to_cartesian_cov`] to propagate them.
-    fn from(coord: EquCoord) -> Self {
+    fn from(coord: &EquCoord) -> Self {
         let (sdec, cdec) = coord.dec.sin_cos();
         let (sra, cra) = coord.ra.sin_cos();
         Self {
@@ -147,6 +155,14 @@ impl From<EquCoord> for CartesianCoord {
             y: cdec * sra,
             z: sdec,
         }
+    }
+}
+
+impl From<EquCoord> for CartesianCoord {
+    /// Convenience wrapper for `From<&EquCoord>` to allow direct conversion from owned `EquCoord`.
+    #[inline]
+    fn from(equ: EquCoord) -> Self {
+        Self::from(&equ)
     }
 }
 

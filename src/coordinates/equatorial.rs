@@ -301,7 +301,7 @@ impl fmt::Display for EquCoord {
     }
 }
 
-impl From<CartesianCoord> for EquCoord {
+impl From<&CartesianCoord> for EquCoord {
     /// Recover equatorial angles from a Cartesian direction.
     ///
     /// The vector is **not** required to be unit-normalised; only its
@@ -313,12 +313,20 @@ impl From<CartesianCoord> for EquCoord {
     ///   stability near the poles.
     /// - $\alpha$ is undefined at the exact pole ($\rho = 0$) and falls back
     ///   to `0` via [`f64::atan2`] semantics.
-    fn from(cart: CartesianCoord) -> Self {
-        let CartesianCoord { x, y, z } = cart;
+    fn from(cart: &CartesianCoord) -> Self {
+        let CartesianCoord { x, y, z } = *cart;
         let rho = x.hypot(y);
         let dec = z.atan2(rho);
         let ra = y.atan2(x).rem_euclid(TAU);
         EquCoord::new(ra, 0.0, dec, 0.0)
+    }
+}
+
+impl From<CartesianCoord> for EquCoord {
+    /// Convenience wrapper for `From<&CartesianCoord>` to allow direct conversion from owned `CartesianCoord`.
+    #[inline]
+    fn from(cart: CartesianCoord) -> Self {
+        Self::from(&cart)
     }
 }
 
