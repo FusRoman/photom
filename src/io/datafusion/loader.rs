@@ -125,7 +125,7 @@ use url::Url;
 
 use crate::{
     NightId, TrajId,
-    astrometry::EquCoord,
+    coordinates::equatorial::EquCoord,
     io::datafusion::{
         input_uri::InputUri,
         storage::{UriStoreError, resolve_input_uri},

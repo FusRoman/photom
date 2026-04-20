@@ -21,8 +21,8 @@ use thiserror::Error;
 
 use crate::{
     Degrees, TrajId,
-    astrometry::EquCoord,
     constants::ARCSEC_TO_DEG,
+    coordinates::equatorial::EquCoord,
     observation_dataset::{
         ObsDataset,
         index::{ObsMapIndex, TrajIndexMap},

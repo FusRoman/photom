@@ -160,15 +160,36 @@ if let Some(par_iter) = dataset.par_iter_full_night() {
 }
 ```
 
-### Astrometric utilities
+### Coordinate and astrometric utilities
+
+`EquCoord` bundles a sky position (RA, Dec) with its 1-σ uncertainties.
+All values are stored internally in **radians**; use `from_degrees` to supply
+degrees.
 
 ```rust
-use photom::astrometry::EquCoord;
+use photom::coordinates::equatorial::EquCoord;
+use photom::coordinates::cartesian::CartesianCoord;
 
-// from_degrees accepts values in degrees and converts internally to radians.
+// Construct from degrees — converted to radians internally.
 let a = EquCoord::from_degrees(10.0, 0.001, 20.0, 0.001);
 let b = EquCoord::from_degrees(10.5, 0.001, 20.5, 0.001);
-let sep = a.angular_separation(&b); // result in radians
+
+// Great-circle separation via the Vincenty formula (result in radians).
+let sep = a.angular_separation(&b);
+
+// Vector-averaging midpoint on the sphere.
+let mid = a.spherical_midpoint(&b);
+
+// Lossless projection onto the unit sphere (uncertainties discarded).
+let cart = CartesianCoord::from(a);
+// Recover equatorial angles (errors set to zero).
+let back: EquCoord = cart.into();
+
+// Propagate astrometric covariance through the spherical → Cartesian mapping.
+// Returns CartesianCoordCov with the full 3×3 covariance matrix.
+let cov = a.to_cartesian_cov();
+// Inverse: propagate back to equatorial marginal 1-σ errors.
+let recovered = cov.to_equatorial();
 ```
 
 ## DataFrame / Parquet Schema
@@ -253,6 +274,13 @@ A partially-null geodetic triplet (one or two of the three columns non-null) is 
 | `AdesError`     | `ades`      | XML parse error, missing mandatory field, unresolvable observatory          |
 | `Mpc80ColError` | `mpc_80_col`| Parse error in the fixed-width 80-column format                             |
 | `ObserverError` | —           | Invalid float value, MPC code not found or malformed                        |
+
+## Documentation
+
+To compile the documentation locally, run the following command in the terminal:
+```bash
+RUSTDOCFLAGS="--html-in-header $(pwd)/katex-header.html" cargo doc --no-deps --all-features
+```
 
 ## Minimum Supported Rust Version
 

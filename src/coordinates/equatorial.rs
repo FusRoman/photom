@@ -1,20 +1,50 @@
-//! Equatorial coordinate representation with measurement uncertainties.
+//! Equatorial coordinate representation with astrometric uncertainties.
 //!
 //! This module provides [`EquCoord`], a compact structure that bundles a sky
-//! position in the equatorial frame (right ascension and declination) with its
-//! associated astrometric uncertainties.  Two construction paths are available:
+//! position in the equatorial frame with its associated 1-σ astrometric
+//! uncertainties. All four fields — `ra`, `dec`, `ra_error`, `dec_error` — are
+//! stored in **radians**.
 //!
-//! - [`EquCoord::new`] — accepts all four values already in **radians**.
-//! - [`EquCoord::from_degrees`] — accepts values in **degrees** and converts
-//!   them to radians automatically.
+//! ## Construction
 //!
-//! The module also exposes [`EquCoord::angular_separation`], which computes the
-//! great-circle distance between two sky positions using the numerically stable
-//! Vincenty formula.
+//! - [`EquCoord::new`] — accepts all four values already in radians.
+//! - [`EquCoord::from_degrees`] — accepts values in degrees and converts them
+//!   to radians automatically.
+//!
+//! ## Accessors
+//!
+//! - [`EquCoord::to_degrees`] — returns `(ra, dec)` as a degree tuple.
+//! - [`EquCoord::error_in_degrees`] — returns `(ra_error, dec_error)` in degrees.
+//!
+//! ## Geometry
+//!
+//! - [`EquCoord::angular_separation`] — great-circle distance via the numerically
+//!   stable Vincenty formula; result lies in $[0, \pi]$ radians.
+//! - [`EquCoord::spherical_midpoint`] — vector-averaging midpoint on the unit sphere;
+//!   stable even for nearly-antipodal directions.
+//!
+//! ## Covariance propagation
+//!
+//! - [`EquCoord::to_cartesian_cov`] — projects to [`CartesianCoordCov`] using a
+//!   first-order Jacobian propagation of the diagonal input covariance
+//!   $(\sigma_\alpha^2, \sigma_\delta^2)$.
+//!
+//! ## Conversions
+//!
+//! - `From<`[`CartesianCoord`]`> for EquCoord` — recovers RA/Dec from a Cartesian
+//!   direction; output errors are set to zero.
+//! - [`std::fmt::Display`] — formats the position as
+//!   `RA: <ra_deg> deg, Dec: <dec_deg> deg`.
 
-use std::fmt;
+use std::{f64::consts::TAU, fmt};
 
-use crate::{Degrees, Radians};
+use crate::{
+    Degrees, Radians,
+    coordinates::{
+        NORM_MIN,
+        cartesian::{CartesianCoord, CartesianCoordCov},
+    },
+};
 
 /// An equatorial sky position with associated astrometric uncertainties.
 ///
@@ -162,6 +192,103 @@ impl EquCoord {
 
         num1.hypot(num2).atan2(denom)
     }
+
+    /// Convert to Cartesian coordinates while propagating the astrometric
+    /// covariance via first-order linearisation.
+    ///
+    /// Formulation
+    /// -----------
+    /// With the Jacobian of $(\alpha,\delta) \to (x,y,z)$
+    /// $$
+    /// J = \begin{pmatrix}
+    /// -\cos\delta\sin\alpha & -\sin\delta\cos\alpha \\
+    ///  \cos\delta\cos\alpha & -\sin\delta\sin\alpha \\
+    ///  0                    &  \cos\delta
+    /// \end{pmatrix},
+    /// $$
+    /// and with the diagonal input covariance
+    /// $\Sigma_{\alpha\delta} = \mathrm{diag}(\sigma_\alpha^2, \sigma_\delta^2)$
+    /// (independence of $\alpha$ and $\delta$ is assumed, consistent with
+    /// [`EquCoord`] storing only marginal errors), the output covariance is
+    /// $$\Sigma_{xyz} = J \, \Sigma_{\alpha\delta} \, J^\top.$$
+    ///
+    /// Validity
+    /// --------
+    /// The linear approximation is accurate when $\sigma_\alpha, \sigma_\delta$
+    /// are small (typical astrometric regime, sub-arcsecond). It degrades
+    /// near the poles where $\cos\delta \to 0$ and where moderate
+    /// $\sigma_\alpha$ values can no longer be considered small.
+    pub fn to_cartesian_cov(self) -> CartesianCoordCov {
+        let (sdec, cdec) = self.dec.sin_cos();
+        let (sra, cra) = self.ra.sin_cos();
+
+        // Jacobian columns: J[:,0] = ∂/∂α, J[:,1] = ∂/∂δ.
+        let j00 = -cdec * sra;
+        let j10 = cdec * cra;
+        let j20 = 0.0;
+
+        let j01 = -sdec * cra;
+        let j11 = -sdec * sra;
+        let j21 = cdec;
+
+        let var_ra = self.ra_error * self.ra_error;
+        let var_dec = self.dec_error * self.dec_error;
+
+        // Σ = J diag(var_ra, var_dec) J^T
+        let xx = j00 * j00 * var_ra + j01 * j01 * var_dec;
+        let xy = j00 * j10 * var_ra + j01 * j11 * var_dec;
+        let xz = j00 * j20 * var_ra + j01 * j21 * var_dec;
+        let yy = j10 * j10 * var_ra + j11 * j11 * var_dec;
+        let yz = j10 * j20 * var_ra + j11 * j21 * var_dec;
+        let zz = j20 * j20 * var_ra + j21 * j21 * var_dec;
+
+        CartesianCoordCov {
+            coord: CartesianCoord {
+                x: cdec * cra,
+                y: cdec * sra,
+                z: sdec,
+            },
+            cov: [xx, xy, xz, yy, yz, zz],
+        }
+    }
+
+    /// Compute a robust spherical midpoint between two sky directions.
+    ///
+    /// Returns the angular mean via vector averaging: the two unit vectors are
+    /// summed and the result is renormalized to the unit sphere.  This is not
+    /// the exact geodesic midpoint, but is stable and accurate enough for
+    /// defining a tangent-plane center.
+    ///
+    /// Arguments
+    /// ---------
+    /// * `ra1`  – Right ascension of the first point (radians).
+    /// * `dec1` – Declination of the first point (radians).
+    /// * `ra2`  – Right ascension of the second point (radians).
+    /// * `dec2` – Declination of the second point (radians).
+    ///
+    /// Return
+    /// ------
+    /// `(ra, dec)` of the midpoint in radians, with $\mathrm{ra} \in [0, 2\pi)$.
+    ///
+    /// Notes
+    /// -----
+    /// When the two directions are nearly antipodal the sum vector approaches
+    /// zero; a numerical floor is applied before normalization to avoid NaN.
+    #[inline]
+    pub fn spherical_midpoint(&self, other: &EquCoord) -> Self {
+        let cart1: CartesianCoord = (*self).into();
+        let cart2: CartesianCoord = (*other).into();
+        let cart = cart1 + cart2;
+        let r = (cart.x * cart.x + cart.y * cart.y + cart.z * cart.z)
+            .sqrt()
+            .max(NORM_MIN);
+        CartesianCoord {
+            x: cart.x / r,
+            y: cart.y / r,
+            z: cart.z / r,
+        }
+        .into()
+    }
 }
 
 /// Formats the coordinate as a human-readable string of the form
@@ -171,6 +298,27 @@ impl fmt::Display for EquCoord {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let (ra_deg, dec_deg) = self.to_degrees();
         write!(f, "RA: {} deg, Dec: {} deg", ra_deg, dec_deg)
+    }
+}
+
+impl From<CartesianCoord> for EquCoord {
+    /// Recover equatorial angles from a Cartesian direction.
+    ///
+    /// The vector is **not** required to be unit-normalised; only its
+    /// direction matters. Errors on the output are set to zero.
+    ///
+    /// Numerical notes
+    /// ---------------
+    /// - $\rho = \sqrt{x^2 + y^2}$ is computed via [`f64::hypot`] for
+    ///   stability near the poles.
+    /// - $\alpha$ is undefined at the exact pole ($\rho = 0$) and falls back
+    ///   to `0` via [`f64::atan2`] semantics.
+    fn from(cart: CartesianCoord) -> Self {
+        let CartesianCoord { x, y, z } = cart;
+        let rho = x.hypot(y);
+        let dec = z.atan2(rho);
+        let ra = y.atan2(x).rem_euclid(TAU);
+        EquCoord::new(ra, 0.0, dec, 0.0)
     }
 }
 
@@ -505,6 +653,120 @@ mod equ_coord_tests {
                 (sep_orig - sep_shifted).abs() < 1e-10,
                 "separation changed after RA shift={shift}: {sep_orig} vs {sep_shifted}"
             );
+        }
+    }
+
+    // ------------------------------------------------------------------ //
+    // error_in_degrees tests                                               //
+    // ------------------------------------------------------------------ //
+
+    mod error_in_degrees {
+        use super::*;
+
+        /// Verifies that `error_in_degrees()` converts ra_error from radians to degrees correctly.
+        #[test]
+        fn ra_error_converted_to_degrees() {
+            let coord = EquCoord::new(0.0, PI / 2.0, 0.0, 0.0);
+            let (ra_err_deg, _) = coord.error_in_degrees();
+            assert_abs_diff_eq!(ra_err_deg, 90.0, epsilon = 1e-13);
+        }
+
+        /// Verifies that `error_in_degrees()` converts dec_error from radians to degrees correctly.
+        #[test]
+        fn dec_error_converted_to_degrees() {
+            let coord = EquCoord::new(0.0, 0.0, 0.0, PI / 4.0);
+            let (_, dec_err_deg) = coord.error_in_degrees();
+            assert_abs_diff_eq!(dec_err_deg, 45.0, epsilon = 1e-13);
+        }
+
+        /// Verifies that zero errors remain zero after conversion.
+        #[test]
+        fn zero_errors_remain_zero() {
+            let coord = EquCoord::new(1.0, 0.0, 0.5, 0.0);
+            let (ra_err_deg, dec_err_deg) = coord.error_in_degrees();
+            assert_abs_diff_eq!(ra_err_deg, 0.0, epsilon = 0.0);
+            assert_abs_diff_eq!(dec_err_deg, 0.0, epsilon = 0.0);
+        }
+
+        /// Verifies the round-trip: errors stored via `from_degrees` are recovered by `error_in_degrees`.
+        #[test]
+        fn error_in_degrees_round_trips_from_degrees() {
+            let ra_err_deg = 0.5_f64;
+            let dec_err_deg = 1.2_f64;
+            let coord = EquCoord::from_degrees(0.0, ra_err_deg, 0.0, dec_err_deg);
+            let (ra_out, dec_out) = coord.error_in_degrees();
+            assert_abs_diff_eq!(ra_out, ra_err_deg, epsilon = 1e-13);
+            assert_abs_diff_eq!(dec_out, dec_err_deg, epsilon = 1e-13);
+        }
+
+        /// Verifies that `error_in_degrees` is independent of the coordinate values.
+        #[test]
+        fn error_in_degrees_independent_of_position() {
+            let err_rad = 0.01_f64;
+            let c1 = EquCoord::new(0.0, err_rad, 0.0, err_rad);
+            let c2 = EquCoord::new(PI / 3.0, err_rad, PI / 6.0, err_rad);
+            let (ra1, dec1) = c1.error_in_degrees();
+            let (ra2, dec2) = c2.error_in_degrees();
+            assert_abs_diff_eq!(ra1, ra2, epsilon = 1e-15);
+            assert_abs_diff_eq!(dec1, dec2, epsilon = 1e-15);
+        }
+    }
+
+    // ------------------------------------------------------------------ //
+    // spherical_midpoint deterministic tests                               //
+    // ------------------------------------------------------------------ //
+
+    mod spherical_midpoint {
+        use super::*;
+
+        /// The midpoint of a point with itself equals the original point.
+        #[test]
+        fn midpoint_with_self_is_same_point() {
+            let c = EquCoord::from_degrees(200.0, 0.0, -33.0, 0.0);
+            let mid = c.spherical_midpoint(&c);
+            assert_abs_diff_eq!(mid.ra, c.ra, epsilon = 1e-12);
+            assert_abs_diff_eq!(mid.dec, c.dec, epsilon = 1e-12);
+        }
+
+        /// Two equatorial points (Dec=0) have a midpoint with Dec=0 and averaged RA.
+        #[test]
+        fn equatorial_midpoint_has_averaged_ra_and_zero_dec() {
+            let c1 = EquCoord::from_degrees(20.0, 0.0, 0.0, 0.0);
+            let c2 = EquCoord::from_degrees(100.0, 0.0, 0.0, 0.0);
+            let mid = c1.spherical_midpoint(&c2);
+            assert_abs_diff_eq!(mid.dec, 0.0, epsilon = 1e-12);
+            assert_abs_diff_eq!(mid.ra, 60.0_f64.to_radians(), epsilon = 1e-12);
+        }
+
+        /// Spherical midpoint is symmetric: midpoint(a, b) ≈ midpoint(b, a).
+        #[test]
+        fn midpoint_is_symmetric() {
+            let a = EquCoord::from_degrees(50.0, 0.0, 10.0, 0.0);
+            let b = EquCoord::from_degrees(110.0, 0.0, -30.0, 0.0);
+            let mid_ab = a.spherical_midpoint(&b);
+            let mid_ba = b.spherical_midpoint(&a);
+            assert_abs_diff_eq!(mid_ab.ra, mid_ba.ra, epsilon = 1e-12);
+            assert_abs_diff_eq!(mid_ab.dec, mid_ba.dec, epsilon = 1e-12);
+        }
+
+        /// Midpoint of north and south poles must not produce NaN (robustness guard).
+        #[test]
+        fn midpoint_of_antipodal_poles_is_not_nan() {
+            let north = EquCoord::from_degrees(0.0, 0.0, 90.0, 0.0);
+            let south = EquCoord::from_degrees(0.0, 0.0, -90.0, 0.0);
+            let mid = north.spherical_midpoint(&south);
+            assert!(!mid.ra.is_nan(), "midpoint RA is NaN for antipodal poles");
+            assert!(!mid.dec.is_nan(), "midpoint Dec is NaN for antipodal poles");
+        }
+
+        /// Midpoint of two equatorial points 90° apart has Dec=0 and intermediate RA.
+        #[test]
+        fn equatorial_midpoint_90_degrees_apart() {
+            let c1 = EquCoord::from_degrees(0.0, 0.0, 0.0, 0.0);
+            let c2 = EquCoord::from_degrees(90.0, 0.0, 0.0, 0.0);
+            let mid = c1.spherical_midpoint(&c2);
+            assert_abs_diff_eq!(mid.dec, 0.0, epsilon = 1e-12);
+            assert_abs_diff_eq!(mid.ra, 45.0_f64.to_radians(), epsilon = 1e-12);
         }
     }
 }

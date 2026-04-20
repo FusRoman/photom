@@ -359,7 +359,7 @@ mod obsdataset_parallel_tests {
 
     use crate::{
         NightId, TrajId,
-        astrometry::EquCoord,
+        coordinates::equatorial::EquCoord,
         observation_dataset::{
             index::{NightIndexMap, TrajIndexMap},
             observation::Observation,

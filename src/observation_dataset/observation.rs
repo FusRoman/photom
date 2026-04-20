@@ -16,7 +16,7 @@
 
 use crate::{
     MJDTT,
-    astrometry::EquCoord,
+    coordinates::equatorial::EquCoord,
     observation_dataset::{ObsId, index::ObsIndex},
     observer::dataset::ObserverId,
     photometry::Photometry,

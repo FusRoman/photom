@@ -419,7 +419,7 @@ impl ObsDataset {
 mod observation_tests {
     use super::*;
     use crate::{
-        astrometry::EquCoord,
+        coordinates::equatorial::EquCoord,
         observer::{Observer, dataset::ObserverId, error_model::ObsErrorModel},
         photometry::{Filter, Photometry},
     };

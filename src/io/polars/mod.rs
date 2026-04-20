@@ -114,7 +114,7 @@ use polars::{
 
 use crate::{
     NightId, TrajId,
-    astrometry::EquCoord,
+    coordinates::equatorial::EquCoord,
     io::polars::{
         base_field::BaseFields,
         error::PolarsError,

@@ -39,7 +39,7 @@
 //!
 //! | Module | Description |
 //! |--------|-------------|
-//! | [`astrometry`] | Equatorial sky coordinates ([`astrometry::EquCoord`]) with uncertainties and the Vincenty angular-separation formula |
+//! | [`coordinates`] | Equatorial sky coordinates ([`coordinates::equatorial::EquCoord`]) with uncertainties and the Vincenty angular-separation formula |
 //! | [`photometry`] | Photometric measurement types: apparent magnitude, uncertainty, and bandpass filter ([`photometry::Photometry`], [`photometry::Filter`]) |
 //! | [`observation_dataset`] | Core observation types ([`observation_dataset::observation::Observation`], [`observation_dataset::ObsDataset`]) |
 //! | [`observer`] | Ground-based observatory representation ([`observer::Observer`]) and geodetic utilities |
@@ -267,15 +267,30 @@
 //! let dataset = ObsDataset::from_lazy(df.lazy(), ObsErrorModel::VFCC17, None)?;
 //! ```
 //!
-//! ## Compute angular separation between two sky positions
+//! ## Coordinate utilities
+//!
+//! [`coordinates::equatorial::EquCoord`] bundles a sky position (RA, Dec) with
+//! its 1-σ uncertainties, all stored in **radians**.
 //!
 //! ```rust
-//! use photom::astrometry::EquCoord;
+//! use photom::coordinates::equatorial::EquCoord;
 //!
+//! // Construct from degrees — values are converted to radians internally.
 //! let a = EquCoord::from_degrees(10.0, 0.001, 20.0, 0.001);
 //! let b = EquCoord::from_degrees(10.5, 0.001, 20.5, 0.001);
-//! let sep = a.angular_separation(&b); // result in radians
+//!
+//! // Great-circle separation via the Vincenty formula (result in radians).
+//! let sep = a.angular_separation(&b);
+//!
+//! // Vector-averaging midpoint on the sphere.
+//! let mid = a.spherical_midpoint(&b);
 //! ```
+//!
+//! To propagate astrometric uncertainties through the spherical-to-Cartesian
+//! mapping use [`coordinates::equatorial::EquCoord::to_cartesian_cov`], which
+//! returns a [`coordinates::cartesian::CartesianCoordCov`] containing the full
+//! 3×3 covariance matrix. The inverse conversion is
+//! [`coordinates::cartesian::CartesianCoordCov::to_equatorial`].
 //!
 //! ## Parallel iteration
 //!
@@ -490,8 +505,8 @@
 //!
 //! `photom` requires **Rust 1.94.0** or later.
 
-pub mod astrometry;
 pub mod constants;
+pub mod coordinates;
 pub mod io;
 pub mod observation_dataset;
 pub mod observer;

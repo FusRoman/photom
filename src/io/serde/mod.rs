@@ -41,7 +41,7 @@ use serde::{Deserialize, Serialize, de::DeserializeSeed, ser::SerializeStruct};
 
 use crate::{
     MJDTT, NightId, TrajId,
-    astrometry::EquCoord,
+    coordinates::equatorial::EquCoord,
     observation_dataset::ObsId,
     observation_dataset::{
         ObsDataset,
@@ -418,7 +418,7 @@ mod obsdataset_serde_tests {
 
     use crate::{
         NightId, TrajId,
-        astrometry::EquCoord,
+        coordinates::equatorial::EquCoord,
         observation_dataset::{
             ObsDataset,
             index::{NightIndexMap, ObsIndex, ObsMapIndex, TrajIndexMap},
