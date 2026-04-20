@@ -368,7 +368,7 @@ fn get_observation_first_row() {
 /// `get_obs_by_index` returns `Some` for valid indices and `None` out of bounds.
 #[test]
 fn get_obs_by_index_bounds() {
-    let mut ds = df_load_int();
+    let ds = df_load_int();
 
     let obs = ds
         .get_obs_by_index(0)
@@ -580,7 +580,7 @@ fn int_night_and_traj_totals_consistent() {
 /// reachable via `get_obs_by_index`.
 #[test]
 fn night_obs_reachable_by_index() {
-    let mut ds = df_load_int();
+    let ds = df_load_int();
     let nid = NightId(3248);
 
     let indices: Vec<usize> = ds

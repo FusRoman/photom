@@ -78,7 +78,6 @@
 //! | Field | Type | Default | Effect |
 //! |-------|------|---------|--------|
 //! | `error_model` | `Option<ObsErrorModel>` | `None` | Astrometric error model for MPC accuracy look-up |
-//! | `lru_cache_size` | `Option<usize>` | `None` (→ 1 000) | LRU cache capacity for observation look-up by id |
 //! | `contiguous_choice` | `Option<ContiguousChoice>` | `Some(ContiguousNight)` | Column to sort by for the contiguous-block index optimisation |
 //!
 //! # Contiguous-block optimisation
@@ -251,20 +250,17 @@ pub enum ContiguousChoice {
 
 /// Configuration for [`load_obs_sync`] / [`load_obs_from_parquet_uri`].
 ///
-/// Controls three orthogonal aspects of the loading pipeline: the astrometric
+/// Controls two orthogonal aspects of the loading pipeline: the astrometric
 /// error model used to attach per-site measurement accuracies to MPC-coded
-/// observers, the capacity of the internal LRU cache used by [`ObsDataset`]
-/// for identifier-based observation look-up, and the contiguous-sort
-/// optimisation that controls the in-memory layout of the night and trajectory
-/// index maps.
+/// observers, and the contiguous-sort optimisation that controls the in-memory
+/// layout of the night and trajectory index maps.
 ///
-/// Use [`Default::default`] to obtain sensible defaults (no error model, LRU
-/// cache of 1 000 entries, contiguous sort by `night_id`).
+/// Use [`Default::default`] to obtain sensible defaults (no error model,
+/// contiguous sort by `night_id`).
 ///
 /// | Field | Type | Default | Effect |
 /// |-------|------|---------|--------|
 /// | `error_model` | `Option<ObsErrorModel>` | `None` | Astrometric error model for MPC accuracy look-up |
-/// | `lru_cache_size` | `Option<usize>` | `None` (→ 1 000) | LRU cache capacity for observation look-up by id |
 /// | `contiguous_choice` | `Option<ContiguousChoice>` | `Some(ContiguousNight)` | Column to sort by for the contiguous-block index optimisation |
 ///
 /// # Example
@@ -275,7 +271,6 @@ pub enum ContiguousChoice {
 ///
 /// let args = LoadObsArgs {
 ///     error_model: Some(ObsErrorModel::default()),
-///     lru_cache_size: Some(5_000),
 ///     contiguous_choice: Some(ContiguousChoice::ContiguousTraj),
 /// };
 /// ```
@@ -289,16 +284,6 @@ pub struct LoadObsArgs {
     /// will carry no accuracy until a model is attached later via
     /// [`ObsDataset::set_error_model`].
     pub error_model: Option<ObsErrorModel>,
-    /// LRU cache capacity for observation look-up by identifier.
-    ///
-    /// The [`ObsDataset`] maintains a least-recently-used cache so that
-    /// repeated calls to look up the same observation by its [`ObsId`] do not
-    /// scan the full observations vector each time.  `None` defaults to 1 000
-    /// entries.  Set a larger value if the workload performs random access over
-    /// a large fraction of the dataset.
-    ///
-    /// [`ObsId`]: crate::observation_dataset::ObsId
-    pub lru_cache_size: Option<usize>,
     /// Which grouping column (if any) to sort by for the contiguous-block
     /// optimisation.
     ///
@@ -314,7 +299,6 @@ impl Default for LoadObsArgs {
     fn default() -> Self {
         Self {
             error_model: None,
-            lru_cache_size: None,
             contiguous_choice: Some(ContiguousChoice::ContiguousNight),
         }
     }
@@ -621,8 +605,7 @@ impl<K: Clone + Eq, I> ContiguousGroupTracker<K, I> {
 ///
 /// - `batches` — a slice of Arrow [`RecordBatch`]es produced by executing the
 ///   DataFusion plan.  All batches must share the same schema.
-/// - `args` — loading configuration that controls the error model, LRU cache
-///   size, and contiguous-sort strategy.
+/// - `args` — loading configuration that controls the error model and contiguous-sort strategy.
 ///
 /// # Returns
 ///
@@ -708,7 +691,6 @@ fn build_obs_dataset_from_batches(
         args.error_model,
         night_map,
         traj_map,
-        args.lru_cache_size,
     ))
 }
 

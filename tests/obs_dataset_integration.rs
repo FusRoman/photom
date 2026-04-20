@@ -479,7 +479,7 @@ fn get_observation_first_row() {
 /// out-of-bounds index.
 #[test]
 fn get_obs_by_index_bounds() {
-    let mut ds = load_int();
+    let ds = load_int();
 
     // Index 0 must exist.
     let obs = ds
@@ -528,8 +528,7 @@ fn get_observation_consistent_with_get_obs_by_index() {
     }
 }
 
-/// Repeated calls to `get_observation` for the same id return the same value
-/// (LRU cache correctness).
+/// Repeated calls to `get_observation` for the same id return the same value.
 #[test]
 fn get_observation_repeated_calls_consistent() {
     let mut ds = load_int();
@@ -546,7 +545,7 @@ fn get_observation_repeated_calls_consistent() {
 /// a known night is also reachable via `get_obs_by_index`.
 #[test]
 fn night_obs_reachable_by_index() {
-    let mut ds = load_int();
+    let ds = load_int();
     let nid = NightId(3248); // smallest night, 11 674 observations
 
     // Collect indices from the night iterator.

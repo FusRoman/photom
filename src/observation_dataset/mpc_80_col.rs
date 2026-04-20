@@ -57,7 +57,7 @@ impl ObsDataset {
             }
         }
 
-        let ds = dataset.unwrap_or_else(|| ObsDataset::new(vec![], vec![], None, None, None, None));
+        let ds = dataset.unwrap_or_else(ObsDataset::empty);
         (ds, errors)
     }
 

@@ -421,21 +421,13 @@ mod obsdataset_parallel_tests {
             Some(ObsErrorModel::FCCT14),
             Some(night_map),
             Some(traj_map),
-            Some(100),
         )
     }
 
     /// Build a dataset with 2 observations and **no** night or trajectory index.
     fn make_dataset_no_index() -> ObsDataset {
         let obs = vec![make_obs(1, 0), make_obs(2, 1)];
-        ObsDataset::new(
-            obs,
-            vec![],
-            Some(ObsErrorModel::FCCT14),
-            None,
-            None,
-            Some(100),
-        )
+        ObsDataset::new(obs, vec![], Some(ObsErrorModel::FCCT14), None, None)
     }
 
     // -----------------------------------------------------------------------

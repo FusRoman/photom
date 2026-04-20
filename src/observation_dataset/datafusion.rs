@@ -21,8 +21,8 @@ impl ObsDataset {
     /// # Arguments
     ///
     /// - `uri` — URI string pointing to the Parquet resource.
-    /// - `args` — configuration for the ingestion pipeline (error model, LRU
-    ///   cache size).  Use [`LoadObsArgs::default`] for sensible defaults.
+    /// - `args` — configuration for the ingestion pipeline (error model, contiguous sort).
+    ///   Use [`LoadObsArgs::default`] for sensible defaults.
     ///
     /// # Errors
     ///

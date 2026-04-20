@@ -226,7 +226,6 @@ fn build_dataset(
         None,   // error model resolved lazily on first MPC look-up
         None,   // no night index
         Some(traj_index_map),
-        None, // default LRU cache size (1 000)
     ))
 }
 

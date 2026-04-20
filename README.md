@@ -4,7 +4,7 @@ Rust library for loading, structuring, and querying astronomical observation dat
 
 ## Features
 
-- **Serialisation / deserialisation** (`serde` feature) — persist an [`ObsDataset`] to JSON (or any other `serde`-compatible format) and restore it without losing observations, custom observers, or LRU cache capacity. Runtime-only state (LRU contents, MPC network cache) is automatically re-initialised on deserialisation.
+- **Serialisation / deserialisation** (`serde` feature) — persist an [`ObsDataset`] to JSON (or any other `serde`-compatible format) and restore it without losing observations or custom observers. Runtime-only state (MPC network cache) is automatically re-initialised on deserialisation.
 - **Polars ingestion** (`polars` feature) — load observations from a `DataFrame` or `LazyFrame` with full schema validation.
 - **Parallel iteration** (`parallel` feature) — iterate over observations, nights, and trajectories in parallel via [rayon](https://docs.rs/rayon), with zero data copying.
 - **ADES ingestion** (`ades` feature) — load observations directly from MPC ADES XML files, with automatic MPC observer resolution.
@@ -13,7 +13,6 @@ Rust library for loading, structuring, and querying astronomical observation dat
 - **Multi-observer support** — MPC observatory codes (resolved lazily from the MPC website), custom geodetic sites (interned and deduplicated), or unknown observer.
 - **Trajectory grouping** — group observations by a `traj_id` column; supports both integer (`UInt32`) and string (`String`) identifiers.
 - **Three astrometric error models** — FCCT14, CBM10, and VFCC17, used to assign measurement accuracies to MPC-coded observatories.
-- **LRU caches** — configurable cache capacity for fast repeated lookups of observations and trajectories.
 
 ## Installation
 
@@ -88,8 +87,7 @@ observations are not stored contiguously.
 | Observations | Yes | Full list in insertion order |
 | Custom geodetic observers | Yes | All sites and their coordinates |
 | Astrometric error model | Yes | `FCCT14`, `CBM10`, `VFCC17`, or `None` |
-| LRU cache capacity | Yes | Preserves eviction behaviour |
-| LRU cache contents | No | Repopulated on access |
+| MPC network cache | No | Fetched lazily on first use |
 | MPC network cache | No | Fetched lazily on first use |
 | Trajectory aliases | Yes | Fully round-tripped |
 | Night / trajectory indices | Yes | Membership stored per-observation; rebuilt on load |
@@ -226,7 +224,6 @@ A partially-null geodetic triplet (one or two of the three columns non-null) is 
 | Field               | Type                      | Default              | Description                                                        |
 |---------------------|---------------------------|----------------------|--------------------------------------------------------------------|
 | `error_model`       | `Option<ObsErrorModel>`   | `None`               | Astrometric error model for MPC-coded observatories                |
-| `lru_cache_size`    | `Option<usize>`           | `Some(10_000)`       | LRU cache capacity for observation lookup by `ObsId`               |
 | `do_rechunk`        | `Option<bool>`            | `Some(false)`        | Force single-chunk layout before ingestion                         |
 | `contiguous_choice` | `Option<ContiguousChoice>`| `Some(ContiguousNight)` | Sort by night or trajectory for compact index ranges            |
 
@@ -235,7 +232,6 @@ A partially-null geodetic triplet (one or two of the three columns non-null) is 
 | Field               | Type                      | Default              | Description                                                        |
 |---------------------|---------------------------|----------------------|--------------------------------------------------------------------|
 | `error_model`       | `Option<ObsErrorModel>`   | `None`               | Astrometric error model for MPC-coded observatories                |
-| `lru_cache_size`    | `Option<usize>`           | `Some(10_000)`       | LRU cache capacity for observation lookup by `ObsId`               |
 | `contiguous_choice` | `Option<ContiguousChoice>`| `Some(ContiguousNight)` | Sort by night or trajectory for compact index ranges            |
 
 ## Type Aliases

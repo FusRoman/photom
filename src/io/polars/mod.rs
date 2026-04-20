@@ -343,8 +343,8 @@ pub enum ContiguousChoice {
 /// [`ObsDataset::from_lazy`].
 ///
 /// Pass a value of this struct to control how the ingestion pipeline behaves.
-/// Use [`Default::default`] to obtain sensible defaults (10 000-entry LRU
-/// cache, automatic rechunk, contiguous sort by `night_id`).
+/// Use [`Default::default`] to obtain sensible defaults (automatic rechunk,
+/// contiguous sort by `night_id`).
 ///
 /// # Fields
 ///
@@ -353,9 +353,6 @@ pub enum ContiguousChoice {
 ///   look-up; each MPC-coded observer will have `None` for its accuracy
 ///   fields until a model is set later via
 ///   [`ObsDataset::set_error_model`](crate::observation_dataset::ObsDataset::set_error_model).
-/// - `lru_cache_size` — capacity of the LRU cache used for observation
-///   look-up by [`ObsId`](crate::observation_dataset::ObsId).  `None`
-///   defaults to 1 000.
 /// - `do_rechunk` — when `true` (or `None`), any multi-chunk column is
 ///   merged into a single contiguous Arrow chunk before ingestion.  Pass
 ///   `Some(false)` only when the caller has already guaranteed single-chunk
@@ -364,8 +361,6 @@ pub enum ContiguousChoice {
 pub struct FromPolarsArgs {
     /// Astrometric error model for MPC observatory accuracy look-up.
     pub error_model: Option<ObsErrorModel>,
-    /// LRU cache capacity for observation look-up by identifier.
-    pub lru_cache_size: Option<usize>,
     /// Whether to merge multi-chunk columns into a single contiguous chunk.
     pub do_rechunk: Option<bool>,
     /// Which grouping column (if any) to sort by for the contiguous-block optimisation.
@@ -377,7 +372,6 @@ impl Default for FromPolarsArgs {
     ///
     /// - `error_model`: `None` — no MPC accuracy model; set explicitly after
     ///   construction if MPC-coded observers are present.
-    /// - `lru_cache_size`: `Some(10_000)`.
     /// - `do_rechunk`: `Some(false)` — the ingestion pipeline will rechunk
     ///   automatically when it detects multi-chunk columns, so explicit
     ///   pre-rechunking is not required.
@@ -386,7 +380,6 @@ impl Default for FromPolarsArgs {
     fn default() -> Self {
         Self {
             error_model: None,
-            lru_cache_size: 10000.into(),
             do_rechunk: false.into(),
             contiguous_choice: ContiguousChoice::ContiguousNight.into(),
         }
@@ -578,7 +571,6 @@ impl<K: Clone + Eq, I> ContiguousGroupTracker<K, I> {
 ///   all columns required by the schema.
 /// - `error_model`    — the [`ObsErrorModel`] attached to the resulting
 ///   [`ObsDataset`].
-/// - `lru_cache_size` — optional LRU cache capacity; `None` defaults to 1 000.
 /// - `do_rechunk`     — whether to consolidate multi-chunk columns into a
 ///   single contiguous chunk before ingestion.  `None` and `Some(true)` both
 ///   enable the automatic rechunk (default behaviour); pass `Some(false)` only
@@ -884,7 +876,6 @@ fn load_observation_from_frame(
         args.error_model,
         night_map,
         traj_map,
-        args.lru_cache_size,
     ))
 }
 
@@ -954,7 +945,6 @@ mod polars_reader_tests {
             &df,
             FromPolarsArgs {
                 error_model: Some(ObsErrorModel::FCCT14),
-                lru_cache_size: Some(10),
                 ..Default::default()
             },
         );
@@ -991,7 +981,6 @@ mod polars_reader_tests {
             &df,
             FromPolarsArgs {
                 error_model: Some(ObsErrorModel::FCCT14),
-                lru_cache_size: Some(10),
                 ..Default::default()
             },
         );
@@ -1040,7 +1029,6 @@ mod polars_reader_tests {
             &df,
             FromPolarsArgs {
                 error_model: Some(ObsErrorModel::FCCT14),
-                lru_cache_size: Some(10),
                 ..Default::default()
             },
         );
@@ -1091,7 +1079,7 @@ mod polars_reader_tests {
             &df,
             FromPolarsArgs {
                 error_model: Some(ObsErrorModel::FCCT14),
-                lru_cache_size: Some(10),
+
                 ..Default::default()
             },
         );
@@ -1143,7 +1131,7 @@ mod polars_reader_tests {
             &df,
             FromPolarsArgs {
                 error_model: Some(ObsErrorModel::FCCT14),
-                lru_cache_size: Some(10),
+
                 ..Default::default()
             },
         );
@@ -1185,7 +1173,7 @@ mod polars_reader_tests {
             &df,
             FromPolarsArgs {
                 error_model: Some(ObsErrorModel::FCCT14),
-                lru_cache_size: Some(10),
+
                 ..Default::default()
             },
         );
@@ -1221,7 +1209,7 @@ mod polars_reader_tests {
             &df,
             FromPolarsArgs {
                 error_model: Some(ObsErrorModel::FCCT14),
-                lru_cache_size: Some(10),
+
                 ..Default::default()
             },
         );
@@ -1250,7 +1238,7 @@ mod polars_reader_tests {
             &df,
             FromPolarsArgs {
                 error_model: Some(ObsErrorModel::FCCT14),
-                lru_cache_size: Some(10),
+
                 ..Default::default()
             },
         );
@@ -1294,7 +1282,7 @@ mod polars_reader_tests {
             &df,
             FromPolarsArgs {
                 error_model: Some(ObsErrorModel::FCCT14),
-                lru_cache_size: Some(10),
+
                 ..Default::default()
             },
         );
@@ -1341,7 +1329,7 @@ mod polars_reader_tests {
             &df,
             FromPolarsArgs {
                 error_model: Some(ObsErrorModel::FCCT14),
-                lru_cache_size: Some(10),
+
                 ..Default::default()
             },
         );
@@ -1387,7 +1375,7 @@ mod polars_reader_tests {
             &df,
             FromPolarsArgs {
                 error_model: Some(ObsErrorModel::FCCT14),
-                lru_cache_size: Some(10),
+
                 ..Default::default()
             },
         );
@@ -1434,7 +1422,7 @@ mod polars_reader_tests {
             &df,
             FromPolarsArgs {
                 error_model: Some(ObsErrorModel::FCCT14),
-                lru_cache_size: Some(10),
+
                 ..Default::default()
             },
         );
@@ -1479,7 +1467,7 @@ mod polars_reader_tests {
             &df,
             FromPolarsArgs {
                 error_model: Some(ObsErrorModel::FCCT14),
-                lru_cache_size: Some(10),
+
                 ..Default::default()
             },
         );
@@ -1566,7 +1554,7 @@ mod polars_reader_tests {
             &df,
             FromPolarsArgs {
                 error_model: Some(ObsErrorModel::FCCT14),
-                lru_cache_size: Some(10),
+
                 contiguous_choice: Some(ContiguousChoice::ContiguousNight),
                 ..Default::default()
             },
@@ -1658,7 +1646,7 @@ mod polars_reader_tests {
             &df,
             FromPolarsArgs {
                 error_model: Some(ObsErrorModel::FCCT14),
-                lru_cache_size: Some(10),
+
                 contiguous_choice: Some(ContiguousChoice::ContiguousTraj),
                 ..Default::default()
             },
@@ -1741,7 +1729,7 @@ mod polars_reader_tests {
             &df,
             FromPolarsArgs {
                 error_model: Some(ObsErrorModel::FCCT14),
-                lru_cache_size: Some(10),
+
                 contiguous_choice: None,
                 ..Default::default()
             },
@@ -1808,7 +1796,7 @@ mod polars_reader_tests {
             &df,
             FromPolarsArgs {
                 error_model: Some(ObsErrorModel::FCCT14),
-                lru_cache_size: Some(10),
+
                 contiguous_choice: Some(ContiguousChoice::ContiguousNight),
                 ..Default::default()
             },
@@ -1941,7 +1929,7 @@ mod polars_reader_prop_tests {
             let df = DataFrame::new_infer_height(cols)
                 .expect("DataFrame construction must succeed");
 
-            let result = load_observation_from_polars(&df, FromPolarsArgs { error_model: Some(ObsErrorModel::FCCT14), lru_cache_size: Some(10), ..Default::default() });
+            let result = load_observation_from_polars(&df, FromPolarsArgs { error_model: Some(ObsErrorModel::FCCT14),  ..Default::default() });
             prop_assert!(result.is_ok(), "Expected Ok, got: {:?}", result.err());
 
             let dataset = result.unwrap();
@@ -1958,7 +1946,7 @@ mod polars_reader_prop_tests {
             let df = DataFrame::new_infer_height(cols)
                 .expect("DataFrame construction must succeed");
 
-            let result = load_observation_from_polars(&df, FromPolarsArgs { error_model: Some(ObsErrorModel::FCCT14), lru_cache_size: None, ..Default::default() });
+            let result = load_observation_from_polars(&df, FromPolarsArgs { error_model: Some(ObsErrorModel::FCCT14), ..Default::default() });
             prop_assert!(result.is_ok(), "Expected Ok, got: {:?}", result.err());
 
             let dataset = result.unwrap();
@@ -1986,7 +1974,7 @@ mod polars_reader_prop_tests {
             let df = DataFrame::new_infer_height(cols)
                 .expect("DataFrame construction must succeed");
 
-            let result = load_observation_from_polars(&df, FromPolarsArgs { error_model: Some(ObsErrorModel::FCCT14), lru_cache_size: Some(10), ..Default::default() });
+            let result = load_observation_from_polars(&df, FromPolarsArgs { error_model: Some(ObsErrorModel::FCCT14),  ..Default::default() });
             prop_assert!(result.is_ok(), "Expected Ok for valid 3-byte code {:?}, got: {:?}", code, result.err());
 
             let dataset = result.unwrap();
@@ -2029,7 +2017,7 @@ mod polars_reader_prop_tests {
             let df = DataFrame::new_infer_height(cols)
                 .expect("DataFrame construction must succeed");
 
-            let result = load_observation_from_polars(&df, FromPolarsArgs { error_model: Some(ObsErrorModel::FCCT14), lru_cache_size: Some(10), ..Default::default() });
+            let result = load_observation_from_polars(&df, FromPolarsArgs { error_model: Some(ObsErrorModel::FCCT14),  ..Default::default() });
             prop_assert!(result.is_ok(), "Expected Ok for valid geodetic observer, got: {:?}", result.err());
 
             let dataset = result.unwrap();
@@ -2061,7 +2049,7 @@ mod polars_reader_prop_tests {
             let df = DataFrame::new_infer_height(cols)
                 .expect("DataFrame construction must succeed");
 
-            let result = load_observation_from_polars(&df, FromPolarsArgs { error_model: Some(ObsErrorModel::FCCT14), lru_cache_size: Some(10), ..Default::default() });
+            let result = load_observation_from_polars(&df, FromPolarsArgs { error_model: Some(ObsErrorModel::FCCT14),  ..Default::default() });
             match result {
                 Err(PolarsError::PartialTripletNull { .. }) => { /* expected */ }
                 Err(other) => prop_assert!(false, "Expected PartialTripletNull, got: {other:?}"),
@@ -2087,7 +2075,7 @@ mod polars_reader_prop_tests {
             let df = DataFrame::new_infer_height(cols)
                 .expect("DataFrame construction must succeed");
 
-            let result = load_observation_from_polars(&df, FromPolarsArgs { error_model: Some(ObsErrorModel::FCCT14), lru_cache_size: Some(10), ..Default::default() });
+            let result = load_observation_from_polars(&df, FromPolarsArgs { error_model: Some(ObsErrorModel::FCCT14),  ..Default::default() });
             match result {
                 Err(PolarsError::PartialTripletNull { .. }) => { /* expected */ }
                 Err(other) => prop_assert!(false, "Expected PartialTripletNull, got: {other:?}"),
@@ -2113,7 +2101,7 @@ mod polars_reader_prop_tests {
             let df = DataFrame::new_infer_height(cols)
                 .expect("DataFrame construction must succeed");
 
-            let result = load_observation_from_polars(&df, FromPolarsArgs { error_model: Some(ObsErrorModel::FCCT14), lru_cache_size: Some(10), ..Default::default() });
+            let result = load_observation_from_polars(&df, FromPolarsArgs { error_model: Some(ObsErrorModel::FCCT14),  ..Default::default() });
             match result {
                 Err(PolarsError::PartialTripletNull { .. }) => { /* expected */ }
                 Err(other) => prop_assert!(false, "Expected PartialTripletNull, got: {other:?}"),
@@ -2147,7 +2135,7 @@ mod polars_reader_prop_tests {
             let df = DataFrame::new_infer_height(cols)
                 .expect("DataFrame construction must succeed");
 
-            let result = load_observation_from_polars(&df, FromPolarsArgs { error_model: Some(ObsErrorModel::FCCT14), lru_cache_size: Some(10), ..Default::default() });
+            let result = load_observation_from_polars(&df, FromPolarsArgs { error_model: Some(ObsErrorModel::FCCT14),  ..Default::default() });
             match result {
                 Err(PolarsError::MissingAccuracyForGeodesic(_)) => { /* expected */ }
                 Err(other) => prop_assert!(false, "Expected MissingAccuracyForGeodesic, got: {other:?}"),
@@ -2185,7 +2173,7 @@ mod polars_reader_prop_tests {
             let df = DataFrame::new_infer_height(cols)
                 .expect("DataFrame construction must succeed");
 
-            let result = load_observation_from_polars(&df, FromPolarsArgs { error_model: Some(ObsErrorModel::FCCT14), lru_cache_size: Some(10), ..Default::default() });
+            let result = load_observation_from_polars(&df, FromPolarsArgs { error_model: Some(ObsErrorModel::FCCT14),  ..Default::default() });
             prop_assert!(result.is_ok(), "Expected Ok, got: {:?}", result.err());
 
             let dataset = result.unwrap();
@@ -2236,7 +2224,7 @@ mod lazy_frame_tests {
             df,
             FromPolarsArgs {
                 error_model: Some(ObsErrorModel::FCCT14),
-                lru_cache_size: Some(10),
+
                 ..Default::default()
             },
         )
@@ -2245,7 +2233,7 @@ mod lazy_frame_tests {
             lf,
             FromPolarsArgs {
                 error_model: Some(ObsErrorModel::FCCT14),
-                lru_cache_size: Some(10),
+
                 ..Default::default()
             },
         )
@@ -2275,7 +2263,7 @@ mod lazy_frame_tests {
             df.lazy(),
             FromPolarsArgs {
                 error_model: Some(ObsErrorModel::FCCT14),
-                lru_cache_size: Some(10),
+
                 ..Default::default()
             },
         );
@@ -2329,7 +2317,7 @@ mod index_tests {
             &df,
             FromPolarsArgs {
                 error_model: Some(ObsErrorModel::FCCT14),
-                lru_cache_size: None,
+
                 ..Default::default()
             },
         )
@@ -2362,7 +2350,7 @@ mod index_tests {
             &df,
             FromPolarsArgs {
                 error_model: Some(ObsErrorModel::FCCT14),
-                lru_cache_size: None,
+
                 ..Default::default()
             },
         )
@@ -2402,7 +2390,7 @@ mod index_tests {
             &df,
             FromPolarsArgs {
                 error_model: Some(ObsErrorModel::FCCT14),
-                lru_cache_size: None,
+
                 ..Default::default()
             },
         )
@@ -2442,7 +2430,7 @@ mod index_tests {
             &df,
             FromPolarsArgs {
                 error_model: Some(ObsErrorModel::FCCT14),
-                lru_cache_size: None,
+
                 ..Default::default()
             },
         );
@@ -2465,7 +2453,7 @@ mod index_tests {
             &df,
             FromPolarsArgs {
                 error_model: Some(ObsErrorModel::FCCT14),
-                lru_cache_size: None,
+
                 ..Default::default()
             },
         )
@@ -2498,7 +2486,7 @@ mod index_tests {
             &df,
             FromPolarsArgs {
                 error_model: Some(ObsErrorModel::FCCT14),
-                lru_cache_size: None,
+
                 ..Default::default()
             },
         )
@@ -2544,7 +2532,7 @@ mod index_tests {
             &df,
             FromPolarsArgs {
                 error_model: Some(ObsErrorModel::FCCT14),
-                lru_cache_size: None,
+
                 ..Default::default()
             },
         )
@@ -2581,7 +2569,7 @@ mod index_tests {
             &df,
             FromPolarsArgs {
                 error_model: Some(ObsErrorModel::FCCT14),
-                lru_cache_size: None,
+
                 ..Default::default()
             },
         )
@@ -2618,7 +2606,6 @@ mod index_tests {
             &df,
             FromPolarsArgs {
                 error_model: Some(ObsErrorModel::FCCT14),
-                lru_cache_size: None,
                 ..Default::default()
             },
         );
@@ -2647,7 +2634,6 @@ mod index_tests {
             &df,
             FromPolarsArgs {
                 error_model: Some(ObsErrorModel::FCCT14),
-                lru_cache_size: None,
                 ..Default::default()
             },
         )

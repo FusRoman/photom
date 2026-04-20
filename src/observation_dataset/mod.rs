@@ -10,9 +10,6 @@
 //!
 //! ## Key design notes
 //!
-//! - **LRU cache** — [`ObsDataset`] keeps a least-recently-used cache of up
-//!   to 1 000 [`observation::Observation`] values so that repeated look-ups by
-//!   [`ObsId`] do not scan the full observation list on every call.
 //! - **Lazy MPC initialisation** — the Minor Planet Center observatory table
 //!   is fetched from the network only on the first call to
 //!   [`ObsDataset::get_observer`] for an MPC-coded site, and the result
@@ -52,9 +49,6 @@ use crate::io::polars::error::PolarsError;
 #[cfg(feature = "datafusion")]
 pub mod datafusion;
 
-use std::num::NonZeroUsize;
-
-use lru::LruCache;
 use thiserror::Error;
 
 use crate::{
@@ -73,8 +67,8 @@ use crate::{
 
 /// Unique numeric identifier for a single observation.
 ///
-/// Observations are keyed by this value inside [`ObsDataset`] and its
-/// internal LRU cache.  The identifier is assigned by the data source (e.g.
+/// Observations are keyed by this value inside [`ObsDataset`].
+/// The identifier is assigned by the data source (e.g.
 /// the `id` column of a Polars `DataFrame`) and must be unique within a
 /// dataset.
 pub type ObsId = u64;
@@ -110,8 +104,6 @@ pub enum ObsDatasetError {
 /// - A **lazily-initialised MPC lookup table** that maps three-byte MPC codes
 ///   to [`Observer`] metadata.  The table is fetched from the MPC website
 ///   on the first access and cached for the lifetime of the dataset.
-/// - An **LRU cache** of up to 1 000 [`observation::Observation`] values so that
-///   repeated look-ups by [`ObsId`] avoid a full linear scan.
 #[derive(Debug)]
 pub struct ObsDataset {
     /// Full list of observations in insertion order.
@@ -123,24 +115,15 @@ pub struct ObsDataset {
     /// Observer values for both custom geodetic observers (indexed by `ObserverId::IntId`)
     /// and MPC-coded observers (resolved lazily via `ObserverId::MpcCode`).
     pub(crate) observer_dataset: ObserverDataset,
-
-    /// LRU cache keyed by [`ObsId`] with a fixed capacity of 1 000 entries.
-    ///
-    /// Entries are cloned into the cache on first access and evicted in
-    /// least-recently-used order when the cache is full.
-    pub(crate) lru_cache_obs: LruCache<ObsId, Observation>,
 }
 
 impl ObsDataset {
-    /// Create an empty `ObsDataset` with no observations, no observers, and an empty LRU cache.
-    ///
-    /// # Arguments
-    /// - `lru_cache_size` — optional capacity for the LRU cache; `None` defaults to 1 000.
+    /// Create an empty `ObsDataset` with no observations and no observers.
     ///
     /// # Returns
-    /// An empty `ObsDataset` with the specified LRU cache capacity.
-    pub fn empty(lru_cache_size: Option<usize>) -> Self {
-        Self::new(vec![], vec![], None, None, None, lru_cache_size)
+    /// An empty `ObsDataset`.
+    pub fn empty() -> Self {
+        Self::new(vec![], vec![], None, None, None)
     }
 
     /// Look up a single observation by its [`ObsId`].
@@ -148,23 +131,7 @@ impl ObsDataset {
     /// Returns a shared reference to the matching [`Observation`], or `None`
     /// if no observation with the given `id` exists in this dataset.
     ///
-    /// ## Caching strategy
-    ///
-    /// To avoid repeatedly scanning the full observation list, results are
-    /// stored in an LRU cache (capacity 1 000).  The look-up proceeds in two
-    /// phases:
-    ///
-    /// 1. **Cache probe** — [`LruCache::contains`] is called first.  If the
-    ///    entry is present, [`LruCache::get`] is called in a separate
-    ///    statement to obtain the reference.  This two-step approach is
-    ///    necessary because a single `get` call borrows `self` mutably (to
-    ///    update the LRU order) and would prevent returning a reference into
-    ///    the same `self`; the intermediate `contains` check lets the
-    ///    compiler prove the borrows do not overlap.
-    /// 2. **Linear scan** — if the cache misses, the `observations` list is
-    ///    searched with [`Iterator::find`].  The found value is cloned into
-    ///    the cache before a reference is returned, so subsequent look-ups
-    ///    for the same `id` hit the cache.
+    /// The look-up is performed via an internal hash map index for O(1) access.
     ///
     /// # Arguments
     ///
@@ -175,22 +142,15 @@ impl ObsDataset {
     /// `Some(&Observation)` if an observation with the given `id` exists in this dataset;
     /// `None` otherwise.
     pub fn get_observation(&mut self, id: ObsId) -> Option<&Observation> {
-        if self.lru_cache_obs.contains(&id) {
-            return self.lru_cache_obs.get(&id);
-        }
         let idx = self.index.get_by_id(&id)?;
-        let obs = self.observations[idx].clone();
-        self.lru_cache_obs.put(id, obs);
-        self.lru_cache_obs.get(&id)
+        self.observations.get(idx)
     }
 
     /// Look up a single observation by its raw vector position.
     ///
     /// Unlike [`ObsDataset::get_observation`], which searches by `ObsId`,
     /// this method performs a direct index into the internal observations
-    /// vector.  The result is also stored in the LRU cache so that a
-    /// subsequent `get_observation` call for the same entry can be served
-    /// from the cache.
+    /// vector.
     ///
     /// # Arguments
     ///
@@ -200,10 +160,8 @@ impl ObsDataset {
     /// # Returns
     ///
     /// `Some(&Observation)` if `idx` is within bounds; `None` otherwise.
-    pub fn get_obs_by_index(&mut self, idx: ObsIndex) -> Option<&Observation> {
-        let obs = self.observations.get(idx)?;
-        self.lru_cache_obs.put(*obs.id(), obs.clone());
-        Some(obs)
+    pub fn get_obs_by_index(&self, idx: ObsIndex) -> Option<&Observation> {
+        self.observations.get(idx)
     }
 
     /// Return the total number of observations in this dataset.
@@ -332,8 +290,7 @@ impl ObsDataset {
     /// Create a new dataset from pre-parsed data.
     ///
     /// This constructor is used internally by [`ObsDataset::from_polars`] and
-    /// by test helpers.  The LRU cache is initialised with a fixed capacity of
-    /// **1 000** entries; the MPC observatory table is not fetched until the
+    /// by test helpers.  The MPC observatory table is not fetched until the
     /// first call to [`ObsDataset::get_observer`] for an MPC-coded site.
     ///
     /// # Arguments
@@ -347,12 +304,10 @@ impl ObsDataset {
     ///   when the source data has no `night_id` column.
     /// - `obs_index_by_trajectory` — optional pre-built trajectory index; pass `None`
     ///   when the source data has no `traj_id` column.
-    /// - `lru_cache_size`          — optional capacity for the LRU cache; `None` defaults
-    ///   to 1 000.
     ///
     /// # Returns
     ///
-    /// A fully initialised `ObsDataset` with the observations indexed and the LRU cache empty.
+    /// A fully initialised `ObsDataset` with the observations indexed.
     #[cfg_attr(not(feature = "polars"), allow(dead_code))]
     pub(crate) fn new(
         observations: Vec<Observation>,
@@ -360,7 +315,6 @@ impl ObsDataset {
         error_model: Option<ObsErrorModel>,
         obs_index_by_night: Option<NightIndexMap>,
         obs_index_by_trajectory: Option<TrajIndexMap>,
-        lru_cache_size: Option<usize>,
     ) -> Self {
         // Build the ObsId → index mapping for look-up by id.  Pre-allocating
         // with the exact capacity avoids repeated rehashing as the map grows.
@@ -377,9 +331,6 @@ impl ObsDataset {
                 obs_index_by_trajectory,
             ),
             observer_dataset: ObserverDataset::new(custom_observers, error_model),
-            lru_cache_obs: LruCache::new(
-                NonZeroUsize::new(lru_cache_size.unwrap_or(1000)).unwrap(),
-            ),
         }
     }
 
@@ -390,8 +341,7 @@ impl ObsDataset {
     /// been deserialised separately) instead of being assembled from raw
     /// `custom_observers` and `error_model` parameters.
     ///
-    /// Index maps are rebuilt from `observations`, and the LRU cache starts
-    /// empty.
+    /// Index maps are rebuilt from `observations`.
     ///
     /// # Arguments
     ///
@@ -402,8 +352,6 @@ impl ObsDataset {
     /// - `obs_index_by_trajectory` — optional pre-built trajectory index.
     /// - `traj_aliases`            — trajectory alias map (alternate designation →
     ///   canonical [`TrajId`]); pass an empty map when no aliases were serialised.
-    /// - `lru_cache_size`          — optional capacity for the LRU cache; `None`
-    ///   defaults to 1 000.
     #[cfg(feature = "serde")]
     pub(crate) fn new_from_parts(
         observations: Vec<Observation>,
@@ -411,7 +359,6 @@ impl ObsDataset {
         obs_index_by_night: Option<NightIndexMap>,
         obs_index_by_trajectory: Option<TrajIndexMap>,
         traj_aliases: index::TrajAliasMap,
-        lru_cache_size: Option<usize>,
     ) -> Self {
         let mut obs_index_by_id = ObservationIndexMap::with_capacity(observations.len());
         for (idx, obs) in observations.iter().enumerate() {
@@ -426,9 +373,6 @@ impl ObsDataset {
             observations,
             index: dataset_index,
             observer_dataset,
-            lru_cache_obs: LruCache::new(
-                NonZeroUsize::new(lru_cache_size.unwrap_or(1000)).unwrap(),
-            ),
         }
     }
 
@@ -442,9 +386,7 @@ impl ObsDataset {
     ///   returned by [`ObserverDataset::merge_custom_observers`].
     ///
     /// Trajectory and alias maps are merged via
-    /// [`ObsDatasetIndex::merge_from`].  The LRU cache of `self` is **not**
-    /// cleared; newly inserted entries will be served via the linear-scan
-    /// fallback until they are individually cached.
+    /// [`ObsDatasetIndex::merge_from`].
     #[cfg_attr(not(any(feature = "ades", feature = "mpc_80_col")), allow(dead_code))]
     pub(crate) fn merge_from(&mut self, other: ObsDataset) {
         let offset = self.observations.len();
@@ -517,16 +459,9 @@ mod observation_tests {
         // safe: all inputs are finite, non-NaN values
     }
 
-    /// Build an ObsDataset with an LRU cache capacity of 100.
+    /// Build an ObsDataset
     fn make_dataset(obs: Vec<Observation>, observers: Vec<Observer>) -> ObsDataset {
-        ObsDataset::new(
-            obs,
-            observers,
-            Some(ObsErrorModel::FCCT14),
-            None,
-            None,
-            Some(100),
-        )
+        ObsDataset::new(obs, observers, Some(ObsErrorModel::FCCT14), None, None)
     }
 
     // -----------------------------------------------------------------------
@@ -611,30 +546,16 @@ mod observation_tests {
     mod obs_dataset_new {
         use super::*;
 
-        /// Verifies that constructing an empty dataset with None cache size does not panic.
+        /// Verifies that constructing an empty dataset does not panic.
         #[test]
         fn new_empty_with_none_cache_size_does_not_panic() {
-            let _ds = ObsDataset::new(
-                vec![],
-                vec![],
-                Some(ObsErrorModel::FCCT14),
-                None,
-                None,
-                None,
-            );
+            let _ds = ObsDataset::new(vec![], vec![], Some(ObsErrorModel::FCCT14), None, None);
         }
 
-        /// Verifies that constructing an empty dataset with a custom cache size does not panic.
+        /// Verifies that constructing an empty dataset does not panic.
         #[test]
         fn new_empty_with_custom_cache_size_does_not_panic() {
-            let _ds = ObsDataset::new(
-                vec![],
-                vec![],
-                Some(ObsErrorModel::FCCT14),
-                None,
-                None,
-                Some(5),
-            );
+            let _ds = ObsDataset::new(vec![], vec![], Some(ObsErrorModel::FCCT14), None, None);
         }
 
         /// Verifies that an empty dataset has zero observations via iter_observations.
@@ -722,8 +643,7 @@ mod observation_tests {
             assert!(ds.get_observation(9999).is_none());
         }
 
-        /// Verifies that repeated calls for the same id return the same observation
-        /// (exercises the cache hit path without panicking).
+        /// Verifies that repeated calls for the same id return the same observation.
         #[test]
         fn get_observation_repeated_calls_return_same_id() {
             let mut ds = make_dataset(vec![make_observation(7, None)], vec![]);
@@ -746,30 +666,23 @@ mod observation_tests {
             assert_eq!(found.unwrap().id, 2);
         }
 
-        /// Verifies the LRU eviction behaviour: when the cache capacity is 1 and a
-        /// second observation is looked up, the first is evicted from the cache.
-        /// The evicted entry must still be findable via the linear scan fallback.
+        /// Verifies that repeated calls for the same id return consistent results
+        /// even after other observations have been looked up.
+        /// The evicted entry must still be findable.
         #[test]
-        fn get_observation_lru_eviction_still_findable_via_linear_scan() {
-            // Capacity=1: looking up id=2 will evict id=1 from the cache.
+        fn get_observation_repeated_calls_still_findable() {
+            // Looking up id=2 after id=1 should not prevent id=1 from being found.
             let obs = vec![make_observation(1, None), make_observation(2, None)];
-            let mut ds = ObsDataset::new(
-                obs,
-                vec![],
-                Some(ObsErrorModel::FCCT14),
-                None,
-                None,
-                Some(1),
-            );
+            let mut ds = ObsDataset::new(obs, vec![], Some(ObsErrorModel::FCCT14), None, None);
 
-            // Populate the cache with id=1.
+            // Populate the index with id=1.
             assert!(ds.get_observation(1).is_some());
-            // Looking up id=2 evicts id=1 from the cache.
+            // Looking up id=2.
             assert!(ds.get_observation(2).is_some());
-            // id=1 must still be found via the linear scan even though it was evicted.
+            // id=1 must still be found.
             assert!(
                 ds.get_observation(1).is_some(),
-                "id=1 should still be findable after LRU eviction"
+                "id=1 should still be findable"
             );
         }
     }

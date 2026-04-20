@@ -133,7 +133,7 @@ pub(crate) fn parse_mpc_80_col_str(content: &str) -> Result<ObsDataset, Mpc80Col
     let all_indices: Vec<usize> = (0..observations.len()).collect();
     traj_index.insert(primary.clone(), ObsMapIndex::Split(all_indices));
 
-    let mut dataset = ObsDataset::new(observations, vec![], None, None, Some(traj_index), None);
+    let mut dataset = ObsDataset::new(observations, vec![], None, None, Some(traj_index));
 
     // ── Register aliases ───────────────────────────────────────────────────
     for alias in seen_aliases.into_keys() {

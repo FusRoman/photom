@@ -23,8 +23,7 @@ impl ObsDataset {
     ///
     /// # Returns
     ///
-    /// A fully initialised [`ObsDataset`] with all observations indexed and
-    /// the LRU cache empty.
+    /// A fully initialised [`ObsDataset`] with all observations indexed.
     ///
     /// # Errors
     ///
@@ -49,8 +48,7 @@ impl ObsDataset {
     ///
     /// # Returns
     ///
-    /// A fully initialised [`ObsDataset`] with all observations indexed and
-    /// the LRU cache empty.
+    /// A fully initialised [`ObsDataset`] with all observations indexed.
     ///
     /// # Errors
     ///

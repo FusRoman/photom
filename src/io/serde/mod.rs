@@ -7,8 +7,6 @@
 //
 // - `index`         — rebuilt at deserialisation from the per-observation
 //                     `night_id` / `traj_ids` fields stored in each proxy.
-// - `lru_cache_obs` — a performance cache; its *contents* are not serialised
-//                     (repopulated on access), but the *capacity* is preserved.
 // - `observer_dataset` — serialised via its own custom impl (`observer` sub-
 //                     module), which skips the lazy MPC network cache.
 //
@@ -22,7 +20,7 @@
 //                                    (an observation may belong to several).
 //
 // - `ObsDatasetProxy` — wraps `Vec<ObservationProxy>`, `ObserverDataset`,
-//   `lru_cache_size`, and `traj_aliases` (alternate designation → canonical
+//   and `traj_aliases` (alternate designation → canonical
 //   `TrajId` map, used by the MPC 80-column reader).
 //
 // ## Index layout at deserialisation
@@ -132,8 +130,6 @@ impl ObservationProxy {
 ///   observation, in insertion order).
 /// - `observer_dataset` — custom observer sites and error-model variant; the
 ///   lazy MPC network cache is **not** included.
-/// - `lru_cache_size`   — LRU cache capacity, preserved so the deserialised
-///   dataset has the same eviction behaviour as the original.
 /// - `traj_aliases`     — alternate trajectory designations (e.g. provisional
 ///   MPC designations) and their canonical [`TrajId`].
 #[derive(Deserialize)]
@@ -141,7 +137,6 @@ struct ObsDatasetProxy {
     format_version: u32,
     observations: Vec<ObservationProxy>,
     observer_dataset: ObserverDataset,
-    lru_cache_size: usize,
     traj_aliases: Vec<(String, TrajId)>,
 }
 
@@ -302,7 +297,6 @@ fn dataset_from_proxy<E: serde::de::Error>(
         night_map,
         traj_map,
         traj_aliases,
-        Some(proxy.lru_cache_size),
     ))
 }
 
@@ -321,11 +315,10 @@ impl Serialize for ObsDataset {
     ///   `traj_ids` membership hints needed to rebuild the index maps.
     /// - `observer_dataset` — custom observer sites and error-model variant;
     ///   the lazy MPC network cache is **not** included.
-    /// - `lru_cache_size`   — LRU cache capacity.
     /// - `traj_aliases`     — alternate trajectory designation → canonical
     ///   [`TrajId`] pairs.
     ///
-    /// Runtime-only state (LRU contents, MPC network cache, index maps) is
+    /// Runtime-only state (MPC network cache, index maps) is
     /// not written; it is either rebuilt or re-initialised on deserialisation.
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         // ── Build reverse look-up tables from the index maps ────────────
@@ -370,11 +363,10 @@ impl Serialize for ObsDataset {
             .collect();
 
         // ── Serialise ───────────────────────────────────────────────────
-        let mut s = serializer.serialize_struct("ObsDataset", 5)?;
+        let mut s = serializer.serialize_struct("ObsDataset", 4)?;
         s.serialize_field("format_version", &FORMAT_VERSION)?;
         s.serialize_field("observations", &proxies)?;
         s.serialize_field("observer_dataset", &self.observer_dataset)?;
-        s.serialize_field("lru_cache_size", &self.lru_cache_obs.cap().get())?;
         s.serialize_field("traj_aliases", &traj_aliases)?;
         s.end()
     }
@@ -461,7 +453,7 @@ mod obsdataset_serde_tests {
     }
 
     /// Build a dataset without night/traj indices.
-    fn build_basic_dataset(lru_size: usize) -> ObsDataset {
+    fn build_basic_dataset() -> ObsDataset {
         let obs0 = Observation {
             index: 0,
             id: 0,
@@ -486,14 +478,7 @@ mod obsdataset_serde_tests {
             mjd_tt: 59_001.0,
             observer: None,
         };
-        ObsDataset::new(
-            vec![obs0, obs1],
-            vec![make_observer()],
-            None,
-            None,
-            None,
-            Some(lru_size),
-        )
+        ObsDataset::new(vec![obs0, obs1], vec![make_observer()], None, None, None)
     }
 
     /// Build a dataset with a night index (two nights, two obs each).
@@ -508,7 +493,7 @@ mod obsdataset_serde_tests {
         night_map.insert(NightId(59_000), ObsMapIndex::Split(vec![0, 1]));
         night_map.insert(NightId(59_001), ObsMapIndex::Split(vec![2, 3]));
 
-        ObsDataset::new(obs, vec![], None, Some(night_map), None, Some(100))
+        ObsDataset::new(obs, vec![], None, Some(night_map), None)
     }
 
     /// Build a dataset with a trajectory index.
@@ -528,7 +513,7 @@ mod obsdataset_serde_tests {
             ObsMapIndex::Split(vec![2]),
         );
 
-        ObsDataset::new(obs, vec![], None, None, Some(traj_map), Some(100))
+        ObsDataset::new(obs, vec![], None, None, Some(traj_map))
     }
 
     /// Build a dataset where one observation belongs to two trajectories.
@@ -543,7 +528,7 @@ mod obsdataset_serde_tests {
         traj_map.insert(TrajId::Int(1), ObsMapIndex::Split(vec![0, 1]));
         traj_map.insert(TrajId::Int(2), ObsMapIndex::Split(vec![1, 2]));
 
-        ObsDataset::new(obs, vec![], None, None, Some(traj_map), Some(100))
+        ObsDataset::new(obs, vec![], None, None, Some(traj_map))
     }
 
     // ── Serialise helper ────────────────────────────────────────────────
@@ -566,21 +551,14 @@ mod obsdataset_serde_tests {
 
     #[test]
     fn round_trip_observation_count() {
-        let ds = build_basic_dataset(256);
+        let ds = build_basic_dataset();
         let restored = roundtrip(&ds);
         assert_eq!(ds.observation_count(), restored.observation_count());
     }
 
     #[test]
-    fn round_trip_lru_capacity() {
-        let ds = build_basic_dataset(512);
-        let restored = roundtrip(&ds);
-        assert_eq!(restored.lru_cache_obs.cap().get(), 512);
-    }
-
-    #[test]
     fn round_trip_get_observation_by_id() {
-        let ds = build_basic_dataset(128);
+        let ds = build_basic_dataset();
         let mut restored = roundtrip(&ds);
         assert!(restored.get_observation(0).is_some());
         assert!(restored.get_observation(1).is_some());
@@ -589,7 +567,7 @@ mod obsdataset_serde_tests {
 
     #[test]
     fn round_trip_custom_observer() {
-        let ds = build_basic_dataset(128);
+        let ds = build_basic_dataset();
         let mut restored = roundtrip(&ds);
         let observer = restored.get_observer(0).expect("observer must resolve");
         assert_eq!(observer.name.as_deref(), Some("Test site"));
@@ -669,7 +647,7 @@ mod obsdataset_serde_tests {
 
     #[test]
     fn round_trip_no_night_index_stays_none() {
-        let ds = build_basic_dataset(64);
+        let ds = build_basic_dataset();
         let restored = roundtrip(&ds);
         assert!(restored.index.iter_full_night().is_none());
     }
@@ -712,7 +690,7 @@ mod obsdataset_serde_tests {
 
     #[test]
     fn round_trip_no_traj_index_stays_none() {
-        let ds = build_basic_dataset(64);
+        let ds = build_basic_dataset();
         let restored = roundtrip(&ds);
         assert!(restored.index.iter_full_trajectory().is_none());
     }
@@ -750,7 +728,7 @@ mod obsdataset_serde_tests {
             TrajId::Str("2003 QQ47".to_string()),
             ObsMapIndex::Split(vec![0]),
         );
-        let mut ds = ObsDataset::new(obs, vec![], None, None, Some(traj_map), Some(64));
+        let mut ds = ObsDataset::new(obs, vec![], None, None, Some(traj_map));
         // Register an alias: "QQ47" → TrajId::Str("2003 QQ47")
         ds.index.set_aliases(
             [("QQ47".to_string(), TrajId::Str("2003 QQ47".to_string()))]
@@ -807,7 +785,7 @@ mod obsdataset_serde_tests {
         night_map.insert(NightId(59_000), ObsMapIndex::Split(vec![0, 2])); // non-contiguous
         night_map.insert(NightId(59_001), ObsMapIndex::Split(vec![1]));
 
-        let ds = ObsDataset::new(obs, vec![], None, Some(night_map), None, Some(64));
+        let ds = ObsDataset::new(obs, vec![], None, Some(night_map), None);
         let restored = roundtrip_contiguous(&ds);
 
         let night_map = restored.index.obs_index_by_night.as_ref().unwrap();
@@ -832,7 +810,6 @@ mod obsdataset_serde_tests {
             "format_version": 999,
             "observations": [],
             "observer_dataset": {"custom_observers": [], "mpc_error_model": null},
-            "lru_cache_size": 100,
             "traj_aliases": []
         }"#;
         let result = serde_json::from_str::<ObsDataset>(bad);

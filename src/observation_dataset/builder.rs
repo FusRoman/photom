@@ -116,13 +116,7 @@ impl ObsDatasetBuilder {
     /// If no files were loaded successfully, the returned dataset is empty
     /// (zero observations).
     pub fn build(self) -> (ObsDataset, Vec<LoadWarning>) {
-        let dataset = self.dataset.unwrap_or_else(empty_dataset);
+        let dataset = self.dataset.unwrap_or_else(ObsDataset::empty);
         (dataset, self.warnings)
     }
-}
-
-// ── helpers ──────────────────────────────────────────────────────────────────
-
-fn empty_dataset() -> ObsDataset {
-    ObsDataset::new(vec![], vec![], None, None, None, None)
 }

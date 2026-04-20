@@ -3,9 +3,8 @@
 //!
 //! `photom` provides a type-safe pipeline for ingesting astrometric and photometric
 //! measurements, associating them with ground-based observatories, and grouping them into
-//! trajectories of moving objects.  The library is designed around two primary dataset
-//! types — [`observation_dataset::ObsDataset`] for flat observation collections — with LRU
-//! caches providing fast repeated lookups.
+//! trajectories of moving objects.  The library is designed around one primary dataset
+//! type — [`observation_dataset::ObsDataset`] for flat observation collections.
 //!
 //! # Features
 //!
@@ -26,18 +25,15 @@
 //!   its async counterpart), with automatic contiguous index optimisation.
 //! - **Serialisation / deserialisation** (`serde` feature) — persist and restore an
 //!   [`observation_dataset::ObsDataset`] (and all constituent types) via
-//!   [serde](https://docs.rs/serde).  Runtime-only state — the LRU cache contents, the
+//!   [serde](https://docs.rs/serde).  Runtime-only state — the
 //!   lazy MPC observatory cache, and all derived index maps — is excluded from the
-//!   serialised form and rebuilt transparently on deserialisation.  Only the LRU cache
-//!   *capacity* is preserved so the restored dataset has identical eviction behaviour.
+//!   serialised form and rebuilt transparently on deserialisation.
 //! - **Multi-observer support** — MPC observatory codes (resolved lazily from the MPC
 //!   website), custom geodetic sites (interned and deduplicated), or unknown observer.
 //! - **Trajectory grouping** — group observations by a `traj_id` column; supports both
 //!   integer (`UInt64`) and string (`String`) identifiers.
 //! - **Three astrometric error models** — FCCT14, CBM10, and VFCC17, used to assign
 //!   measurement accuracies to MPC-coded observatories.
-//! - **LRU caches** — configurable cache capacity for both observation and trajectory
-//!   lookups, avoiding repeated linear scans.
 //!
 //! # Modules
 //!
@@ -142,7 +138,6 @@
 //! | Field | Type | Default | Description |
 //! |-------|------|---------|-------------|
 //! | `error_model` | `Option<ObsErrorModel>` | `None` | Astrometric error model used to assign accuracies to MPC-coded observatories; `None` leaves MPC observer accuracies unset until [`ObsDataset::set_error_model`](observation_dataset::ObsDataset::set_error_model) is called |
-//! | `lru_cache_size` | `Option<usize>` | `Some(10_000)` | Capacity of the per-dataset LRU cache for observation look-up by `ObsId`; `None` falls back to an internal default |
 //! | `do_rechunk` | `Option<bool>` | `Some(false)` | When `true`, forces all multi-chunk columns to be merged into a single contiguous Arrow chunk before ingestion; set to `Some(false)` when the caller has already guaranteed single-chunk layout (e.g. after reading a Parquet file with `rechunk: true`) |
 //! | `contiguous_choice` | `Option<ContiguousChoice>` | `Some(ContiguousNight)` | Which grouping column (if any) to sort the frame by before iteration; sorting allows the corresponding index to use compact contiguous ranges instead of per-row index vectors (see below) |
 //!
@@ -167,12 +162,11 @@
 //! use photom::observer::error_model::ObsErrorModel;
 //! use photom::observation_dataset::ObsDataset;
 //!
-//! // Sort by traj_id so trajectory iteration is cache-friendly.
+//! // Sort by traj_id so trajectory iteration is more efficient.
 //! let dataset = ObsDataset::from_polars(
 //!     &df,
 //!     FromPolarsArgs {
 //!         error_model: Some(ObsErrorModel::FCCT14),
-//!         lru_cache_size: Some(5_000),
 //!         contiguous_choice: Some(ContiguousChoice::ContiguousTraj),
 //!         ..Default::default()
 //!     },
@@ -483,7 +477,6 @@
 //! | Field | Type | Default | Description |
 //! |-------|------|---------|-------------|
 //! | `error_model` | `Option<ObsErrorModel>` | `None` | Astrometric error model used to assign accuracies to MPC-coded observatories; `None` leaves MPC observer accuracies unset until [`ObsDataset::set_error_model`](observation_dataset::ObsDataset::set_error_model) is called |
-//! | `lru_cache_size` | `Option<usize>` | `Some(10_000)` | Capacity of the per-dataset LRU cache for observation look-up by `ObsId`; `None` falls back to an internal default |
 //! | `contiguous_choice` | `Option<ContiguousChoice>` | `Some(ContiguousNight)` | Which grouping column (if any) to sort the query by before collecting; sorting allows the corresponding index to use compact contiguous ranges instead of per-row index vectors (see below) |
 //!
 //! The `contiguous_choice` field (defaulting to `ContiguousNight`) causes DataFusion to
@@ -556,3 +549,5 @@ pub enum TrajId {
     /// A string label (e.g. a MPC provisional designation or a proper name).
     Str(String),
 }
+
+pub use crate::observation_dataset::index::ObsIndex;
