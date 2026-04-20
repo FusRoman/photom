@@ -378,7 +378,7 @@ mod obsdataset_parallel_tests {
     /// so tests remain purely structural and do not depend on astrometric values.
     fn make_obs(id: u64, index: usize) -> Observation {
         Observation {
-            index,
+            index: Some(index),
             id,
             equ_coord: EquCoord::new(0.5, 1e-5, 0.2, 1e-5),
             photometry: Photometry {

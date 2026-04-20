@@ -844,7 +844,7 @@ fn load_observation_from_frame(
 
         // 8d. Append observation.
         observations.push(Observation {
-            index: row_idx,
+            index: Some(row_idx),
             id,
             equ_coord: EquCoord::new(ra, ra_err, dec, dec_err),
             photometry: Photometry {

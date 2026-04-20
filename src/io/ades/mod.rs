@@ -204,7 +204,7 @@ fn build_dataset(
         };
 
         observations.push(Observation {
-            index: idx,
+            index: Some(idx),
             id: idx as u64,
             equ_coord,
             photometry,

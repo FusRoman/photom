@@ -49,7 +49,7 @@ mod single_thread {
         for (expected, obs) in ds.iter_observations().enumerate() {
             assert_eq!(
                 obs.index(),
-                expected,
+                Some(expected),
                 "Observation at position {expected} must carry index {expected}"
             );
         }
@@ -105,10 +105,11 @@ mod single_thread {
             .iter_night_observations(&nid)
             .expect("night 3074 must be present")
         {
+            let idx = obs.index().unwrap();
             assert!(
-                obs.index() < TOTAL_ROWS,
+                idx < TOTAL_ROWS,
                 "Observation index {} is out of bounds for night 3074",
-                obs.index()
+                idx
             );
         }
     }
@@ -176,10 +177,11 @@ mod single_thread {
                 "iter_full_night returned unknown NightId {}",
                 nid.0
             );
+            let idx = obs.index().unwrap();
             assert!(
-                obs.index() < TOTAL_ROWS,
+                idx < TOTAL_ROWS,
                 "Observation index {} from iter_full_night is out of bounds",
-                obs.index()
+                idx
             );
             count += 1;
         }
@@ -332,10 +334,11 @@ mod single_thread {
             .iter_full_trajectory()
             .expect("iter_full_trajectory must be Some")
         {
+            let idx = obs.index().unwrap();
             assert!(
-                obs.index() < TOTAL_ROWS,
+                idx < TOTAL_ROWS,
                 "Observation index {} from iter_full_trajectory is out of bounds",
-                obs.index()
+                idx
             );
         }
     }
@@ -681,7 +684,7 @@ mod parallel {
         let out_of_bounds = ds
             .par_iter_full_trajectory()
             .expect("must be Some")
-            .filter(|(_, obs)| obs.index() >= TOTAL_ROWS)
+            .filter(|(_, obs)| obs.index().unwrap() >= TOTAL_ROWS)
             .count();
         assert_eq!(
             out_of_bounds, 0,

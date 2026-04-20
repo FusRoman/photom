@@ -112,7 +112,7 @@ fn int_file_iter_observations_order() {
     for (expected_idx, obs) in ds.iter_observations().enumerate() {
         assert_eq!(
             obs.index(),
-            expected_idx,
+            Some(expected_idx),
             "Observation at position {expected_idx} must have index == {expected_idx}"
         );
     }
@@ -198,10 +198,11 @@ fn night_index_iter_night_observations_consistent() {
     );
     // Every observation index must be a valid position in the dataset.
     for o in &obs {
+        let idx = o.index().unwrap();
         assert!(
-            o.index() < TOTAL_ROWS,
+            idx < TOTAL_ROWS,
             "Observation index {} is out of bounds",
-            o.index()
+            idx
         );
     }
 }
@@ -485,13 +486,13 @@ fn get_obs_by_index_bounds() {
     let obs = ds
         .get_obs_by_index(0)
         .expect("Index 0 must be a valid position");
-    assert_eq!(obs.index(), 0);
+    assert_eq!(obs.index(), Some(0));
 
     // Last valid index.
     let last = ds
         .get_obs_by_index(TOTAL_ROWS - 1)
         .expect("Last index must be valid");
-    assert_eq!(last.index(), TOTAL_ROWS - 1);
+    assert_eq!(last.index(), Some(TOTAL_ROWS - 1));
 
     // One past the end must be None.
     assert!(
@@ -522,7 +523,7 @@ fn get_observation_consistent_with_get_obs_by_index() {
 
         assert_eq!(
             by_id.index(),
-            idx,
+            Some(idx),
             "get_observation and get_obs_by_index must return the same observation"
         );
     }
@@ -552,7 +553,7 @@ fn night_obs_reachable_by_index() {
     let indices: Vec<usize> = ds
         .iter_night_observations(&nid)
         .expect("night 3248 must exist")
-        .map(|o| o.index())
+        .map(|o| o.index().unwrap())
         .collect();
 
     assert_eq!(indices.len(), 11_674);
@@ -568,7 +569,7 @@ fn night_obs_reachable_by_index() {
         let obs = ds
             .get_obs_by_index(i)
             .unwrap_or_else(|| panic!("Index {i} from night index must be reachable"));
-        assert_eq!(obs.index(), i);
+        assert_eq!(obs.index(), Some(i));
     }
 }
 
@@ -605,7 +606,8 @@ fn push_new_trajectory_int_file() {
         "The synthetic trajectory must not exist before insertion"
     );
 
-    ds.push_new_trajectory(new_tid.clone(), &[obs0, obs1]);
+    ds.push_new_trajectory(new_tid.clone(), &[obs0, obs1])
+        .unwrap();
 
     assert_eq!(
         ds.len_trajectory(&new_tid),

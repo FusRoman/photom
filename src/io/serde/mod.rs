@@ -37,6 +37,7 @@ pub mod observer;
 
 use std::collections::HashMap;
 
+use serde::ser::Error as _;
 use serde::{Deserialize, Serialize, de::DeserializeSeed, ser::SerializeStruct};
 
 use crate::{
@@ -108,7 +109,7 @@ impl ObservationProxy {
     /// Extract the core [`Observation`] fields, discarding the index hints.
     fn into_observation(self) -> Observation {
         Observation {
-            index: self.index,
+            index: Some(self.index),
             id: self.id,
             equ_coord: self.equ_coord,
             photometry: self.photometry,
@@ -343,17 +344,27 @@ impl Serialize for ObsDataset {
         let proxies: Vec<ObservationProxy> = self
             .observations
             .iter()
-            .map(|obs| ObservationProxy {
-                index: obs.index,
-                id: obs.id,
-                equ_coord: obs.equ_coord,
-                photometry: obs.photometry.clone(),
-                mjd_tt: obs.mjd_tt,
-                observer: obs.observer,
-                night_id: night_by_pos.get(&obs.index).copied(),
-                traj_ids: traj_by_pos.get(&obs.index).cloned().unwrap_or_default(),
+            .map(|obs| -> Result<ObservationProxy, S::Error> {
+                let obs_index = obs.index.ok_or_else(|| {
+                    S::Error::custom(format!(
+                        "observation with id {} is missing its internal vector index; \
+                 cannot serialise",
+                        obs.id
+                    ))
+                })?;
+
+                Ok(ObservationProxy {
+                    index: obs_index,
+                    id: obs.id,
+                    equ_coord: obs.equ_coord,
+                    photometry: obs.photometry.clone(),
+                    mjd_tt: obs.mjd_tt,
+                    observer: obs.observer,
+                    night_id: night_by_pos.get(&obs_index).copied(),
+                    traj_ids: traj_by_pos.get(&obs_index).cloned().unwrap_or_default(),
+                })
             })
-            .collect();
+            .collect::<Result<Vec<_>, _>>()?;
 
         // ── Collect traj aliases ────────────────────────────────────────
         let traj_aliases: Vec<(String, TrajId)> = self
@@ -434,7 +445,7 @@ mod obsdataset_serde_tests {
 
     fn make_obs(id: u64, idx: ObsIndex, mjd_tt: f64) -> Observation {
         Observation {
-            index: idx,
+            index: Some(idx),
             id,
             equ_coord: EquCoord::new(0.1 + id as f64 * 0.01, 0.001, 0.2, 0.001),
             photometry: Photometry {
@@ -455,7 +466,7 @@ mod obsdataset_serde_tests {
     /// Build a dataset without night/traj indices.
     fn build_basic_dataset() -> ObsDataset {
         let obs0 = Observation {
-            index: 0,
+            index: Some(0),
             id: 0,
             equ_coord: EquCoord::new(0.1, 0.001, 0.2, 0.001),
             photometry: Photometry {
@@ -467,7 +478,7 @@ mod obsdataset_serde_tests {
             observer: Some(ObserverId::IntId(0)),
         };
         let obs1 = Observation {
-            index: 1,
+            index: Some(1),
             id: 1,
             equ_coord: EquCoord::new(0.15, 0.001, 0.25, 0.001),
             photometry: Photometry {
@@ -578,7 +589,7 @@ mod obsdataset_serde_tests {
     #[test]
     fn observation_standalone_round_trip_fields() {
         let obs = Observation {
-            index: 3,
+            index: Some(3),
             id: 42,
             equ_coord: EquCoord::new(1.23, 0.002, -0.45, 0.003),
             photometry: Photometry {

@@ -846,7 +846,7 @@ fn process_batch(
 
         // Build Observation.
         observations.push(Observation {
-            index: row_idx,
+            index: Some(row_idx),
             id: ids.value(i),
             equ_coord: EquCoord::new(ra.value(i), ra_err.value(i), dec.value(i), dec_err.value(i)),
             photometry: Photometry {

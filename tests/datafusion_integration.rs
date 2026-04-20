@@ -91,7 +91,7 @@ fn int_file_iter_observations_order() {
     for (expected_idx, obs) in ds.iter_observations().enumerate() {
         assert_eq!(
             obs.index(),
-            expected_idx,
+            Some(expected_idx),
             "Observation at position {expected_idx} must have index == {expected_idx}"
         );
     }
@@ -168,9 +168,9 @@ fn night_index_iter_night_observations_consistent() {
 
     for o in &obs {
         assert!(
-            o.index() < TOTAL_ROWS,
+            o.index().unwrap() < TOTAL_ROWS,
             "Observation index {} is out of bounds (datafusion)",
-            o.index()
+            o.index().unwrap()
         );
     }
 }
@@ -373,12 +373,12 @@ fn get_obs_by_index_bounds() {
     let obs = ds
         .get_obs_by_index(0)
         .expect("Index 0 must be a valid position (datafusion)");
-    assert_eq!(obs.index(), 0);
+    assert_eq!(obs.index(), Some(0));
 
     let last = ds
         .get_obs_by_index(TOTAL_ROWS - 1)
         .expect("Last index must be valid (datafusion)");
-    assert_eq!(last.index(), TOTAL_ROWS - 1);
+    assert_eq!(last.index(), Some(TOTAL_ROWS - 1));
 
     assert!(ds.get_obs_by_index(TOTAL_ROWS).is_none());
 }
@@ -398,7 +398,7 @@ fn get_observation_consistent_with_get_obs_by_index() {
             .get_observation(id)
             .unwrap_or_else(|| panic!("get_observation must succeed for id {id} (datafusion)"));
 
-        assert_eq!(by_id.index(), idx);
+        assert_eq!(by_id.index(), Some(idx));
     }
 }
 
@@ -586,7 +586,7 @@ fn night_obs_reachable_by_index() {
     let indices: Vec<usize> = ds
         .iter_night_observations(&nid)
         .expect("night 3248 must exist (datafusion)")
-        .map(|o| o.index())
+        .map(|o| o.index().unwrap())
         .collect();
 
     assert_eq!(indices.len(), 11_674);
@@ -601,7 +601,7 @@ fn night_obs_reachable_by_index() {
         let obs = ds
             .get_obs_by_index(i)
             .unwrap_or_else(|| panic!("Index {i} from night index must be reachable (datafusion)"));
-        assert_eq!(obs.index(), i);
+        assert_eq!(obs.index(), Some(i));
     }
 }
 

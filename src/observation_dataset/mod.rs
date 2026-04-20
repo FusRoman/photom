@@ -59,7 +59,7 @@ use crate::{
     },
     observer::{
         Observer,
-        dataset::ObserverDataset,
+        dataset::{ObserverDataset, ObserverId},
         error_model::{ErrorModelParseError, ObsErrorModel},
         mpc::MPCError,
     },
@@ -92,6 +92,11 @@ pub enum ObsDatasetError {
     #[cfg(feature = "polars")]
     #[error(transparent)]
     PolarIoError(#[from] PolarsError),
+
+    /// An observation is missing its internal vector index, which is required for trajectory registration.
+    /// This appends if the observation has not been pushed within a dataset or if the index was not assigned during dataset construction.
+    #[error("Observation is missing its internal vector index")]
+    MissingIndex,
 }
 
 /// A collection of [`observation::Observation`]s with associated observer metadata.
@@ -124,6 +129,22 @@ impl ObsDataset {
     /// An empty `ObsDataset`.
     pub fn empty() -> Self {
         Self::new(vec![], vec![], None, None, None)
+    }
+
+    /// Add a new observation to the dataset, assigning it the next available index and returning its `ObsId`.
+    /// The observation's `index` field is updated to reflect its position in the internal observations vector.
+    /// The `id` field of the observation is not modified by this method; it is the caller's responsibility to ensure that it is unique within the dataset.
+    ///
+    /// # Arguments
+    /// - `obs` — the `Observation` to add to the dataset.  Its `index` field will be updated to reflect its position in the internal observations vector.
+    ///
+    /// # Returns
+    /// The `ObsId` of the newly added observation.
+    pub fn push_observation(&mut self, mut obs: Observation) -> ObsId {
+        let id = obs.id;
+        obs.index = Some(self.observations.len());
+        self.observations.push(obs);
+        id
     }
 
     /// Look up a single observation by its [`ObsId`].
@@ -214,14 +235,19 @@ impl ObsDataset {
     /// - `traj_id` — the identifier of the trajectory to register.
     /// - `obs_indices` — slice of [`Observation`] values whose internal vector
     ///   positions will be recorded under `traj_id`.
-    pub fn push_new_trajectory(&mut self, traj_id: TrajId, obs_indices: &[Observation]) {
+    pub fn push_new_trajectory(
+        &mut self,
+        traj_id: TrajId,
+        obs_indices: &[Observation],
+    ) -> Result<(), ObsDatasetError> {
         self.index.push_trajectory(
             traj_id,
             &(obs_indices
                 .iter()
-                .map(|obs| obs.index)
-                .collect::<Vec<ObsIndex>>()),
+                .map(|obs| obs.index.ok_or(ObsDatasetError::MissingIndex))
+                .collect::<Result<Vec<ObsIndex>, ObsDatasetError>>()?),
         );
+        Ok(())
     }
 
     /// Register a new trajectory in the trajectory index using raw vector positions.
@@ -398,9 +424,9 @@ impl ObsDataset {
 
         // Renumber and push observations from `other`.
         for mut obs in other.observations {
-            obs.index += offset;
+            obs.index = obs.index.map(|i| i + offset);
             obs.id += offset as u64;
-            if let Some(crate::observer::dataset::ObserverId::IntId(ref mut i)) = obs.observer {
+            if let Some(ObserverId::IntId(ref mut i)) = obs.observer {
                 *i += custom_offset;
             }
             self.observations.push(obs);
@@ -443,7 +469,7 @@ mod observation_tests {
 
     fn make_observation(id: u64, observer: Option<ObserverId>) -> Observation {
         Observation {
-            index: 0,
+            index: Some(0),
             id,
             equ_coord: make_equ_coord(),
             photometry: make_photometry(),

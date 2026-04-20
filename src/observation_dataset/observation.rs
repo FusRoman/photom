@@ -30,8 +30,9 @@ use crate::{
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Observation {
-    /// Zero-based index of this observation in the source dataset, assigned during construction.
-    pub(crate) index: ObsIndex,
+    /// Zero-based index of this observation in the source dataset.
+    /// None by default and assigned during dataset construction.
+    pub(crate) index: Option<ObsIndex>,
 
     /// Unique identifier for this observation within its dataset.
     ///
@@ -83,12 +84,46 @@ impl PartialOrd for Observation {
 }
 
 impl Observation {
+    /// Create a new `Observation` with the specified fields.
+    ///
+    /// The `index` field is set to `None` by default and will be assigned during dataset construction.
+    ///
+    /// The `observer` field is optional and can be set to `None` if the observer is unknown.
+    /// Use [`ObsDataset::get_observer`](crate::observation_dataset::ObsDataset::get_observer) to resolve the `ObserverId` to a full `Observer` value.
+    ///
+    /// # Parameters
+    //// - `id` — unique identifier for this observation within its dataset (corresponds to the `id` column of the source `DataFrame`).
+    /// - `equ_coord` — equatorial sky coordinates (right ascension and declination) with their associated measurement uncertainties, all in **radians**.
+    /// - `photometry` — photometric measurement: apparent magnitude, its uncertainty, and the filter through which the observation was taken.
+    /// - `mjd_tt` — detection epoch as a Modified Julian Date in Terrestrial Time, expressed in **days**.
+    /// - `observer` — optional reference to the observatory that recorded this observation. Use [`ObsDataset::get_observer`](crate::observation_dataset::ObsDataset::get_observer) to resolve this identifier to a full `Observer` value.
+    /// 
+    /// # Returns
+    ///
+    /// A new `Observation` instance with the specified fields and `index` set to `None`.
+    pub fn new(
+        id: ObsId,
+        equ_coord: EquCoord,
+        photometry: Photometry,
+        mjd_tt: MJDTT,
+        observer: Option<ObserverId>,
+    ) -> Self {
+        Self {
+            index: None, // index is assigned during dataset construction
+            id,
+            equ_coord,
+            photometry,
+            mjd_tt,
+            observer,
+        }
+    }
+
     /// Return the zero-based position of this observation in its parent dataset's storage vector.
     ///
     /// # Returns
     ///
     /// The `ObsIndex` (a `usize`) assigned to this observation during dataset construction.
-    pub fn index(&self) -> ObsIndex {
+    pub fn index(&self) -> Option<ObsIndex> {
         self.index
     }
 
