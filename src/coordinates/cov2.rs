@@ -70,17 +70,17 @@ impl Cov2 {
     ///     0               & \sigma_\delta^2
     /// \end{pmatrix}$$
     ///
-    /// Arguments
-    /// ---------
-    /// * `c` – Source equatorial coordinate whose `ra_error` and `dec_error`
+    /// # Arguments
+    ///
+    /// - `c` — Source equatorial coordinate whose `ra_error` and `dec_error`
     ///   fields (in radians) are squared to form the diagonal variances.
     ///
-    /// Returns
-    /// -------
+    /// # Returns
+    ///
     /// A diagonal [`Cov2`] with `xx = ra_error²`, `yy = dec_error²`, `xy = 0`.
     ///
-    /// Notes
-    /// -----
+    /// # Notes
+    ///
     /// - [`EquCoord`] carries only per-axis standard deviations; the
     ///   off-diagonal term is therefore set to zero.
     /// - No $\cos\delta$ rescaling is applied: the first axis is raw
@@ -92,13 +92,13 @@ impl Cov2 {
 
     /// Diagonal covariance from two independent variances.
     ///
-    /// Arguments
-    /// ---------
-    /// * `var_x` – Variance along the first axis ($\sigma_{xx} \geq 0$).
-    /// * `var_y` – Variance along the second axis ($\sigma_{yy} \geq 0$).
+    /// # Arguments
     ///
-    /// Returns
-    /// -------
+    /// - `var_x` — Variance along the first axis ($\sigma_{xx} \geq 0$).
+    /// - `var_y` — Variance along the second axis ($\sigma_{yy} \geq 0$).
+    ///
+    /// # Returns
+    ///
     /// A [`Cov2`] with `xx = var_x`, `yy = var_y`, `xy = 0`.
     #[inline]
     pub fn diag(var_x: f64, var_y: f64) -> Self {
@@ -111,8 +111,8 @@ impl Cov2 {
 
     /// Determinant $\det(\Sigma) = \sigma_{xx}\sigma_{yy} - \sigma_{xy}^2$.
     ///
-    /// Returns
-    /// -------
+    /// # Returns
+    ///
     /// `f64` — The determinant. Non-negative for a positive semi-definite matrix.
     #[inline]
     pub fn det(&self) -> f64 {
@@ -121,8 +121,8 @@ impl Cov2 {
 
     /// Trace $\mathrm{tr}(\Sigma) = \sigma_{xx} + \sigma_{yy}$.
     ///
-    /// Returns
-    /// -------
+    /// # Returns
+    ///
     /// `f64` — The sum of the diagonal entries, equal to $\lambda_\max + \lambda_\min$.
     #[inline]
     pub fn trace(&self) -> f64 {
@@ -134,8 +134,8 @@ impl Cov2 {
     /// Singularity is detected when $|\det(\Sigma)| < \varepsilon_\text{machine}$
     /// (`f64::EPSILON`).
     ///
-    /// Returns
-    /// -------
+    /// # Returns
+    ///
     /// `Option<Cov2>` — `Some(inv)` where `inv * self ≈ I`, or `None` if singular.
     #[inline]
     pub fn inverse(&self) -> Option<Self> {
@@ -153,13 +153,13 @@ impl Cov2 {
 
     /// Mahalanobis-style quadratic form $v^\top \Sigma^{-1} v$.
     ///
-    /// Arguments
-    /// ---------
-    /// * `v` – A 2-D displacement vector `[vx, vy]` (same units as the
+    /// # Arguments
+    ///
+    /// - `v` — A 2-D displacement vector `[vx, vy]` (same units as the
     ///   covariance axes).
     ///
-    /// Returns
-    /// -------
+    /// # Returns
+    ///
     /// `Option<f64>` — The non-negative scalar $v^\top \Sigma^{-1} v$, or
     /// `None` if the matrix is singular (see [`Cov2::inverse`]).
     #[inline]
@@ -171,12 +171,12 @@ impl Cov2 {
 
     /// Zero covariance — all three entries set to zero.
     ///
-    /// Returns
-    /// -------
+    /// # Returns
+    ///
     /// A [`Cov2`] with `xx = yy = xy = 0`.
     ///
-    /// Notes
-    /// -----
+    /// # Notes
+    ///
     /// A zero covariance is singular; [`Cov2::inverse`] and
     /// [`Cov2::mahalanobis_sq`] will return `None` for such a matrix.
     #[inline]
@@ -192,16 +192,16 @@ impl Cov2 {
     ///
     /// $$\Sigma = \begin{pmatrix} q & 0 \\ 0 & q \end{pmatrix}$$
     ///
-    /// Arguments
-    /// ---------
-    /// * `q` – The common variance placed on both diagonal entries.
+    /// # Arguments
     ///
-    /// Returns
-    /// -------
+    /// - `q` — The common variance placed on both diagonal entries.
+    ///
+    /// # Returns
+    ///
     /// A [`Cov2`] with `xx = yy = q`, `xy = 0`.
     ///
-    /// Notes
-    /// -----
+    /// # Notes
+    ///
     /// Equivalent to `Cov2::diag(q, q)`, but the dedicated constructor
     /// documents the intent (e.g. isotropic process noise).
     #[inline]
@@ -216,16 +216,16 @@ impl Cov2 {
     /// Only the diagonal entries are affected; the off-diagonal
     /// correlation $\sigma_{xy}$ is preserved.
     ///
-    /// Arguments
-    /// ---------
-    /// * `q` – Isotropic variance increment added to `xx` and `yy`.
+    /// # Arguments
     ///
-    /// Returns
-    /// -------
+    /// - `q` — Isotropic variance increment added to `xx` and `yy`.
+    ///
+    /// # Returns
+    ///
     /// A new [`Cov2`] with `xx' = xx + q`, `yy' = yy + q`, `xy' = xy`.
     ///
-    /// Notes
-    /// -----
+    /// # Notes
+    ///
     /// - Typically used to inject **isotropic process noise** when
     ///   propagating a covariance forward in time (Kalman-style
     ///   $P' = F P F^\top + Q$ with $Q = q I$).
@@ -249,14 +249,14 @@ impl Cov2 {
     ///   \pm \sqrt{\left(\frac{\sigma_{xx} - \sigma_{yy}}{2}\right)^2
     ///             + \sigma_{xy}^2}$$
     ///
-    /// Returns
-    /// -------
+    /// # Returns
+    ///
     /// `f64` — The largest eigenvalue $\lambda_\max = \lambda_+$.
     /// $\sqrt{\lambda_\max}$ is the semi-major axis of the 1σ confidence
     /// ellipse.
     ///
-    /// Notes
-    /// -----
+    /// # Notes
+    ///
     /// - For a positive semi-definite matrix the result is always
     ///   non-negative in exact arithmetic. Floating-point round-off
     ///   may produce a tiny negative value for near-singular inputs;
@@ -274,8 +274,8 @@ impl Cov2 {
     /// Uses the same characteristic-polynomial formula as [`Cov2::lambda_max`];
     /// see that method for the full derivation.
     ///
-    /// Returns
-    /// -------
+    /// # Returns
+    ///
     /// `f64` — The smallest eigenvalue $\lambda_\min = \lambda_-$.
     /// $\sqrt{\lambda_\min}$ is the semi-minor axis of the 1σ confidence
     /// ellipse. Non-negative for a positive semi-definite matrix (up to

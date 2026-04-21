@@ -71,8 +71,8 @@ use crate::coordinates::{INV_COSC_MIN, equatorial::EquCoord};
 /// The struct caches $\sin\delta_0$ and $\cos\delta_0$ so that repeated
 /// projections onto the same plane avoid redundant trigonometric calls.
 ///
-/// Notes
-/// -----
+/// # Notes
+///
 /// - The projection is singular at the antipode of $(\alpha_0, \delta_0)$;
 ///   a floor `INV_COSC_MIN` is applied to $c$ to guarantee numerical
 ///   stability.
@@ -121,14 +121,14 @@ pub struct TangentPlane {
 impl TangentPlane {
     /// Build a new tangent plane centred on the given sky position.
     ///
-    /// Arguments
-    /// ---------
-    /// * `equ_ref` – Equatorial coordinates $(\alpha_0, \delta_0)$ of the
+    /// # Arguments
+    ///
+    /// - `equ_ref` — Equatorial coordinates $(\alpha_0, \delta_0)$ of the
     ///   tangent point (radians). The `ra_error` and `dec_error` fields are
     ///   stored but not used by the projection itself.
     ///
-    /// Returns
-    /// -------
+    /// # Returns
+    ///
     /// A [`TangentPlane`] with `sin_dec0` and `cos_dec0` precomputed from
     /// `equ_ref.dec`.
     #[inline]
@@ -143,13 +143,13 @@ impl TangentPlane {
 
     /// Project a sky position onto this tangent plane.
     ///
-    /// Arguments
-    /// ---------
-    /// * `c` – Target equatorial coordinates $(\alpha, \delta)$ (radians).
+    /// # Arguments
+    ///
+    /// - `c` — Target equatorial coordinates $(\alpha, \delta)$ (radians).
     ///   The error fields of `c` are ignored.
     ///
-    /// Returns
-    /// -------
+    /// # Returns
+    ///
     /// A [`TangentPoint`] bound to `self` with coordinates $(x, y)$ in radians:
     /// - $x > 0$ east (increasing RA),
     /// - $y > 0$ north (increasing Dec).
@@ -168,8 +168,8 @@ impl TangentPlane {
 
     /// Return the precomputed $\sin\delta_0$.
     ///
-    /// Returns
-    /// -------
+    /// # Returns
+    ///
     /// `f64` — $\sin$ of the tangent-point declination, cached at construction.
     #[inline]
     pub fn sin_dec0(&self) -> f64 {
@@ -178,8 +178,8 @@ impl TangentPlane {
 
     /// Return the precomputed $\cos\delta_0$.
     ///
-    /// Returns
-    /// -------
+    /// # Returns
+    ///
     /// `f64` — $\cos$ of the tangent-point declination, cached at construction.
     #[inline]
     pub fn cos_dec0(&self) -> f64 {
@@ -222,18 +222,18 @@ pub struct TangentPoint {
 impl TangentPoint {
     /// Construct a point directly from raw offsets on a given plane.
     ///
-    /// Arguments
-    /// ---------
-    /// * `plane` – The [`TangentPlane`] in whose frame `(x, y)` are expressed.
-    /// * `x` – East offset from the tangent point (radians).
-    /// * `y` – North offset from the tangent point (radians).
+    /// # Arguments
     ///
-    /// Returns
-    /// -------
+    /// - `plane` — The [`TangentPlane`] in whose frame `(x, y)` are expressed.
+    /// - `x` — East offset from the tangent point (radians).
+    /// - `y` — North offset from the tangent point (radians).
+    ///
+    /// # Returns
+    ///
     /// A [`TangentPoint`] bound to `plane` with the given offsets.
     ///
-    /// Notes
-    /// -----
+    /// # Notes
+    ///
     /// Use this only when `(x, y)` are already known to belong to `plane`
     /// (e.g. produced by a kinematic prediction performed in the plane's
     /// local frame). For projecting a sky position, prefer
@@ -245,13 +245,13 @@ impl TangentPoint {
 
     /// Inverse gnomonic projection: map this tangent-plane point back to the sky.
     ///
-    /// Returns
-    /// -------
+    /// # Returns
+    ///
     /// An [`EquCoord`] with `ra ∈ [0, 2π)` and `dec ∈ [-π/2, π/2]`. The
     /// `ra_error` and `dec_error` fields of the result are set to zero.
     ///
-    /// Notes
-    /// -----
+    /// # Notes
+    ///
     /// When `(x, y) ≈ (0, 0)` (within a threshold of $\rho^2 < 10^{-24}$)
     /// the tangent point itself is returned directly to avoid a degenerate
     /// `atan2` call.
@@ -277,16 +277,16 @@ impl TangentPoint {
     ///
     /// $$d^2 = (x_1 - x_2)^2 + (y_1 - y_2)^2$$
     ///
-    /// Arguments
-    /// ---------
-    /// * `other` – The second point; must share the same [`TangentPlane`].
+    /// # Arguments
     ///
-    /// Returns
-    /// -------
+    /// - `other` — The second point; must share the same [`TangentPlane`].
+    ///
+    /// # Returns
+    ///
     /// `f64` — Non-negative squared distance in radians².
     ///
-    /// Panics
-    /// ------
+    /// # Panics
+    ///
     /// In debug builds, panics if `self.plane != other.plane`.
     #[inline]
     pub fn dist2(&self, other: &Self) -> f64 {
@@ -301,18 +301,18 @@ impl TangentPoint {
 
     /// Midpoint of two points lying on the **same** tangent plane.
     ///
-    /// Arguments
-    /// ---------
-    /// * `a` – First [`TangentPoint`].
-    /// * `b` – Second [`TangentPoint`]; must share the same [`TangentPlane`] as `a`.
+    /// # Arguments
     ///
-    /// Returns
-    /// -------
+    /// - `a` — First [`TangentPoint`].
+    /// - `b` — Second [`TangentPoint`]; must share the same [`TangentPlane`] as `a`.
+    ///
+    /// # Returns
+    ///
     /// A [`TangentPoint`] on the same plane at coordinates
     /// $\bigl(\tfrac{x_a+x_b}{2},\; \tfrac{y_a+y_b}{2}\bigr)$.
     ///
-    /// Panics
-    /// ------
+    /// # Panics
+    ///
     /// In debug builds, panics if `a.plane != b.plane`.
     pub fn midpoint(a: TangentPoint, b: TangentPoint) -> TangentPoint {
         debug_assert_eq!(a.plane, b.plane);
@@ -383,8 +383,8 @@ impl Sub for TangentPoint {
 impl TangentVec {
     /// Squared Euclidean norm $\|\mathbf{v}\|^2 = dx^2 + dy^2$ (radians²).
     ///
-    /// Returns
-    /// -------
+    /// # Returns
+    ///
     /// `f64` — Non-negative squared length of the vector in the tangent plane.
     #[inline]
     pub fn norm_sq(&self) -> f64 {
@@ -393,8 +393,8 @@ impl TangentVec {
 
     /// Euclidean norm $\|\mathbf{v}\| = \sqrt{dx^2 + dy^2}$ (radians).
     ///
-    /// Returns
-    /// -------
+    /// # Returns
+    ///
     /// `f64` — Non-negative length of the vector in the tangent plane.
     #[inline]
     pub fn norm(&self) -> f64 {
