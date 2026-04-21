@@ -5,8 +5,7 @@
 //! - [`CartesianCoord`] — a point on the unit celestial sphere represented by its
 //!   `x`, `y`, `z` components (`f64`). No uncertainty information is stored.
 //! - [`CartesianCoordCov`] — a [`CartesianCoord`] together with the full symmetric
-//!   3×3 covariance matrix, packed as its upper triangle in row-major order:
-//!   `[xx, xy, xz, yy, yz, zz]`.
+//!   3×3 covariance matrix stored as a [`Cov3`].
 //!
 //! ## Why a full covariance matrix?
 //!
@@ -22,11 +21,11 @@
 //!
 //! - `From<`[`EquCoord`]`> for CartesianCoord` — lossless projection; uncertainties
 //!   carried by the [`EquCoord`] are discarded.
-//! - [`EquCoord::to_cartesian_cov`] (in the [`equatorial`][crate::coordinates::equatorial]
+//! - [`EquCoordCov::to_cartesian_cov`] (in the [`equatorial`][crate::coordinates::equatorial]
 //!   module) — propagates the diagonal input covariance
 //!   $(\sigma_\alpha^2, \sigma_\delta^2)$ to a full 3×3 output covariance via the
 //!   Jacobian $J$ of $(\alpha,\delta)\to(x,y,z)$.
-//! - [`CartesianCoordCov::to_equatorial`] — inverse propagation via the Jacobian $K$
+//! - [`CartesianCoordCov::to_equatorial_cov`] — inverse propagation via the Jacobian $K$
 //!   of $(x,y,z)\to(\alpha,\delta)$; marginal 1-σ errors are extracted from the
 //!   diagonal of the back-propagated covariance.
 //! - `From<`[`CartesianCoord`]`> for EquCoord` — lossless; output errors set to zero.
@@ -40,7 +39,10 @@
 
 use std::{f64::consts::TAU, ops::Add};
 
-use crate::coordinates::equatorial::EquCoord;
+use crate::coordinates::{
+    cov3::Cov3,
+    equatorial::{EquCoord, EquCoordCov},
+};
 
 /// A point on the unit celestial sphere in Cartesian coordinates.
 ///
@@ -89,46 +91,35 @@ impl Add for CartesianCoord {
 /// information and bias any subsequent conversion back to equatorial
 /// coordinates.
 ///
-/// This type therefore carries the full symmetric 3×3 covariance matrix,
-/// packed as its upper triangle in row-major order:
-///
-/// | index | entry        |
-/// |-------|--------------|
-/// | 0     | $\sigma_{xx}$ |
-/// | 1     | $\sigma_{xy}$ |
-/// | 2     | $\sigma_{xz}$ |
-/// | 3     | $\sigma_{yy}$ |
-/// | 4     | $\sigma_{yz}$ |
-/// | 5     | $\sigma_{zz}$ |
-///
-/// The covariance obtained from an [`EquCoord`] is rank-deficient (rank 2):
-/// the residual direction is radial, which is consistent with a position
-/// constrained to the unit sphere.
-#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
+/// This type therefore carries the full symmetric 3×3 covariance matrix as a
+/// [`Cov3`] value. The covariance obtained from an [`EquCoord`] is rank-deficient
+/// (rank 2): the residual direction is radial, which is consistent with a
+/// position constrained to the unit sphere.
+#[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct CartesianCoordCov {
     pub coord: CartesianCoord,
-    /// Upper-triangular packed covariance: `[xx, xy, xz, yy, yz, zz]`.
-    pub cov: [f64; 6],
+    /// Full symmetric 3×3 covariance matrix in Cartesian $(x, y, z)$ coordinates.
+    pub cov: Cov3,
 }
 
 impl CartesianCoordCov {
     /// Marginal 1-σ uncertainty on `x`.
     #[inline]
     pub fn x_error(&self) -> f64 {
-        self.cov[0].sqrt()
+        self.cov.xx.sqrt()
     }
 
     /// Marginal 1-σ uncertainty on `y`.
     #[inline]
     pub fn y_error(&self) -> f64 {
-        self.cov[3].sqrt()
+        self.cov.yy.sqrt()
     }
 
     /// Marginal 1-σ uncertainty on `z`.
     #[inline]
     pub fn z_error(&self) -> f64 {
-        self.cov[5].sqrt()
+        self.cov.zz.sqrt()
     }
 
     /// Marginal 1-σ uncertainties as a triple `(σ_x, σ_y, σ_z)`.
@@ -146,7 +137,7 @@ impl From<&EquCoord> for CartesianCoord {
     /// Project an equatorial direction onto the unit sphere.
     ///
     /// Uncertainties carried by `coord` are **discarded**. Use
-    /// [`EquCoord::to_cartesian_cov`] to propagate them.
+    /// [`EquCoordCov::to_cartesian_cov`] to propagate them.
     fn from(coord: &EquCoord) -> Self {
         let (sdec, cdec) = coord.dec.sin_cos();
         let (sra, cra) = coord.ra.sin_cos();
@@ -166,12 +157,33 @@ impl From<EquCoord> for CartesianCoord {
     }
 }
 
-impl CartesianCoordCov {
-    /// Convert back to equatorial coordinates, propagating the full 3×3
-    /// covariance via first-order linearisation.
+impl From<EquCoordCov> for CartesianCoordCov {
+    /// Propagate a full 2×2 equatorial covariance to Cartesian 3×3 covariance.
     ///
-    /// Formulation
-    /// -----------
+    /// Delegates to [`EquCoordCov::to_cartesian_cov`].
+    #[inline]
+    fn from(ec: EquCoordCov) -> Self {
+        ec.to_cartesian_cov()
+    }
+}
+
+impl From<CartesianCoordCov> for EquCoordCov {
+    /// Convert a Cartesian covariance back to equatorial, preserving the full
+    /// 2×2 RA–Dec covariance.
+    ///
+    /// Delegates to [`CartesianCoordCov::to_equatorial_cov`].
+    #[inline]
+    fn from(cc: CartesianCoordCov) -> Self {
+        cc.to_equatorial_cov()
+    }
+}
+
+impl CartesianCoordCov {
+    /// Convert back to equatorial coordinates, returning a full [`EquCoordCov`]
+    /// that retains the RA–Dec off-diagonal covariance term.
+    ///
+    /// # Formulation
+    ///
     /// With $\rho = \sqrt{x^2 + y^2}$, the Jacobian of
     /// $(x,y,z) \to (\alpha,\delta)$ is
     /// $$
@@ -180,21 +192,19 @@ impl CartesianCoordCov {
     /// -\dfrac{xz}{\rho}  & -\dfrac{yz}{\rho} & \rho
     /// \end{pmatrix}.
     /// $$
-    /// The output covariance is
-    /// $\Sigma_{\alpha\delta} = K \, \Sigma_{xyz} \, K^\top,$
-    /// from which marginal 1-σ errors are recovered as the square roots of
-    /// the diagonal. Any induced correlation between $\alpha$ and $\delta$
-    /// is **discarded** when packing the result into an [`EquCoord`].
+    /// The output covariance is $\Sigma_{\alpha\delta} = K\,\Sigma_{xyz}\,K^\top$,
+    /// computed via [`Cov3::transform_j2`].  The marginal 1-σ errors stored in
+    /// the returned [`EquCoord`] are the square roots of the diagonal of
+    /// $\Sigma_{\alpha\delta}$.
     ///
-    /// Numerical notes
-    /// ---------------
-    /// - Near the poles ($\rho \to 0$) the RA error diverges; this reflects
-    ///   a genuine geometric singularity, not a numerical artefact.
-    /// - The input vector is not required to be unit-normalised, but the
-    ///   linearisation is only meaningful when it is close to the sphere.
-    pub fn to_equatorial(self) -> EquCoord {
+    /// # Notes
+    ///
+    /// - Near the poles ($\rho \to 0$) the RA error diverges; this is a
+    ///   genuine geometric singularity, not a numerical artefact.
+    /// - Unlike [`CartesianCoordCov::to_equatorial_cov`], this method preserves
+    ///   the full 2×2 output covariance including the RA–Dec cross-term.
+    pub fn to_equatorial_cov(self) -> EquCoordCov {
         let CartesianCoord { x, y, z } = self.coord;
-        let [cxx, cxy, cxz, cyy, cyz, czz] = self.cov;
 
         let rho2 = x * x + y * y;
         let rho = rho2.sqrt();
@@ -202,31 +212,14 @@ impl CartesianCoordCov {
         let dec = z.atan2(rho);
         let ra = y.atan2(x).rem_euclid(TAU);
 
-        // Jacobian rows: K[0,:] = ∂α/∂(x,y,z), K[1,:] = ∂δ/∂(x,y,z).
-        let k00 = -y / rho2;
-        let k01 = x / rho2;
-        let k02 = 0.0;
+        let k = [
+            [-y / rho2, x / rho2, 0.0],
+            [-x * z / rho, -y * z / rho, rho],
+        ];
 
-        let k10 = -x * z / rho;
-        let k11 = -y * z / rho;
-        let k12 = rho;
-
-        // Multiply Σ_xyz by a row vector k = (k0, k1, k2): returns K Σ kᵀ
-        // components needed to build the 2×2 output covariance.
-        #[inline]
-        fn quad_form(k0: f64, k1: f64, k2: f64, c: [f64; 6]) -> f64 {
-            let [cxx, cxy, cxz, cyy, cyz, czz] = c;
-            k0 * k0 * cxx
-                + k1 * k1 * cyy
-                + k2 * k2 * czz
-                + 2.0 * (k0 * k1 * cxy + k0 * k2 * cxz + k1 * k2 * cyz)
-        }
-
-        let cov_pack = [cxx, cxy, cxz, cyy, cyz, czz];
-        let var_ra = quad_form(k00, k01, k02, cov_pack);
-        let var_dec = quad_form(k10, k11, k12, cov_pack);
-
-        EquCoord::new(ra, var_ra.sqrt(), dec, var_dec.sqrt())
+        let cov2 = self.cov.transform_j2(k);
+        let coord = EquCoord::new(ra, cov2.xx.sqrt(), dec, cov2.yy.sqrt());
+        EquCoordCov::new(coord, cov2)
     }
 }
 
@@ -495,140 +488,6 @@ mod cartesian_tests {
     }
 
     // ------------------------------------------------------------------ //
-    // to_cartesian_cov — deterministic tests                              //
-    // ------------------------------------------------------------------ //
-
-    mod to_cartesian_cov {
-        use super::*;
-
-        /// Position components in `to_cartesian_cov` match `From<EquCoord>` conversion.
-        #[test]
-        fn position_matches_direct_conversion() {
-            let equ = EquCoord::from_degrees(37.0, 1e-5, -15.0, 1e-5);
-            let cov_result = equ.to_cartesian_cov();
-            let direct = CartesianCoord::from(equ);
-            assert_abs_diff_eq!(cov_result.coord.x, direct.x, epsilon = 1e-15);
-            assert_abs_diff_eq!(cov_result.coord.y, direct.y, epsilon = 1e-15);
-            assert_abs_diff_eq!(cov_result.coord.z, direct.z, epsilon = 1e-15);
-        }
-
-        /// Zero input errors produce an all-zero covariance matrix.
-        #[test]
-        fn zero_errors_give_zero_covariance() {
-            let equ = EquCoord::new(0.5, 0.0, 0.3, 0.0);
-            let cov_result = equ.to_cartesian_cov();
-            for (i, &v) in cov_result.cov.iter().enumerate() {
-                assert!(
-                    v.abs() < 1e-30,
-                    "covariance[{i}] should be zero but was {v}"
-                );
-            }
-        }
-
-        /// Known numerical value: RA=0, Dec=0, ra_error=dec_error=1e-5.
-        ///
-        /// Jacobian at (RA=0, Dec=0): j00=0, j10=1, j20=0, j01=0, j11=0, j21=1.
-        /// With var_ra=var_dec=1e-10 the covariance is [0, 0, 0, 1e-10, 0, 1e-10].
-        #[test]
-        fn known_numerical_covariance_ra0_dec0() {
-            let sigma = 1e-5_f64;
-            let equ = EquCoord::new(0.0, sigma, 0.0, sigma);
-            let cov_result = equ.to_cartesian_cov();
-            let var = sigma * sigma; // 1e-10
-            let [cxx, cxy, cxz, cyy, cyz, czz] = cov_result.cov;
-            assert_abs_diff_eq!(cxx, 0.0, epsilon = 1e-30);
-            assert_abs_diff_eq!(cxy, 0.0, epsilon = 1e-30);
-            assert_abs_diff_eq!(cxz, 0.0, epsilon = 1e-30);
-            assert_abs_diff_eq!(cyy, var, epsilon = 1e-25);
-            assert_abs_diff_eq!(cyz, 0.0, epsilon = 1e-30);
-            assert_abs_diff_eq!(czz, var, epsilon = 1e-25);
-        }
-
-        /// The packed upper-triangular covariance is symmetric by construction:
-        /// the off-diagonal elements are the cross-covariances (xy, xz, yz).
-        /// Verify they remain finite and that diagonal entries are non-negative.
-        #[test]
-        fn covariance_diagonal_is_non_negative() {
-            let equ = EquCoord::from_degrees(60.0, 5e-6, 30.0, 3e-6);
-            let [cxx, _cxy, _cxz, cyy, _cyz, czz] = equ.to_cartesian_cov().cov;
-            assert!(cxx >= 0.0, "cxx={cxx} should be non-negative");
-            assert!(cyy >= 0.0, "cyy={cyy} should be non-negative");
-            assert!(czz >= 0.0, "czz={czz} should be non-negative");
-        }
-    }
-
-    // ------------------------------------------------------------------ //
-    // CartesianCoordCov::to_equatorial — deterministic tests              //
-    // ------------------------------------------------------------------ //
-
-    mod to_equatorial {
-        use super::*;
-
-        /// With all-zero covariance the recovered RA and Dec match the lossless conversion.
-        #[test]
-        fn zero_covariance_recovers_ra_and_dec() {
-            let equ = EquCoord::from_degrees(200.0, 0.0, -40.0, 0.0);
-            let cov_struct = CartesianCoordCov {
-                coord: CartesianCoord::from(equ),
-                cov: [0.0; 6],
-            };
-            let recovered = cov_struct.to_equatorial();
-            // RA difference normalised to (−π, π]
-            let dra = (recovered.ra - equ.ra).rem_euclid(2.0 * PI);
-            let dra = if dra > PI { dra - 2.0 * PI } else { dra };
-            assert_abs_diff_eq!(dra, 0.0, epsilon = 1e-12);
-            assert_abs_diff_eq!(recovered.dec, equ.dec, epsilon = 1e-12);
-        }
-
-        /// With all-zero covariance, the output errors are zero.
-        #[test]
-        fn zero_covariance_gives_zero_errors() {
-            let equ = EquCoord::from_degrees(10.0, 0.0, 20.0, 0.0);
-            let cov_struct = CartesianCoordCov {
-                coord: CartesianCoord::from(equ),
-                cov: [0.0; 6],
-            };
-            let recovered = cov_struct.to_equatorial();
-            assert_abs_diff_eq!(recovered.ra_error, 0.0, epsilon = 1e-30);
-            assert_abs_diff_eq!(recovered.dec_error, 0.0, epsilon = 1e-30);
-        }
-
-        /// Full round-trip `to_cartesian_cov` → `to_equatorial` recovers RA/Dec within 1e-12.
-        #[test]
-        fn roundtrip_cov_recovers_ra_and_dec() {
-            let equ = EquCoord::from_degrees(75.0, 1e-6, -20.0, 5e-7);
-            let recovered = equ.to_cartesian_cov().to_equatorial();
-            let dra = (recovered.ra - equ.ra).rem_euclid(2.0 * PI);
-            let dra = if dra > PI { dra - 2.0 * PI } else { dra };
-            assert_abs_diff_eq!(dra, 0.0, epsilon = 1e-12);
-            assert_abs_diff_eq!(recovered.dec, equ.dec, epsilon = 1e-12);
-        }
-
-        /// Full round-trip recovers ra_error and dec_error within 1 % (first-order approx.).
-        #[test]
-        fn roundtrip_cov_recovers_errors_within_one_percent() {
-            let ra_err = 1e-5_f64;
-            let dec_err = 8e-6_f64;
-            let equ =
-                EquCoord::from_degrees(120.0, ra_err.to_degrees(), 25.0, dec_err.to_degrees());
-            let recovered = equ.to_cartesian_cov().to_equatorial();
-            let tol = 0.01; // 1 %
-            assert!(
-                (recovered.ra_error - equ.ra_error).abs() <= tol * equ.ra_error.abs().max(1e-30),
-                "ra_error round-trip mismatch: {} vs {}",
-                recovered.ra_error,
-                equ.ra_error
-            );
-            assert!(
-                (recovered.dec_error - equ.dec_error).abs() <= tol * equ.dec_error.abs().max(1e-30),
-                "dec_error round-trip mismatch: {} vs {}",
-                recovered.dec_error,
-                equ.dec_error
-            );
-        }
-    }
-
-    // ------------------------------------------------------------------ //
     // EquCoord::spherical_midpoint — deterministic tests                  //
     // ------------------------------------------------------------------ //
 
@@ -691,107 +550,115 @@ mod cartesian_tests {
     // ------------------------------------------------------------------ //
 
     proptest! {
-        /// Unit vectors projected from any EquCoord must have norm ≈ 1.
+     /// Unit vectors projected from any EquCoord must have norm ≈ 1.
+     #[test]
+     fn prop_equ_to_cart_unit_norm(coord in valid_coord()) {
+         let cart = CartesianCoord::from(coord);
+         let n = norm(&cart);
+         prop_assert!(
+             (n - 1.0).abs() < 1e-12,
+             "norm={n} for coord ra={} dec={}", coord.ra, coord.dec
+         );
+     }
+
+     /// Round-trip RA is recovered within 1e-10 (away from poles).
+     #[test]
+     fn prop_cart_to_equ_roundtrip_ra(
+         ra  in valid_ra(),
+         dec in (-1.4_f64)..=1.4_f64,  // exclude poles where RA is degenerate
+     ) {
+         let equ = EquCoord::new(ra, 0.0, dec, 0.0);
+         let recovered = EquCoord::from(CartesianCoord::from(equ));
+         let diff = (recovered.ra - ra).rem_euclid(2.0 * PI);
+         let diff = if diff > PI { diff - 2.0 * PI } else { diff };
+         prop_assert!(
+             diff.abs() < 1e-10,
+             "RA round-trip error: {diff} (ra={ra}, dec={dec})"
+         );
+     }
+
+     /// Round-trip Dec is recovered within 1e-10.
+     #[test]
+     fn prop_cart_to_equ_roundtrip_dec(coord in valid_coord()) {
+         let recovered = EquCoord::from(CartesianCoord::from(coord));
+         prop_assert!(
+             (recovered.dec - coord.dec).abs() < 1e-10,
+             "Dec round-trip error: {} vs {}", recovered.dec, coord.dec
+         );
+     }
+
+     /// spherical_midpoint is symmetric: |mid(a,b).ra − mid(b,a).ra| < 1e-10.
+     #[test]
+     fn prop_spherical_midpoint_symmetric(a in valid_coord(), b in valid_coord()) {
+         let mid_ab = a.spherical_midpoint(&b);
+         let mid_ba = b.spherical_midpoint(&a);
+         prop_assert!(
+             (mid_ab.ra - mid_ba.ra).abs() < 1e-10,
+             "midpoint RA asymmetry: {} vs {}", mid_ab.ra, mid_ba.ra
+         );
+         prop_assert!(
+             (mid_ab.dec - mid_ba.dec).abs() < 1e-10,
+             "midpoint Dec asymmetry: {} vs {}", mid_ab.dec, mid_ba.dec
+         );
+     }
+
+     /// Midpoint of a coord with itself returns the same RA/Dec within 1e-10.
+     #[test]
+     fn prop_spherical_midpoint_self(coord in valid_coord()) {
+         let mid = coord.spherical_midpoint(&coord);
+         let dra = (mid.ra - coord.ra).rem_euclid(2.0 * PI);
+         let dra = if dra > PI { dra - 2.0 * PI } else { dra };
+         prop_assert!(
+             dra.abs() < 1e-10,
+             "midpoint(self) RA mismatch: {} vs {}", mid.ra, coord.ra
+         );
+         prop_assert!(
+             (mid.dec - coord.dec).abs() < 1e-10,
+             "midpoint(self) Dec mismatch: {} vs {}", mid.dec, coord.dec
+         );
+     }
+    }
+
+    // ------------------------------------------------------------------ //
+    // CartesianCoordCov::to_equatorial_cov tests                          //
+    // ------------------------------------------------------------------ //
+
+    mod to_equatorial_cov {
+        use super::*;
+        use crate::coordinates::equatorial::EquCoordCov;
+
+        /// With zero covariance the output errors are zero.
         #[test]
-        fn prop_equ_to_cart_unit_norm(coord in valid_coord()) {
-            let cart = CartesianCoord::from(coord);
-            let n = norm(&cart);
-            prop_assert!(
-                (n - 1.0).abs() < 1e-12,
-                "norm={n} for coord ra={} dec={}", coord.ra, coord.dec
-            );
+        fn zero_covariance_gives_zero_errors() {
+            let equ = EquCoord::from_degrees(10.0, 0.0, 20.0, 0.0);
+            let cc = CartesianCoordCov {
+                coord: CartesianCoord::from(equ),
+                cov: Cov3::zero(),
+            };
+            let ec = cc.to_equatorial_cov();
+            assert_abs_diff_eq!(ec.cov.xx, 0.0, epsilon = 1e-30);
+            assert_abs_diff_eq!(ec.cov.yy, 0.0, epsilon = 1e-30);
+            assert_abs_diff_eq!(ec.cov.xy, 0.0, epsilon = 1e-30);
         }
 
-        /// Round-trip RA is recovered within 1e-10 (away from poles).
+        /// Round-trip via EquCoordCov::to_cartesian_cov preserves covariance.
+        /// EquCoordCov → CartesianCoordCov → EquCoordCov should recover the cov2.
         #[test]
-        fn prop_cart_to_equ_roundtrip_ra(
-            ra  in valid_ra(),
-            dec in (-1.4_f64)..=1.4_f64,  // exclude poles where RA is degenerate
-        ) {
-            let equ = EquCoord::new(ra, 0.0, dec, 0.0);
-            let recovered = EquCoord::from(CartesianCoord::from(equ));
-            let diff = (recovered.ra - ra).rem_euclid(2.0 * PI);
-            let diff = if diff > PI { diff - 2.0 * PI } else { diff };
-            prop_assert!(
-                diff.abs() < 1e-10,
-                "RA round-trip error: {diff} (ra={ra}, dec={dec})"
+        fn round_trip_equ_coord_cov() {
+            use crate::coordinates::cov2::Cov2;
+            let coord = EquCoord::from_degrees(50.0, 0.0, 15.0, 0.0);
+            // Start from a diagonal cov2
+            let cov2_in = Cov2::diag(4e-12, 9e-12);
+            let ec_in = EquCoordCov::new(
+                EquCoord::new(coord.ra, cov2_in.xx.sqrt(), coord.dec, cov2_in.yy.sqrt()),
+                cov2_in,
             );
-        }
-
-        /// Round-trip Dec is recovered within 1e-10.
-        #[test]
-        fn prop_cart_to_equ_roundtrip_dec(coord in valid_coord()) {
-            let recovered = EquCoord::from(CartesianCoord::from(coord));
-            prop_assert!(
-                (recovered.dec - coord.dec).abs() < 1e-10,
-                "Dec round-trip error: {} vs {}", recovered.dec, coord.dec
-            );
-        }
-
-        /// spherical_midpoint is symmetric: |mid(a,b).ra − mid(b,a).ra| < 1e-10.
-        #[test]
-        fn prop_spherical_midpoint_symmetric(a in valid_coord(), b in valid_coord()) {
-            let mid_ab = a.spherical_midpoint(&b);
-            let mid_ba = b.spherical_midpoint(&a);
-            prop_assert!(
-                (mid_ab.ra - mid_ba.ra).abs() < 1e-10,
-                "midpoint RA asymmetry: {} vs {}", mid_ab.ra, mid_ba.ra
-            );
-            prop_assert!(
-                (mid_ab.dec - mid_ba.dec).abs() < 1e-10,
-                "midpoint Dec asymmetry: {} vs {}", mid_ab.dec, mid_ba.dec
-            );
-        }
-
-        /// Midpoint of a coord with itself returns the same RA/Dec within 1e-10.
-        #[test]
-        fn prop_spherical_midpoint_self(coord in valid_coord()) {
-            let mid = coord.spherical_midpoint(&coord);
-            let dra = (mid.ra - coord.ra).rem_euclid(2.0 * PI);
-            let dra = if dra > PI { dra - 2.0 * PI } else { dra };
-            prop_assert!(
-                dra.abs() < 1e-10,
-                "midpoint(self) RA mismatch: {} vs {}", mid.ra, coord.ra
-            );
-            prop_assert!(
-                (mid.dec - coord.dec).abs() < 1e-10,
-                "midpoint(self) Dec mismatch: {} vs {}", mid.dec, coord.dec
-            );
-        }
-
-        /// `to_cartesian_cov().coord` matches `CartesianCoord::from(equ)` within 1e-12.
-        #[test]
-        fn prop_to_cartesian_cov_pos_matches(coord in valid_coord()) {
-            let direct   = CartesianCoord::from(coord);
-            let via_cov  = coord.to_cartesian_cov().coord;
-            prop_assert!((via_cov.x - direct.x).abs() < 1e-12, "x mismatch");
-            prop_assert!((via_cov.y - direct.y).abs() < 1e-12, "y mismatch");
-            prop_assert!((via_cov.z - direct.z).abs() < 1e-12, "z mismatch");
-        }
-
-        /// Full round-trip through covariance recovers ra/dec within 1e-10 and
-        /// errors within 10 % (away from poles, small errors).
-        #[test]
-        fn prop_roundtrip_cov(coord in valid_coord_with_errors()) {
-            let recovered = coord.to_cartesian_cov().to_equatorial();
-
-            // Position recovery
-            let dra = (recovered.ra - coord.ra).rem_euclid(2.0 * PI);
-            let dra = if dra > PI { dra - 2.0 * PI } else { dra };
-            prop_assert!(dra.abs() < 1e-10, "RA round-trip error: {dra}");
-            prop_assert!((recovered.dec - coord.dec).abs() < 1e-10, "Dec round-trip error");
-
-            // Error recovery (10 % relative, with small absolute floor to guard near-zero)
-            let ra_err_ref  = coord.ra_error.max(1e-15);
-            let dec_err_ref = coord.dec_error.max(1e-15);
-            prop_assert!(
-                (recovered.ra_error  - coord.ra_error ).abs() <= 0.10 * ra_err_ref,
-                "ra_error round-trip: {} vs {}", recovered.ra_error, coord.ra_error
-            );
-            prop_assert!(
-                (recovered.dec_error - coord.dec_error).abs() <= 0.10 * dec_err_ref,
-                "dec_error round-trip: {} vs {}", recovered.dec_error, coord.dec_error
-            );
+            // Propagate to 3D and back
+            let ec_out = ec_in.to_cartesian_cov().to_equatorial_cov();
+            // Covariance must be recovered to first order
+            assert_abs_diff_eq!(ec_out.cov.xx, cov2_in.xx, epsilon = cov2_in.xx * 1e-6);
+            assert_abs_diff_eq!(ec_out.cov.yy, cov2_in.yy, epsilon = cov2_in.yy * 1e-6);
+            assert_abs_diff_eq!(ec_out.cov.xy, 0.0, epsilon = 1e-24);
         }
     }
 }

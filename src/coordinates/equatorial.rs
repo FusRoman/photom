@@ -25,9 +25,11 @@
 //!
 //! ## Covariance propagation
 //!
-//! - [`EquCoord::to_cartesian_cov`] — projects to [`CartesianCoordCov`] using a
-//!   first-order Jacobian propagation of the diagonal input covariance
-//!   $(\sigma_\alpha^2, \sigma_\delta^2)$.
+//! - [`EquCoordCov::to_cartesian_cov`] — projects to [`CartesianCoordCov`] using a
+//!   first-order Jacobian propagation of the full 2×2 input covariance.
+//! - [`EquCoordCov`] — extends [`EquCoord`] with a full 2×2 astrometric covariance
+//!   (including the RA–Dec correlation term); provides
+//!   [`EquCoordCov::to_cartesian_cov`] for full-covariance propagation.
 //!
 //! ## Conversions
 //!
@@ -43,6 +45,7 @@ use crate::{
     coordinates::{
         NORM_MIN,
         cartesian::{CartesianCoord, CartesianCoordCov},
+        cov2::Cov2,
     },
 };
 
@@ -193,65 +196,6 @@ impl EquCoord {
         num1.hypot(num2).atan2(denom)
     }
 
-    /// Convert to Cartesian coordinates while propagating the astrometric
-    /// covariance via first-order linearisation.
-    ///
-    /// Formulation
-    /// -----------
-    /// With the Jacobian of $(\alpha,\delta) \to (x,y,z)$
-    /// $$
-    /// J = \begin{pmatrix}
-    /// -\cos\delta\sin\alpha & -\sin\delta\cos\alpha \\
-    ///  \cos\delta\cos\alpha & -\sin\delta\sin\alpha \\
-    ///  0                    &  \cos\delta
-    /// \end{pmatrix},
-    /// $$
-    /// and with the diagonal input covariance
-    /// $\Sigma_{\alpha\delta} = \mathrm{diag}(\sigma_\alpha^2, \sigma_\delta^2)$
-    /// (independence of $\alpha$ and $\delta$ is assumed, consistent with
-    /// [`EquCoord`] storing only marginal errors), the output covariance is
-    /// $$\Sigma_{xyz} = J \, \Sigma_{\alpha\delta} \, J^\top.$$
-    ///
-    /// Validity
-    /// --------
-    /// The linear approximation is accurate when $\sigma_\alpha, \sigma_\delta$
-    /// are small (typical astrometric regime, sub-arcsecond). It degrades
-    /// near the poles where $\cos\delta \to 0$ and where moderate
-    /// $\sigma_\alpha$ values can no longer be considered small.
-    pub fn to_cartesian_cov(self) -> CartesianCoordCov {
-        let (sdec, cdec) = self.dec.sin_cos();
-        let (sra, cra) = self.ra.sin_cos();
-
-        // Jacobian columns: J[:,0] = ∂/∂α, J[:,1] = ∂/∂δ.
-        let j00 = -cdec * sra;
-        let j10 = cdec * cra;
-        let j20 = 0.0;
-
-        let j01 = -sdec * cra;
-        let j11 = -sdec * sra;
-        let j21 = cdec;
-
-        let var_ra = self.ra_error * self.ra_error;
-        let var_dec = self.dec_error * self.dec_error;
-
-        // Σ = J diag(var_ra, var_dec) J^T
-        let xx = j00 * j00 * var_ra + j01 * j01 * var_dec;
-        let xy = j00 * j10 * var_ra + j01 * j11 * var_dec;
-        let xz = j00 * j20 * var_ra + j01 * j21 * var_dec;
-        let yy = j10 * j10 * var_ra + j11 * j11 * var_dec;
-        let yz = j10 * j20 * var_ra + j11 * j21 * var_dec;
-        let zz = j20 * j20 * var_ra + j21 * j21 * var_dec;
-
-        CartesianCoordCov {
-            coord: CartesianCoord {
-                x: cdec * cra,
-                y: cdec * sra,
-                z: sdec,
-            },
-            cov: [xx, xy, xz, yy, yz, zz],
-        }
-    }
-
     /// Compute a robust spherical midpoint between two sky directions.
     ///
     /// Returns the angular mean via vector averaging: the two unit vectors are
@@ -298,6 +242,137 @@ impl fmt::Display for EquCoord {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let (ra_deg, dec_deg) = self.to_degrees();
         write!(f, "RA: {} deg, Dec: {} deg", ra_deg, dec_deg)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// EquCoordCov
+// ---------------------------------------------------------------------------
+
+/// An equatorial sky position together with its full 2×2 astrometric covariance.
+///
+/// [`EquCoord`] stores only the marginal 1-σ errors $(\sigma_\alpha, \sigma_\delta)$
+/// and assumes the RA–Dec correlation is zero.  `EquCoordCov` lifts that
+/// limitation: the [`Cov2`] field retains all three independent entries of the
+/// symmetric covariance matrix, including the off-diagonal RA–Dec correlation
+/// $\sigma_{\alpha\delta}$.
+///
+/// ## Construction
+///
+/// - [`EquCoordCov::new`] — provide coordinate and covariance directly.
+/// - [`EquCoordCov::from_equ`] — build a diagonal covariance from an
+///   [`EquCoord`]'s marginal errors (off-diagonal term set to zero).
+///
+/// ## Covariance propagation
+///
+/// - [`EquCoordCov::to_cartesian_cov`] — propagate to a full
+///   [`CartesianCoordCov`] via the 3×2 Jacobian of $(\alpha,\delta)\to(x,y,z)$,
+///   using [`Cov2::transform_j3`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct EquCoordCov {
+    /// Equatorial sky position.  The `ra_error` and `dec_error` fields
+    /// carry the **marginal** 1-σ uncertainties (square roots of the diagonal
+    /// of `cov`).
+    pub coord: EquCoord,
+    /// Full 2×2 astrometric covariance in $(\alpha, \delta)$.
+    ///
+    /// - `cov.xx` = $\sigma_\alpha^2$ (variance of right ascension)
+    /// - `cov.yy` = $\sigma_\delta^2$ (variance of declination)
+    /// - `cov.xy` = $\sigma_{\alpha\delta}$ (RA–Dec covariance)
+    pub cov: Cov2,
+}
+
+impl EquCoordCov {
+    /// Construct an [`EquCoordCov`] from a coordinate and a full [`Cov2`].
+    ///
+    /// # Arguments
+    ///
+    /// - `coord` — the sky position; `ra_error` and `dec_error` should equal
+    ///   `cov.xx.sqrt()` and `cov.yy.sqrt()` respectively (this is not enforced
+    ///   but inconsistency will cause confusion).
+    /// - `cov` — the 2×2 astrometric covariance.
+    ///
+    /// # Returns
+    ///
+    /// A new [`EquCoordCov`].
+    #[inline]
+    pub fn new(coord: EquCoord, cov: Cov2) -> Self {
+        Self { coord, cov }
+    }
+
+    /// Build an [`EquCoordCov`] from the marginal errors of an [`EquCoord`].
+    ///
+    /// The off-diagonal covariance term $\sigma_{\alpha\delta}$ is set to zero
+    /// (independence assumed).  This is the natural starting point when the
+    /// input comes from an [`EquCoord`] that carries no cross-correlation.
+    ///
+    /// # Arguments
+    ///
+    /// - `c` — equatorial coordinate whose `ra_error` and `dec_error` are
+    ///   squared to form the diagonal variances.
+    ///
+    /// # Returns
+    ///
+    /// An [`EquCoordCov`] with `cov = diag(ra_error², dec_error²)`.
+    #[inline]
+    pub fn from_equ(c: EquCoord) -> Self {
+        let cov = Cov2::from_equ(&c);
+        Self { coord: c, cov }
+    }
+
+    /// Convert to [`CartesianCoordCov`] by propagating the full 2×2 covariance
+    /// through the Jacobian $J$ of $(\alpha,\delta)\to(x,y,z)$.
+    ///
+    /// # Formulation
+    ///
+    /// The Jacobian is
+    ///
+    /// $$J = \begin{pmatrix}
+    /// -\cos\delta\sin\alpha & -\sin\delta\cos\alpha \\
+    ///  \cos\delta\cos\alpha & -\sin\delta\sin\alpha \\
+    ///  0                    &  \cos\delta
+    /// \end{pmatrix}$$
+    ///
+    /// and the output covariance is $\Sigma_{xyz} = J\,\Sigma_{\alpha\delta}\,J^\top$,
+    /// computed via [`Cov2::transform_j3`].
+    ///
+    /// # Returns
+    ///
+    /// A [`CartesianCoordCov`] whose packed `cov` array contains the upper
+    /// triangle of $\Sigma_{xyz}$ in row-major order `[xx, xy, xz, yy, yz, zz]`.
+    ///
+    /// # Notes
+    ///
+    /// - This method preserves any RA–Dec off-diagonal correlation stored in
+    ///   `self.cov.xy`.
+    /// - The linear approximation is accurate for small astrometric errors.
+    pub fn to_cartesian_cov(&self) -> CartesianCoordCov {
+        let (sdec, cdec) = self.coord.dec.sin_cos();
+        let (sra, cra) = self.coord.ra.sin_cos();
+
+        // J is 3×2, j[row][col]; col 0 = ∂/∂α, col 1 = ∂/∂δ.
+        let j = [
+            [-cdec * sra, -sdec * cra],
+            [cdec * cra, -sdec * sra],
+            [0.0_f64, cdec],
+        ];
+
+        let cov3 = self.cov.transform_j3(j);
+        CartesianCoordCov {
+            coord: CartesianCoord::from(&self.coord),
+            cov: cov3,
+        }
+    }
+}
+
+impl From<EquCoord> for EquCoordCov {
+    /// Build an [`EquCoordCov`] from an [`EquCoord`] with a diagonal covariance.
+    ///
+    /// Delegates to [`EquCoordCov::from_equ`]: the off-diagonal term is set to zero.
+    #[inline]
+    fn from(c: EquCoord) -> Self {
+        EquCoordCov::from_equ(c)
     }
 }
 
@@ -775,6 +850,65 @@ mod equ_coord_tests {
             let mid = c1.spherical_midpoint(&c2);
             assert_abs_diff_eq!(mid.dec, 0.0, epsilon = 1e-12);
             assert_abs_diff_eq!(mid.ra, 45.0_f64.to_radians(), epsilon = 1e-12);
+        }
+    }
+
+    // ------------------------------------------------------------------ //
+    // EquCoordCov tests                                                    //
+    // ------------------------------------------------------------------ //
+
+    mod equ_coord_cov {
+        use super::*;
+        use crate::coordinates::cov2::Cov2;
+
+        const EPS: f64 = 1e-12;
+
+        /// from_equ builds a diagonal covariance from marginal errors.
+        #[test]
+        fn from_equ_diagonal() {
+            let c = EquCoord::new(0.1, 0.01, 0.2, 0.02);
+            let ec = EquCoordCov::from_equ(c);
+            assert_abs_diff_eq!(ec.cov.xx, 0.01 * 0.01, epsilon = EPS);
+            assert_abs_diff_eq!(ec.cov.yy, 0.02 * 0.02, epsilon = EPS);
+            assert_abs_diff_eq!(ec.cov.xy, 0.0, epsilon = EPS);
+        }
+
+        /// to_cartesian_cov position matches CartesianCoord::from.
+        #[test]
+        fn to_cartesian_cov_position_matches() {
+            let c = EquCoord::from_degrees(37.0, 1e-5, -15.0, 1e-5);
+            let ec = EquCoordCov::from_equ(c);
+            let cc = ec.to_cartesian_cov();
+            let direct = crate::coordinates::cartesian::CartesianCoord::from(c);
+            assert_abs_diff_eq!(cc.coord.x, direct.x, epsilon = EPS);
+            assert_abs_diff_eq!(cc.coord.y, direct.y, epsilon = EPS);
+            assert_abs_diff_eq!(cc.coord.z, direct.z, epsilon = EPS);
+        }
+
+        /// Zero input errors yield an all-zero Cartesian covariance.
+        #[test]
+        fn zero_errors_give_zero_cartesian_cov() {
+            let c = EquCoord::new(0.5, 0.0, 0.3, 0.0);
+            let cc = EquCoordCov::from_equ(c).to_cartesian_cov();
+            for &v in &[
+                cc.cov.xx, cc.cov.xy, cc.cov.xz, cc.cov.yy, cc.cov.yz, cc.cov.zz,
+            ] {
+                assert!(v.abs() < 1e-30, "expected zero, got {v}");
+            }
+        }
+
+        /// new() stores coord and cov exactly.
+        #[test]
+        fn new_stores_fields() {
+            let c = EquCoord::new(1.0, 0.01, 0.5, 0.02);
+            let cov = Cov2 {
+                xx: 1e-4,
+                yy: 4e-4,
+                xy: 5e-5,
+            };
+            let ec = EquCoordCov::new(c, cov);
+            assert_eq!(ec.coord, c);
+            assert_eq!(ec.cov, cov);
         }
     }
 }

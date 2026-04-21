@@ -39,7 +39,7 @@ use std::{
     ops::{Add, Mul},
 };
 
-use crate::coordinates::equatorial::EquCoord;
+use crate::coordinates::{cov3::Cov3, equatorial::EquCoord};
 
 /// Symmetric 2×2 covariance matrix.
 ///
@@ -286,6 +286,56 @@ impl Cov2 {
         let half_diff = 0.5 * (self.xx - self.yy);
         let disc = (half_diff * half_diff + self.xy * self.xy).sqrt();
         half_tr - disc
+    }
+
+    /// Propagate this 2×2 covariance through a 3×2 Jacobian $J$.
+    ///
+    /// Computes the 3×3 output covariance
+    ///
+    /// $$\Sigma_{3\times3} = J\,\Sigma_{2\times2}\,J^\top$$
+    ///
+    /// which is the first-order propagation formula for a linear map
+    /// $\mathbb{R}^2 \to \mathbb{R}^3$.
+    ///
+    /// # Arguments
+    ///
+    /// - `j` — The 3×2 Jacobian matrix stored in row-major order:
+    ///   `j[i]` is the $i$-th row of $J$, `j[i][k]` is the entry $J_{ik}$.
+    ///   Row 0 corresponds to the first output dimension ($x$), row 1 to $y$,
+    ///   row 2 to $z$.
+    ///
+    /// # Returns
+    ///
+    /// A [`Cov3`] equal to $J \Sigma J^\top$.
+    ///
+    /// # Notes
+    ///
+    /// This is the algebraic dual of [`Cov3::transform_j2`]: for a pair of
+    /// matching Jacobians $J$ (3×2) and $K = J^\top$-derived (2×3), the two
+    /// operations compose as expected:
+    ///
+    /// $$K\bigl(J\,\Sigma_2\,J^\top\bigr)K^\top = (KJ)\,\Sigma_2\,(KJ)^\top.$$
+    ///
+    /// The key use-case is converting an equatorial covariance
+    /// $\Sigma_{\alpha\delta}$ to a full Cartesian covariance $\Sigma_{xyz}$
+    /// via the Jacobian $J$ of $(\alpha,\delta)\to(x,y,z)$.
+    #[inline]
+    pub fn transform_j3(&self, j: [[f64; 2]; 3]) -> Cov3 {
+        // (J Σ Jᵀ)_{ij} = Σ_k Σ_l J_{ik} Σ_{kl} J_{jl}
+        // For a 2×2 Σ with entries xx, yy, xy this simplifies to:
+        //   row_quad(a, b) = a[0]*b[0]*xx + (a[0]*b[1]+a[1]*b[0])*xy + a[1]*b[1]*yy
+        #[inline]
+        fn row_quad(a: [f64; 2], b: [f64; 2], xx: f64, yy: f64, xy: f64) -> f64 {
+            a[0] * b[0] * xx + (a[0] * b[1] + a[1] * b[0]) * xy + a[1] * b[1] * yy
+        }
+        Cov3 {
+            xx: row_quad(j[0], j[0], self.xx, self.yy, self.xy),
+            yy: row_quad(j[1], j[1], self.xx, self.yy, self.xy),
+            zz: row_quad(j[2], j[2], self.xx, self.yy, self.xy),
+            xy: row_quad(j[0], j[1], self.xx, self.yy, self.xy),
+            xz: row_quad(j[0], j[2], self.xx, self.yy, self.xy),
+            yz: row_quad(j[1], j[2], self.xx, self.yy, self.xy),
+        }
     }
 }
 
@@ -581,6 +631,101 @@ mod cov2_tests {
     }
 
     // ------------------------------------------------------------------ //
+    // transform_j3                                                         //
+    // ------------------------------------------------------------------ //
+
+    #[test]
+    fn transform_j3_identity_gives_embedded_cov2() {
+        // J = [[1,0],[0,1],[0,0]]  →  J Σ Jᵀ should embed Σ in upper-left 2×2
+        let cov = Cov2 {
+            xx: 4.0,
+            yy: 9.0,
+            xy: 2.0,
+        };
+        let j = [[1.0, 0.0], [0.0, 1.0], [0.0, 0.0]];
+        let out = cov.transform_j3(j);
+        assert_abs_diff_eq!(out.xx, cov.xx, epsilon = EPS);
+        assert_abs_diff_eq!(out.yy, cov.yy, epsilon = EPS);
+        assert_abs_diff_eq!(out.zz, 0.0, epsilon = EPS);
+        assert_abs_diff_eq!(out.xy, cov.xy, epsilon = EPS);
+        assert_abs_diff_eq!(out.xz, 0.0, epsilon = EPS);
+        assert_abs_diff_eq!(out.yz, 0.0, epsilon = EPS);
+    }
+
+    #[test]
+    fn transform_j3_zero_cov_gives_zero_output() {
+        let cov = Cov2::zero();
+        let j = [[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]];
+        let out = cov.transform_j3(j);
+        assert_eq!(out.xx, 0.0);
+        assert_eq!(out.yy, 0.0);
+        assert_eq!(out.zz, 0.0);
+        assert_eq!(out.xy, 0.0);
+        assert_eq!(out.xz, 0.0);
+        assert_eq!(out.yz, 0.0);
+    }
+
+    #[test]
+    fn transform_j3_diagonal_input_matches_manual() {
+        // Σ = diag(4, 9); J = [[1,1],[1,-1],[0,1]]
+        // (J Σ Jᵀ)_xx = 1*4 + 1*9 = 13
+        // (J Σ Jᵀ)_yy = 1*4 + 1*9 = 13
+        // (J Σ Jᵀ)_zz = 0*4 + 1*9 = 9
+        // (J Σ Jᵀ)_xy = 1*4 + (-1)*9 = -5
+        // (J Σ Jᵀ)_xz = 0*4 + 1*9 = 9
+        // (J Σ Jᵀ)_yz = 0*4 + (-1)*9 = -9
+        let cov = Cov2::diag(4.0, 9.0);
+        let j = [[1.0, 1.0], [1.0, -1.0], [0.0, 1.0]];
+        let out = cov.transform_j3(j);
+        assert_abs_diff_eq!(out.xx, 13.0, epsilon = EPS);
+        assert_abs_diff_eq!(out.yy, 13.0, epsilon = EPS);
+        assert_abs_diff_eq!(out.zz, 9.0, epsilon = EPS);
+        assert_abs_diff_eq!(out.xy, -5.0, epsilon = EPS);
+        assert_abs_diff_eq!(out.xz, 9.0, epsilon = EPS);
+        assert_abs_diff_eq!(out.yz, -9.0, epsilon = EPS);
+    }
+
+    #[test]
+    fn transform_j3_output_is_symmetric() {
+        // The output must be symmetric by construction
+        let cov = Cov2 {
+            xx: 3.0,
+            yy: 7.0,
+            xy: 1.5,
+        };
+        let j = [[0.5, -1.0], [0.2, 0.8], [-0.3, 0.1]];
+        let out = cov.transform_j3(j);
+        // Off-diagonal entries must equal their symmetric counterparts
+        // (they are computed independently; check they match via bilinear symmetry)
+        let xy_check = {
+            let a = j[0];
+            let b = j[1];
+            a[0] * b[0] * cov.xx + (a[0] * b[1] + a[1] * b[0]) * cov.xy + a[1] * b[1] * cov.yy
+        };
+        assert_abs_diff_eq!(out.xy, xy_check, epsilon = EPS);
+    }
+
+    #[test]
+    fn transform_j3_then_transform_j2_round_trips() {
+        // For a full-rank J and matching K=Jᵀ in sense: K J = 2×2 matrix,
+        // check that Cov3::transform_j2(K) of transform_j3(J) gives (K J) Σ (K J)ᵀ.
+        // Use J = [[1,0],[0,1],[0,0]], K = [[1,0,0],[0,1,0]]
+        // Then K J = I₂, so round-trip should recover Σ exactly.
+        let cov = Cov2 {
+            xx: 5.0,
+            yy: 3.0,
+            xy: 1.0,
+        };
+        let j = [[1.0, 0.0], [0.0, 1.0], [0.0, 0.0]];
+        let k = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
+        let cov3 = cov.transform_j3(j);
+        let recovered = cov3.transform_j2(k);
+        assert_abs_diff_eq!(recovered.xx, cov.xx, epsilon = EPS);
+        assert_abs_diff_eq!(recovered.yy, cov.yy, epsilon = EPS);
+        assert_abs_diff_eq!(recovered.xy, cov.xy, epsilon = EPS);
+    }
+
+    // ------------------------------------------------------------------ //
     // Property-based tests                                                 //
     // ------------------------------------------------------------------ //
 
@@ -642,6 +787,21 @@ mod cov2_tests {
             if let Some(m) = cov.mahalanobis_sq([vx, vy]) {
                 prop_assert!(m >= -1e-10);
             }
+        }
+
+        /// transform_j3 output has non-negative diagonal for PSD input.
+        #[test]
+        fn transform_j3_output_diagonal_nonneg(
+            cov in psd_cov2(),
+            j00 in -3.0_f64..3.0, j01 in -3.0_f64..3.0,
+            j10 in -3.0_f64..3.0, j11 in -3.0_f64..3.0,
+            j20 in -3.0_f64..3.0, j21 in -3.0_f64..3.0,
+        ) {
+            let j = [[j00, j01], [j10, j11], [j20, j21]];
+            let out = cov.transform_j3(j);
+            prop_assert!(out.xx >= -1e-10, "out.xx negative: {}", out.xx);
+            prop_assert!(out.yy >= -1e-10, "out.yy negative: {}", out.yy);
+            prop_assert!(out.zz >= -1e-10, "out.zz negative: {}", out.zz);
         }
     }
 }

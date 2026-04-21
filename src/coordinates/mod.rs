@@ -11,6 +11,8 @@
 //!   and inverse propagation back to equatorial coordinates.
 //! - [`cov2`] — [`cov2::Cov2`]: symmetric 2×2 covariance matrix for tangent-plane
 //!   error ellipses; eigenvalues, Mahalanobis distance, and isotropic inflation.
+//! - [`cov3`] — [`cov3::Cov3`]: symmetric 3×3 covariance matrix for Cartesian
+//!   position uncertainty; bilinear forms and Jacobian propagation to 2D.
 //! - [`gnomonic_projection`] — [`gnomonic_projection::TangentPlane`],
 //!   [`gnomonic_projection::TangentPoint`], [`gnomonic_projection::TangentVec`]:
 //!   gnomonic (tangent-plane) projection between equatorial sky coordinates and
@@ -25,20 +27,21 @@
 //!   [`equatorial::EquCoord`] and [`cartesian::CartesianCoord`] in either direction.
 //!   Uncertainties are discarded on the forward path and set to zero on the inverse
 //!   path.
-//! - **Covariance-propagating:** [`equatorial::EquCoord::to_cartesian_cov`] maps
-//!   equatorial coordinates to [`cartesian::CartesianCoordCov`] via a first-order
-//!   Jacobian propagation. The reverse direction is provided by
-//!   [`cartesian::CartesianCoordCov::to_equatorial`], which extracts marginal 1-σ
-//!   errors from the diagonal of the back-propagated covariance.
+//! - **Covariance-propagating:** [`equatorial::EquCoordCov::to_cartesian_cov`] maps
+//!   equatorial coordinates with a full 2×2 covariance to [`cartesian::CartesianCoordCov`]
+//!   via a first-order Jacobian propagation. The reverse direction is provided by
+//!   [`cartesian::CartesianCoordCov::to_equatorial_cov`], which back-propagates the
+//!   full 3×3 covariance and returns an [`equatorial::EquCoordCov`].
 //!
 //! ## Typical workflow
 //!
 //! ```text
 //! EquCoord  ──(From)──►  CartesianCoord
 //!    │                        │
-//!    │  to_cartesian_cov()    │  to_equatorial()
+//!    │  EquCoordCov           │  to_equatorial_cov()
+//!    │  ::to_cartesian_cov()  │
 //!    ▼                        ▼
-//! CartesianCoordCov  ◄──────────────────
+//! CartesianCoordCov  ◄──(From)── EquCoordCov
 //!
 //! EquCoord  ──(TangentPlane::project)──►  TangentPoint
 //!    ▲                                         │
@@ -47,6 +50,7 @@
 
 pub mod cartesian;
 pub mod cov2;
+pub mod cov3;
 pub mod equatorial;
 pub mod gnomonic_projection;
 

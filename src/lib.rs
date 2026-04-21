@@ -291,10 +291,10 @@
 //! ```
 //!
 //! To propagate astrometric uncertainties through the spherical-to-Cartesian
-//! mapping use [`coordinates::equatorial::EquCoord::to_cartesian_cov`], which
+//! mapping use [`coordinates::equatorial::EquCoordCov::to_cartesian_cov`], which
 //! returns a [`coordinates::cartesian::CartesianCoordCov`] containing the full
 //! 3×3 covariance matrix. The inverse conversion is
-//! [`coordinates::cartesian::CartesianCoordCov::to_equatorial`].
+//! [`coordinates::cartesian::CartesianCoordCov::to_equatorial_cov`].
 //!
 //! ## 2-D covariance on the tangent plane
 //!
