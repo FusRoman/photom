@@ -290,3 +290,258 @@ impl ObsDataset {
         self.index.len_trajectory(traj_id)
     }
 }
+
+#[cfg(test)]
+mod iter_tests {
+    use ahash::AHashMap;
+
+    use crate::{
+        NightId, TrajId,
+        coordinates::equatorial::EquCoord,
+        observation_dataset::{
+            ObsDataset,
+            index::{NightIndexMap, ObsMapIndex, TrajIndexMap},
+            observation::Observation,
+        },
+        observer::error_model::ObsErrorModel,
+        photometry::{Filter, Photometry},
+    };
+
+    // ------------------------------------------------------------------
+    // Helpers
+    // ------------------------------------------------------------------
+
+    fn make_obs(id: u64, index: usize) -> Observation {
+        Observation {
+            index: Some(index),
+            id,
+            equ_coord: EquCoord::new(0.5, 1e-5, 0.2, 1e-5),
+            photometry: Photometry {
+                magnitude: 15.0,
+                error: 0.1,
+                filter: Filter::String("G".to_string()),
+            },
+            mjd_tt: 60000.0 + id as f64,
+            observer: None,
+        }
+    }
+
+    /// Dataset with 4 observations, night index (2×2) and trajectory index (2×2).
+    ///
+    /// Night 1 → positions [0, 1]; Night 2 → positions [2, 3] (Contiguous)
+    /// Traj 10 → positions [0, 2]; Traj 20 → positions [1, 3] (Split)
+    fn make_dataset_with_index() -> ObsDataset {
+        let obs = vec![
+            make_obs(1, 0),
+            make_obs(2, 1),
+            make_obs(3, 2),
+            make_obs(4, 3),
+        ];
+
+        let mut night_map: NightIndexMap = AHashMap::new();
+        night_map.insert(NightId(1), ObsMapIndex::Contiguous { start: 0, end: 2 });
+        night_map.insert(NightId(2), ObsMapIndex::Contiguous { start: 2, end: 4 });
+
+        let mut traj_map: TrajIndexMap = AHashMap::new();
+        traj_map.insert(TrajId::Int(10), ObsMapIndex::Split(vec![0, 2]));
+        traj_map.insert(TrajId::Int(20), ObsMapIndex::Split(vec![1, 3]));
+
+        ObsDataset::new(
+            obs,
+            vec![],
+            Some(ObsErrorModel::FCCT14),
+            Some(night_map),
+            Some(traj_map),
+        )
+    }
+
+    fn make_dataset_no_index() -> ObsDataset {
+        let obs = vec![make_obs(1, 0), make_obs(2, 1)];
+        ObsDataset::new(obs, vec![], Some(ObsErrorModel::FCCT14), None, None)
+    }
+
+    // ------------------------------------------------------------------
+    // iter_observations
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn iter_observations_count() {
+        let ds = make_dataset_with_index();
+        assert_eq!(ds.iter_observations().count(), 4);
+    }
+
+    #[test]
+    fn iter_observations_ids_in_order() {
+        let ds = make_dataset_with_index();
+        let ids: Vec<u64> = ds.iter_observations().map(|o| *o.id()).collect();
+        assert_eq!(ids, vec![1, 2, 3, 4]);
+    }
+
+    // ------------------------------------------------------------------
+    // MemLayoutObservations
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn mem_layout_contiguous_len_and_iter() {
+        let ds = make_dataset_with_index();
+        let night = ds.materialize_night(&NightId(1)).unwrap();
+        assert_eq!(night.len(), 2);
+        assert!(!night.is_empty());
+        let ids: Vec<u64> = night.iter().map(|o| *o.id()).collect();
+        assert_eq!(ids, vec![1, 2]);
+    }
+
+    #[test]
+    fn mem_layout_split_len_and_iter() {
+        let ds = make_dataset_with_index();
+        let traj = ds.materialize_trajectory(&TrajId::Int(10)).unwrap();
+        assert_eq!(traj.len(), 2);
+        let ids: Vec<u64> = traj.iter().map(|o| *o.id()).collect();
+        assert_eq!(ids, vec![1, 3]);
+    }
+
+    #[test]
+    fn mem_layout_is_empty_false_for_non_empty() {
+        let ds = make_dataset_with_index();
+        assert!(!ds.materialize_night(&NightId(1)).unwrap().is_empty());
+    }
+
+    #[test]
+    fn mem_layout_into_iter_contiguous() {
+        let ds = make_dataset_with_index();
+        let night = ds.materialize_night(&NightId(2)).unwrap();
+        let ids: Vec<u64> = night.into_iter().map(|o| *o.id()).collect();
+        assert_eq!(ids, vec![3, 4]);
+    }
+
+    #[test]
+    fn mem_layout_into_iter_split() {
+        let ds = make_dataset_with_index();
+        let traj = ds.materialize_trajectory(&TrajId::Int(20)).unwrap();
+        let ids: Vec<u64> = traj.into_iter().map(|o| *o.id()).collect();
+        assert_eq!(ids, vec![2, 4]);
+    }
+
+    // ------------------------------------------------------------------
+    // Night iterators
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn iter_night_observations_some_for_existing() {
+        let ds = make_dataset_with_index();
+        assert!(ds.iter_night_observations(&NightId(1)).is_some());
+    }
+
+    #[test]
+    fn iter_night_observations_none_for_missing() {
+        let ds = make_dataset_with_index();
+        assert!(ds.iter_night_observations(&NightId(99)).is_none());
+    }
+
+    #[test]
+    fn iter_night_observations_none_without_index() {
+        let ds = make_dataset_no_index();
+        assert!(ds.iter_night_observations(&NightId(1)).is_none());
+    }
+
+    #[test]
+    fn iter_night_observations_count() {
+        let ds = make_dataset_with_index();
+        let count = ds.iter_night_observations(&NightId(1)).unwrap().count();
+        assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn iter_full_night_some_with_index() {
+        let ds = make_dataset_with_index();
+        assert!(ds.iter_full_night().is_some());
+    }
+
+    #[test]
+    fn iter_full_night_none_without_index() {
+        let ds = make_dataset_no_index();
+        assert!(ds.iter_full_night().is_none());
+    }
+
+    #[test]
+    fn iter_full_night_total_count() {
+        let ds = make_dataset_with_index();
+        assert_eq!(ds.iter_full_night().unwrap().count(), 4);
+    }
+
+    #[test]
+    fn iter_night_id_count() {
+        let ds = make_dataset_with_index();
+        assert_eq!(ds.iter_night_id().unwrap().count(), 2);
+    }
+
+    #[test]
+    fn len_night_correct() {
+        let ds = make_dataset_with_index();
+        assert_eq!(ds.len_night(&NightId(1)), Some(2));
+        assert_eq!(ds.len_night(&NightId(99)), None);
+    }
+
+    // ------------------------------------------------------------------
+    // Trajectory iterators
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn iter_trajectory_observations_some_for_existing() {
+        let ds = make_dataset_with_index();
+        assert!(ds.iter_trajectory_observations(&TrajId::Int(10)).is_some());
+    }
+
+    #[test]
+    fn iter_trajectory_observations_none_for_missing() {
+        let ds = make_dataset_with_index();
+        assert!(ds.iter_trajectory_observations(&TrajId::Int(99)).is_none());
+    }
+
+    #[test]
+    fn iter_trajectory_observations_none_without_index() {
+        let ds = make_dataset_no_index();
+        assert!(ds.iter_trajectory_observations(&TrajId::Int(10)).is_none());
+    }
+
+    #[test]
+    fn iter_trajectory_observations_count() {
+        let ds = make_dataset_with_index();
+        let count = ds
+            .iter_trajectory_observations(&TrajId::Int(10))
+            .unwrap()
+            .count();
+        assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn iter_full_trajectory_some_with_index() {
+        let ds = make_dataset_with_index();
+        assert!(ds.iter_full_trajectory().is_some());
+    }
+
+    #[test]
+    fn iter_full_trajectory_none_without_index() {
+        let ds = make_dataset_no_index();
+        assert!(ds.iter_full_trajectory().is_none());
+    }
+
+    #[test]
+    fn iter_full_trajectory_total_count() {
+        let ds = make_dataset_with_index();
+        assert_eq!(ds.iter_full_trajectory().unwrap().count(), 4);
+    }
+
+    #[test]
+    fn iter_traj_id_count() {
+        let ds = make_dataset_with_index();
+        assert_eq!(ds.iter_traj_id().unwrap().count(), 2);
+    }
+
+    #[test]
+    fn len_trajectory_correct() {
+        let ds = make_dataset_with_index();
+        assert_eq!(ds.len_trajectory(&TrajId::Int(10)), Some(2));
+        assert_eq!(ds.len_trajectory(&TrajId::Int(99)), None);
+    }
+}

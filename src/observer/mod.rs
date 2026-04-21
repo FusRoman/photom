@@ -4,8 +4,8 @@
 //! observatory site, together with the two constructors that create one from
 //! geodetic or from pre-computed geocentric parallax coordinates.  It also
 //! exposes the low-level geodetic conversion helpers
-//! ([`geodetic_to_parallax`] and the error type
-//! ([`ObserverError`]) that covers all failure modes arising during observer
+//! [`geodetic_to_parallax`] and the error type [`ObserverError`] that covers
+//! all failure modes arising during observer
 //! construction.
 //!
 //! Two sub-modules extend this functionality:

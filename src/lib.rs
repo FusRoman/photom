@@ -39,7 +39,11 @@
 //!
 //! | Module | Description |
 //! |--------|-------------|
-//! | [`coordinates`] | Equatorial sky coordinates ([`coordinates::equatorial::EquCoord`]) with uncertainties and the Vincenty angular-separation formula |
+//! | [`coordinates`] | Celestial coordinate types and coordinate-system conversions |
+//! | [`coordinates::equatorial`] | [`coordinates::equatorial::EquCoord`] — equatorial sky position (RA, Dec) with 1-σ uncertainties, Vincenty angular separation, spherical midpoint, and covariance propagation |
+//! | [`coordinates::cartesian`] | [`coordinates::cartesian::CartesianCoord`] / [`coordinates::cartesian::CartesianCoordCov`] — Cartesian unit-sphere position with optional 3×3 covariance and inverse propagation back to equatorial coordinates |
+//! | [`coordinates::cov2`] | [`coordinates::cov2::Cov2`] — symmetric 2×2 covariance matrix for tangent-plane error ellipses; eigenvalues, Mahalanobis distance, and isotropic inflation |
+//! | [`coordinates::gnomonic_projection`] | [`coordinates::gnomonic_projection::TangentPlane`] / [`coordinates::gnomonic_projection::TangentPoint`] / [`coordinates::gnomonic_projection::TangentVec`] — gnomonic (tangent-plane) projection between equatorial sky coordinates and a local 2-D Cartesian frame |
 //! | [`photometry`] | Photometric measurement types: apparent magnitude, uncertainty, and bandpass filter ([`photometry::Photometry`], [`photometry::Filter`]) |
 //! | [`observation_dataset`] | Core observation types ([`observation_dataset::observation::Observation`], [`observation_dataset::ObsDataset`]) |
 //! | [`observer`] | Ground-based observatory representation ([`observer::Observer`]) and geodetic utilities |
@@ -291,6 +295,67 @@
 //! returns a [`coordinates::cartesian::CartesianCoordCov`] containing the full
 //! 3×3 covariance matrix. The inverse conversion is
 //! [`coordinates::cartesian::CartesianCoordCov::to_equatorial`].
+//!
+//! ## 2-D covariance on the tangent plane
+//!
+//! [`coordinates::cov2::Cov2`] is a compact symmetric 2×2 covariance matrix
+//! designed for astrometric error ellipses expressed in a local tangent-plane
+//! frame.  It supports eigenvalue decomposition, Mahalanobis distance, and
+//! isotropic inflation.
+//!
+//! ```rust
+//! use photom::coordinates::cov2::Cov2;
+//! use photom::coordinates::equatorial::EquCoord;
+//!
+//! // Build from the marginal 1-σ errors of an EquCoord.
+//! let coord = EquCoord::from_degrees(45.0, 0.001, 20.0, 0.002);
+//! let cov = Cov2::from_equ(&coord);
+//!
+//! // Semi-axes of the 1-σ confidence ellipse.
+//! let sigma_major = cov.lambda_max().max(0.0).sqrt();
+//! let sigma_minor = cov.lambda_min().max(0.0).sqrt();
+//!
+//! // Mahalanobis distance for an offset vector (radians).
+//! let offset = [1e-4_f64, 0.0_f64];
+//! if let Some(d2) = cov.mahalanobis_sq(offset) {
+//!     let _ = d2.sqrt(); // normalised distance
+//! }
+//!
+//! // Add isotropic process noise q·I (Kalman-style inflation).
+//! let q = 1e-8_f64;
+//! let inflated = cov.inflate_isotropic(q);
+//! ```
+//!
+//! ## Gnomonic (tangent-plane) projection
+//!
+//! [`coordinates::gnomonic_projection::TangentPlane`] projects sky positions
+//! near a chosen tangent point $(\alpha_0, \delta_0)$ onto a local 2-D
+//! Cartesian frame.  Great circles project to straight lines, making this
+//! representation well-suited for short-arc astrometry and kinematic linking.
+//!
+//! ```rust
+//! use photom::coordinates::equatorial::EquCoord;
+//! use photom::coordinates::gnomonic_projection::{TangentPlane, TangentVec};
+//!
+//! // Define the tangent point (degrees, converted internally to radians).
+//! let ref_coord = EquCoord::from_degrees(45.0, 0.0, 20.0, 0.0);
+//! let plane = TangentPlane::new(ref_coord);
+//!
+//! // Project a nearby sky position.
+//! let target = EquCoord::from_degrees(45.5, 0.0, 20.5, 0.0);
+//! let tp = plane.project(&target);
+//!
+//! // Inverse projection: recover equatorial coordinates.
+//! let sky = tp.unproject();
+//!
+//! // Squared Euclidean distance between two projected points (radians²).
+//! let other = plane.project(&EquCoord::from_degrees(45.1, 0.0, 20.1, 0.0));
+//! let d2 = tp.dist2(&other);
+//!
+//! // Translate a projected point by a displacement vector.
+//! let v = TangentVec { dx: 1e-3, dy: -1e-3 };
+//! let shifted = tp + v;
+//! ```
 //!
 //! ## Parallel iteration
 //!

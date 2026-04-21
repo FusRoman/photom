@@ -1,3 +1,20 @@
+//! Physical and astronomical constants used throughout the crate.
+//!
+//! All values are plain `f64` constants.  Where a standard definition exists
+//! (IAU, GRS1980/WGS84) the source is noted in the individual item's
+//! documentation.
+//!
+//! ## Public items
+//!
+//! | Constant | Value | Description |
+//! |----------|-------|-------------|
+//! | [`DPI`] | 2π | Full turn in radians |
+//! | [`AU`] | 149 597 870.7 km | Astronomical Unit (IAU 2012) |
+//! | [`EARTH_MAJOR_AXIS`] | 6 378 137.0 m | Earth equatorial radius (WGS84) |
+//! | [`EARTH_MINOR_AXIS`] | 6 356 752.3 m | Earth polar radius (WGS84) |
+//! | [`ERAU`] | ≈ 4.263 × 10⁻⁵ AU | Earth radius in astronomical units |
+//! | [`ARCSEC_TO_DEG`] | 1/3600 | Arc-second to degree conversion factor |
+
 /// 2π, useful for trigonometric conversions
 pub const DPI: f64 = 2. * std::f64::consts::PI;
 

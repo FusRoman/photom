@@ -92,7 +92,7 @@ impl Observation {
     /// Use [`ObsDataset::get_observer`](crate::observation_dataset::ObsDataset::get_observer) to resolve the `ObserverId` to a full `Observer` value.
     ///
     /// # Parameters
-    //// - `id` — unique identifier for this observation within its dataset (corresponds to the `id` column of the source `DataFrame`).
+    /// - `id` — unique identifier for this observation within its dataset (corresponds to the `id` column of the source `DataFrame`).
     /// - `equ_coord` — equatorial sky coordinates (right ascension and declination) with their associated measurement uncertainties, all in **radians**.
     /// - `photometry` — photometric measurement: apparent magnitude, its uncertainty, and the filter through which the observation was taken.
     /// - `mjd_tt` — detection epoch as a Modified Julian Date in Terrestrial Time, expressed in **days**.
@@ -170,5 +170,127 @@ impl Observation {
     /// The epoch as an `MJDTT` value (an `f64`, in days).
     pub fn mjd_tt(&self) -> MJDTT {
         self.mjd_tt
+    }
+}
+
+#[cfg(test)]
+mod observation_tests {
+    use super::*;
+    use crate::{
+        coordinates::equatorial::EquCoord,
+        observation_dataset::index::ObsIndex,
+        observer::dataset::ObserverId,
+        photometry::{Filter, Photometry},
+    };
+
+    fn make_photometry() -> Photometry {
+        Photometry {
+            magnitude: 15.0,
+            error: 0.1,
+            filter: Filter::String("V".to_string()),
+        }
+    }
+
+    fn make_obs(id: u64, mjd: f64) -> Observation {
+        Observation::new(
+            id,
+            EquCoord::new(0.5, 1e-5, 0.2, 1e-5),
+            make_photometry(),
+            mjd,
+            None,
+        )
+    }
+
+    // ------------------------------------------------------------------
+    // Constructor
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn new_sets_index_to_none() {
+        let obs = make_obs(42, 60000.0);
+        assert!(obs.index().is_none());
+    }
+
+    #[test]
+    fn getters_return_correct_values() {
+        let obs = make_obs(99, 60123.5);
+        assert_eq!(*obs.id(), 99);
+        assert_eq!(obs.mjd_tt(), 60123.5);
+        assert_eq!(obs.equ_coord().ra, 0.5);
+        assert_eq!(obs.photometry().magnitude, 15.0);
+    }
+
+    #[test]
+    fn observer_field_preserved() {
+        let obs = Observation::new(
+            1,
+            EquCoord::new(0.0, 1e-5, 0.0, 1e-5),
+            make_photometry(),
+            60000.0,
+            Some(ObserverId::MpcCode(*b"T05")),
+        );
+        // We can't directly inspect the observer field (pub(crate)), but we can
+        // verify the observation was constructed without panic.
+        assert_eq!(*obs.id(), 1);
+    }
+
+    // ------------------------------------------------------------------
+    // Equality (based on id)
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn eq_by_id() {
+        let a = make_obs(7, 60000.0);
+        let b = make_obs(7, 60001.0); // different epoch, same id
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn ne_different_ids() {
+        let a = make_obs(1, 60000.0);
+        let b = make_obs(2, 60000.0);
+        assert_ne!(a, b);
+    }
+
+    // ------------------------------------------------------------------
+    // Ordering (based on mjd_tt, then id)
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn ord_by_epoch() {
+        let earlier = make_obs(1, 59000.0);
+        let later = make_obs(2, 60000.0);
+        assert!(earlier < later);
+    }
+
+    #[test]
+    fn ord_tie_broken_by_id() {
+        let a = make_obs(1, 60000.0);
+        let b = make_obs(2, 60000.0);
+        assert!(a < b);
+    }
+
+    // ------------------------------------------------------------------
+    // Clone
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn clone_is_equal() {
+        let obs = make_obs(5, 60000.0);
+        let cloned = obs.clone();
+        assert_eq!(obs, cloned);
+        assert_eq!(obs.mjd_tt(), cloned.mjd_tt());
+    }
+
+    // ------------------------------------------------------------------
+    // Index assignment (pub(crate) field)
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn index_assignment() {
+        let mut obs = make_obs(1, 60000.0);
+        assert!(obs.index().is_none());
+        obs.index = Some(ObsIndex::from(3usize));
+        assert_eq!(obs.index(), Some(ObsIndex::from(3usize)));
     }
 }

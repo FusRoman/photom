@@ -192,6 +192,63 @@ let cov = a.to_cartesian_cov();
 let recovered = cov.to_equatorial();
 ```
 
+### 2-D covariance on the tangent plane
+
+`Cov2` is a compact symmetric 2×2 covariance matrix for astrometric error
+ellipses expressed in a local tangent-plane frame.
+
+```rust
+use photom::coordinates::cov2::Cov2;
+use photom::coordinates::equatorial::EquCoord;
+
+// Build a diagonal covariance from the marginal errors of an EquCoord.
+let coord = EquCoord::from_degrees(45.0, 0.001, 20.0, 0.002);
+let cov = Cov2::from_equ(&coord);
+
+// Semi-axes of the 1-σ confidence ellipse.
+let sigma_major = cov.lambda_max().max(0.0).sqrt();
+let sigma_minor = cov.lambda_min().max(0.0).sqrt();
+
+// Mahalanobis distance for an offset vector (radians).
+let offset = [1e-4_f64, 0.0_f64];
+if let Some(d2) = cov.mahalanobis_sq(offset) {
+    let _ = d2.sqrt(); // normalised distance
+}
+
+// Add isotropic process noise q·I (Kalman-style inflation).
+let inflated = cov.inflate_isotropic(1e-8);
+```
+
+### Gnomonic (tangent-plane) projection
+
+`TangentPlane` projects sky positions near a chosen tangent point onto a local
+2-D Cartesian frame. Great circles project to straight lines, making this ideal
+for short-arc astrometry and kinematic linking.
+
+```rust
+use photom::coordinates::equatorial::EquCoord;
+use photom::coordinates::gnomonic_projection::{TangentPlane, TangentVec};
+
+// Define the tangent point (degrees, converted internally to radians).
+let ref_coord = EquCoord::from_degrees(45.0, 0.0, 20.0, 0.0);
+let plane = TangentPlane::new(ref_coord);
+
+// Forward projection: sky → tangent plane.
+let target = EquCoord::from_degrees(45.5, 0.0, 20.5, 0.0);
+let tp = plane.project(&target);
+
+// Inverse projection: tangent plane → sky.
+let sky = tp.unproject();
+
+// Squared Euclidean distance between two projected points (radians²).
+let other = plane.project(&EquCoord::from_degrees(45.1, 0.0, 20.1, 0.0));
+let d2 = tp.dist2(&other);
+
+// Translate a projected point by a displacement vector.
+let v = TangentVec { dx: 1e-3, dy: -1e-3 };
+let shifted = tp + v;
+```
+
 ## DataFrame / Parquet Schema
 
 All column values for `ra`, `ra_err`, `dec`, `dec_err`, `obs_lon`, `obs_lat`, `obs_ra_acc`, and `obs_dec_acc` must be supplied in **radians**. No unit conversion is performed during ingestion.

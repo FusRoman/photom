@@ -47,3 +47,99 @@ pub struct Photometry {
     /// Bandpass filter through which the measurement was taken.
     pub filter: Filter,
 }
+
+#[cfg(test)]
+mod photometry_tests {
+    use super::*;
+
+    // ------------------------------------------------------------------
+    // Filter
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn filter_string_eq() {
+        let a = Filter::String("V".to_string());
+        let b = Filter::String("V".to_string());
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn filter_int_eq() {
+        assert_eq!(Filter::Int(3), Filter::Int(3));
+    }
+
+    #[test]
+    fn filter_variants_ne() {
+        assert_ne!(
+            Filter::String("V".to_string()),
+            Filter::String("r".to_string())
+        );
+        assert_ne!(Filter::Int(1), Filter::Int(2));
+    }
+
+    #[test]
+    fn filter_clone() {
+        let f = Filter::String("Gaia-G".to_string());
+        assert_eq!(f.clone(), f);
+    }
+
+    #[test]
+    fn filter_ord() {
+        // Int(1) < Int(2)
+        assert!(Filter::Int(1) < Filter::Int(2));
+        // String("B") < String("V") lexicographically
+        assert!(Filter::String("B".to_string()) < Filter::String("V".to_string()));
+    }
+
+    // ------------------------------------------------------------------
+    // Photometry
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn photometry_fields_accessible() {
+        let p = Photometry {
+            magnitude: 18.5,
+            error: 0.05,
+            filter: Filter::String("r".to_string()),
+        };
+        assert_eq!(p.magnitude, 18.5);
+        assert_eq!(p.error, 0.05);
+        assert_eq!(p.filter, Filter::String("r".to_string()));
+    }
+
+    #[test]
+    fn photometry_clone_eq() {
+        let p = Photometry {
+            magnitude: 15.0,
+            error: 0.1,
+            filter: Filter::Int(7),
+        };
+        assert_eq!(p.clone(), p);
+    }
+
+    #[test]
+    fn photometry_partial_ord() {
+        let brighter = Photometry {
+            magnitude: 12.0,
+            error: 0.1,
+            filter: Filter::String("V".to_string()),
+        };
+        let fainter = Photometry {
+            magnitude: 20.0,
+            error: 0.1,
+            filter: Filter::String("V".to_string()),
+        };
+        assert!(brighter < fainter);
+    }
+
+    #[test]
+    fn photometry_debug() {
+        let p = Photometry {
+            magnitude: 1.0,
+            error: 0.0,
+            filter: Filter::Int(0),
+        };
+        let s = format!("{:?}", p);
+        assert!(s.contains("magnitude"));
+    }
+}

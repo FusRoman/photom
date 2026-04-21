@@ -1,6 +1,7 @@
 //! Celestial coordinate types and coordinate-system conversions.
 //!
-//! Two sub-modules are provided:
+//! Four sub-modules cover the full chain from raw sky positions through
+//! covariance propagation to tangent-plane projection:
 //!
 //! - [`equatorial`] — [`equatorial::EquCoord`]: equatorial sky position (RA, Dec) with
 //!   1-σ astrometric uncertainties, Vincenty angular separation, spherical midpoint,
@@ -8,6 +9,12 @@
 //! - [`cartesian`] — [`cartesian::CartesianCoord`]: Cartesian unit-sphere position;
 //!   [`cartesian::CartesianCoordCov`]: position bundled with a full 3×3 covariance matrix
 //!   and inverse propagation back to equatorial coordinates.
+//! - [`cov2`] — [`cov2::Cov2`]: symmetric 2×2 covariance matrix for tangent-plane
+//!   error ellipses; eigenvalues, Mahalanobis distance, and isotropic inflation.
+//! - [`gnomonic_projection`] — [`gnomonic_projection::TangentPlane`],
+//!   [`gnomonic_projection::TangentPoint`], [`gnomonic_projection::TangentVec`]:
+//!   gnomonic (tangent-plane) projection between equatorial sky coordinates and
+//!   a local 2-D Cartesian frame.
 //!
 //! ## Conversion paths
 //!
@@ -23,9 +30,25 @@
 //!   Jacobian propagation. The reverse direction is provided by
 //!   [`cartesian::CartesianCoordCov::to_equatorial`], which extracts marginal 1-σ
 //!   errors from the diagonal of the back-propagated covariance.
+//!
+//! ## Typical workflow
+//!
+//! ```text
+//! EquCoord  ──(From)──►  CartesianCoord
+//!    │                        │
+//!    │  to_cartesian_cov()    │  to_equatorial()
+//!    ▼                        ▼
+//! CartesianCoordCov  ◄──────────────────
+//!
+//! EquCoord  ──(TangentPlane::project)──►  TangentPoint
+//!    ▲                                         │
+//!    └──────────(TangentPoint::unproject)──────┘
+//! ```
 
 pub mod cartesian;
+pub mod cov2;
 pub mod equatorial;
+pub mod gnomonic_projection;
 
 /// Lower bound used to avoid division by a nearly-zero vector norm when
 /// averaging or normalizing spherical vectors.
@@ -59,3 +82,39 @@ pub mod equatorial;
 ///
 /// This constant is purely a **numerical robustness guard**.
 const NORM_MIN: f64 = 1e-16;
+
+/// Smallest allowed value for the denominator `cosc` in gnomonic projection.
+///
+/// Context
+/// -------
+/// In the gnomonic projection:
+/// ```text
+/// cosc = sin(dec0) sin(dec) + cos(dec0) cos(dec) cos(ra - ra0)
+/// x    = cos(dec) sin(ra - ra0) / cosc
+/// y    = [cos(dec0) sin(dec) - sin(dec0) cos(dec) cos(ra - ra0)] / cosc
+/// ```
+/// When the target direction lies close to **90° from the tangent point**,
+/// `cosc → 0` and the exact projection diverges to infinity.
+///
+/// Why this constant?
+/// ------------------
+/// Mathematically, divergence is expected and correct. But numerically, when
+/// `cosc` reaches values smaller than ~1e-15, floating-point rounding can produce:
+/// - divisions by zero,
+/// - NaNs,
+/// - overflow into `Inf` even for non-pathological inputs.
+///
+/// We therefore enforce:
+/// ```text
+/// inv = 1.0 / max(cosc, INV_COSC_MIN)
+/// ```
+///
+/// Choice of value
+/// ----------------
+/// - `1e-12` keeps enough dynamic range for small-angle work (few degrees),
+/// - avoids Inf/NaN for borderline cases,
+/// - does *not* distort the projection in the regime where we actually use it:
+///   all fink-fat seeds remain well within the validity domain.
+///
+/// This value is not physically meaningful; it's a **numerical safety floor**.
+const INV_COSC_MIN: f64 = 1e-12;
