@@ -39,7 +39,7 @@ use std::{
     ops::{Add, Mul},
 };
 
-use crate::coordinates::{cov3::Cov3, equatorial::EquCoord};
+use crate::coordinates::{cov3::Cov3, equatorial::EquCoord, gnomonic_projection::TangentVec};
 
 /// Symmetric 2×2 covariance matrix.
 ///
@@ -151,22 +151,22 @@ impl Cov2 {
         })
     }
 
-    /// Mahalanobis-style quadratic form $v^\top \Sigma^{-1} v$.
+    /// Mahalanobis-style quadratic form $\mathbf{v}^\top \Sigma^{-1} \mathbf{v}$.
     ///
     /// # Arguments
     ///
-    /// - `v` — A 2-D displacement vector `[vx, vy]` (same units as the
-    ///   covariance axes).
+    /// - `v` — A tangent-plane displacement [`TangentVec`] expressed in the same
+    ///   frame and units as the covariance axes.
     ///
     /// # Returns
     ///
-    /// `Option<f64>` — The non-negative scalar $v^\top \Sigma^{-1} v$, or
-    /// `None` if the matrix is singular (see [`Cov2::inverse`]).
+    /// `Option<f64>` — The non-negative scalar
+    /// $\mathbf{v}^\top \Sigma^{-1} \mathbf{v}$, or `None` if the matrix is
+    /// singular (see [`Cov2::inverse`]).
     #[inline]
-    pub fn mahalanobis_sq(&self, v: [f64; 2]) -> Option<f64> {
+    pub fn mahalanobis_sq(&self, v: TangentVec) -> Option<f64> {
         let inv = self.inverse()?;
-        let [vx, vy] = v;
-        Some(inv.xx * vx * vx + 2.0 * inv.xy * vx * vy + inv.yy * vy * vy)
+        Some(inv.xx * v.dx * v.dx + 2.0 * inv.xy * v.dx * v.dy + inv.yy * v.dy * v.dy)
     }
 
     /// Zero covariance — all three entries set to zero.
@@ -207,6 +207,36 @@ impl Cov2 {
     #[inline]
     pub fn isotropic(q: f64) -> Self {
         Self::diag(q, q)
+    }
+
+    /// Generic quadratic form $\mathbf{v}^\top M \mathbf{v}$ where `self = M`.
+    ///
+    /// Computes the scalar:
+    ///
+    /// $$
+    /// \mathbf{v}^\top M \mathbf{v} = M_{xx}\, v_x^2 + 2 M_{xy}\, v_x v_y + M_{yy}\, v_y^2
+    /// $$
+    ///
+    /// Interpretation depends on what `self` represents:
+    ///
+    /// - If `self` is a **covariance** $\Sigma$, this returns the variance of
+    ///   `v` projected along itself (useful to propagate a covariance along a
+    ///   given direction).
+    /// - If `self` is an **information matrix** $\Sigma^{-1}$, this returns the
+    ///   **squared Mahalanobis distance** of `v` from the origin under the
+    ///   underlying covariance $\Sigma$.
+    ///
+    /// # Arguments
+    ///
+    /// - `v` — A tangent vector expressed in the same basis as `self`.
+    ///
+    /// # Returns
+    ///
+    /// `f64` — Scalar value of the quadratic form. Non-negative when `self` is
+    /// positive semi-definite (up to floating-point noise).
+    #[inline]
+    pub fn quad_form(&self, v: TangentVec) -> f64 {
+        v.dot(*self * v)
     }
 
     /// Add an isotropic term $q \cdot I$ to the covariance.
@@ -337,6 +367,179 @@ impl Cov2 {
             yz: row_quad(j[1], j[2], self.xx, self.yy, self.xy),
         }
     }
+
+    /// Compute the lower-triangular Cholesky factor `L` such that
+    /// $\Sigma = L L^\top$.
+    ///
+    /// This routine is specialized for symmetric 2×2 covariance matrices and
+    /// is designed for **hot paths** (innovation whitening, covariance
+    /// normalization, gating).
+    ///
+    /// # Numerical robustness
+    ///
+    /// The following safeguards are applied before factorization:
+    /// - non-finite entries cause an immediate `None`,
+    /// - `floor` must be finite and strictly positive,
+    /// - diagonal terms are floored to at least `floor`,
+    /// - positive-definiteness is checked via the Schur complement
+    ///   $t = \sigma_{yy} - \sigma_{xy}^2 / \sigma_{xx}$, with the
+    ///   requirement $t \geq \text{floor}$.
+    ///
+    /// If `self` is not numerically positive definite after flooring,
+    /// `None` is returned.
+    ///
+    /// # Arguments
+    ///
+    /// - `floor` – Strictly positive minimum for diagonal terms and for the
+    ///   Schur complement. Typical values: `1e-20` for radians² covariances,
+    ///   or `1e-12` in more conservative settings.
+    ///
+    /// # Return
+    ///
+    /// - `Some(CholeskyLower2)` – Factor with $l_{00}, l_{11} > 0$ and all
+    ///   entries finite.
+    /// - `None` – If `self` contains non-finite entries, if `floor` is
+    ///   non-finite or non-positive, or if `self` is not SPD after flooring.
+    ///
+    /// # Notes
+    ///
+    /// - For a symmetric 2×2 matrix, positive-definiteness is equivalent to
+    ///   $\sigma_{xx} > 0$ and $\det(\Sigma) > 0$. The Schur-complement check
+    ///   used here is algebraically equivalent.
+    /// - If a *fallback* behavior (e.g. diagonal-only whitening) is desired,
+    ///   it must be implemented at the call site when `None` is returned.
+    ///
+    /// # See also
+    ///
+    /// - [`Cov2::whiten_cholesky`] – Whiten a vector and obtain its
+    ///   Mahalanobis squared distance in one pass.
+    /// - [`Cov2::inverse`] – Exact inverse (no flooring), or `None` if singular.
+    /// - [`Cov2::det`] – Determinant of the covariance.
+    #[inline]
+    pub fn cholesky_lower(&self, floor: f64) -> Option<CholeskyLower2> {
+        if !self.xx.is_finite() || !self.yy.is_finite() || !self.xy.is_finite() {
+            return None;
+        }
+        if !floor.is_finite() || floor <= 0.0 {
+            return None;
+        }
+
+        let a = self.xx.max(floor);
+        let d = self.yy.max(floor);
+        let b = self.xy;
+
+        // 2×2 Cholesky:
+        //   l00 = sqrt(a)
+        //   l10 = b / l00
+        //   l11 = sqrt(d - l10²)
+        let l00 = a.sqrt();
+        if !l00.is_finite() || l00 <= 0.0 {
+            return None;
+        }
+
+        let l10 = b / l00;
+        let t = d - l10 * l10;
+        if !t.is_finite() || t < floor {
+            return None;
+        }
+
+        let l11 = t.sqrt();
+        if !l11.is_finite() || l11 <= 0.0 {
+            return None;
+        }
+
+        Some(CholeskyLower2 { l00, l10, l11 })
+    }
+
+    /// Whiten a tangent-plane vector using the Cholesky factor of `self`.
+    ///
+    /// Given $\Sigma = L L^\top$, this computes
+    ///
+    /// $$\mathbf{z} = L^{-1} \mathbf{v}$$
+    ///
+    /// by forward substitution, together with its squared norm
+    ///
+    /// $$\|\mathbf{z}\|^2 = \mathbf{v}^\top \Sigma^{-1} \mathbf{v},$$
+    ///
+    /// which is the squared Mahalanobis distance of $\mathbf{v}$ under
+    /// $\Sigma$.
+    ///
+    /// # Numerical safeguards
+    ///
+    /// - Delegates SPD checks and diagonal flooring to
+    ///   [`Cov2::cholesky_lower`].
+    /// - Returns `None` when the factorization fails or produces non-finite
+    ///   whitened components.
+    /// - When `Some` is returned, both the whitened vector and its squared
+    ///   norm are finite; the squared norm is clamped to be non-negative.
+    ///
+    /// # Arguments
+    ///
+    /// - `v` – Vector to whiten, expressed in the same tangent-plane frame
+    ///   as `self`.
+    /// - `floor` – Minimum diagonal value used to regularize the factorization
+    ///   (forwarded to [`Cov2::cholesky_lower`]).
+    ///
+    /// # Return
+    ///
+    /// - `Some((z, z_sq))` – Whitened vector $\mathbf{z} = L^{-1}\mathbf{v}$
+    ///   and its squared norm $\|\mathbf{z}\|^2$.
+    /// - `None` – If `self` is not SPD (even after flooring) or the
+    ///   factorization is numerically invalid.
+    ///
+    /// # Notes
+    ///
+    /// - This is the numerically preferred way to obtain both a whitened
+    ///   residual and a Mahalanobis $\chi^2$ in a single pass: it avoids
+    ///   forming $\Sigma^{-1}$ explicitly and keeps the two quantities
+    ///   algebraically consistent.
+    #[inline]
+    pub fn whiten_cholesky(&self, v: TangentVec, floor: f64) -> Option<(TangentVec, f64)> {
+        let l = self.cholesky_lower(floor)?;
+        let z = l.solve_forward(v);
+
+        if !z.dx.is_finite() || !z.dy.is_finite() {
+            return None;
+        }
+
+        let z_sq = (z.dx * z.dx + z.dy * z.dy).max(0.0);
+        Some((z, z_sq))
+    }
+
+    /// Diagonal whitening: $\mathrm{diag}(\Sigma)^{-1/2}\, \mathbf{v}$.
+    ///
+    /// Ignores off-diagonal correlation. Cheap and robust; well-defined even
+    /// when $\Sigma$ is near-singular off-diagonally.
+    ///
+    /// # Arguments
+    ///
+    /// - `v` – Vector to whiten, expressed in the same tangent-plane frame as `self`.
+    /// - `floor` – Minimum diagonal value used to regularize the whitening.
+    ///   Typical values: `1e-20` for radians² covariances, or `1e-12` in more conservative settings.
+    ///
+    /// # Returns
+    ///
+    /// - `TangentVec` – The diagonally whitened vector. Finite for all finite inputs
+    ///
+    /// # Notes
+    ///
+    /// - This is a fallback whitening method that can be used when the full Cholesky factorization fails
+    ///   (e.g. due to near-singularity or non-SPD inputs).
+    ///   It is computationally cheaper and more robust than the full Cholesky whitening,
+    ///   but it ignores off-diagonal correlations and may produce a poor approximation to
+    ///   the true Mahalanobis whitening when those correlations are large.
+    #[inline]
+    pub fn whiten_diag(&self, v: TangentVec, floor: f64) -> TangentVec {
+        let sx = self.xx.max(floor).sqrt();
+        let sy = self.yy.max(floor).sqrt();
+
+        let finite_or_zero = |x: f64| if x.is_finite() { x } else { 0.0 };
+
+        TangentVec {
+            dx: finite_or_zero(v.dx / sx),
+            dy: finite_or_zero(v.dy / sy),
+        }
+    }
 }
 
 impl Add for Cov2 {
@@ -349,6 +552,15 @@ impl Add for Cov2 {
             yy: self.yy + rhs.yy,
             xy: self.xy + rhs.xy,
         }
+    }
+}
+
+impl Add for &Cov2 {
+    type Output = Cov2;
+
+    #[inline]
+    fn add(self, rhs: Self) -> Self::Output {
+        *self + *rhs
     }
 }
 
@@ -365,6 +577,15 @@ impl Mul<f64> for Cov2 {
     }
 }
 
+impl Mul<f64> for &Cov2 {
+    type Output = Cov2;
+
+    #[inline]
+    fn mul(self, rhs: f64) -> Self::Output {
+        *self * rhs
+    }
+}
+
 impl Display for Cov2 {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         writeln!(f, "Cov2 {{")?;
@@ -372,6 +593,33 @@ impl Display for Cov2 {
         writeln!(f, "  yy : {:.6e}", self.yy)?;
         writeln!(f, "  xy : {:.6e}", self.xy)?;
         write!(f, "}}")
+    }
+}
+
+/// Lower-triangular Cholesky factor of a symmetric 2×2 SPD matrix.
+///
+/// Stored as:
+/// ```text
+/// L = [ l00  0  ]
+///     [ l10  l11]
+/// ```
+/// with the convention $\Sigma = L L^\top$.
+#[derive(Debug, Clone, Copy)]
+pub struct CholeskyLower2 {
+    pub l00: f64,
+    pub l10: f64,
+    pub l11: f64,
+}
+
+impl CholeskyLower2 {
+    /// Solve $L \mathbf{z} = \mathbf{v}$ by forward substitution.
+    #[inline]
+    pub fn solve_forward(&self, v: TangentVec) -> TangentVec {
+        let vx = v.dx;
+        let vy = v.dy;
+        let z1 = vx / self.l00;
+        let z2 = (vy - self.l10 * z1) / self.l11;
+        TangentVec { dx: z1, dy: z2 }
     }
 }
 
@@ -505,7 +753,7 @@ mod cov2_tests {
         // Σ = q*I  →  v^T Σ^-1 v = (vx^2+vy^2)/q
         let q = 4.0_f64;
         let c = Cov2::isotropic(q);
-        let v = [3.0, 4.0];
+        let v = TangentVec { dx: 3.0, dy: 4.0 };
         let got = c.mahalanobis_sq(v).unwrap();
         let expected = (3.0_f64 * 3.0 + 4.0 * 4.0) / q;
         assert_abs_diff_eq!(got, expected, epsilon = 1e-10);
@@ -518,7 +766,7 @@ mod cov2_tests {
             yy: 1.0,
             xy: 1.0,
         };
-        assert!(c.mahalanobis_sq([1.0, 0.0]).is_none());
+        assert!(c.mahalanobis_sq(TangentVec { dx: 1.0, dy: 0.0 }).is_none());
     }
 
     // ------------------------------------------------------------------ //
@@ -784,7 +1032,8 @@ mod cov2_tests {
         /// Mahalanobis distance is non-negative for PSD matrices.
         #[test]
         fn mahalanobis_sq_nonneg(cov in psd_cov2(), vx in -10.0_f64..10.0, vy in -10.0_f64..10.0) {
-            if let Some(m) = cov.mahalanobis_sq([vx, vy]) {
+            let v = TangentVec { dx: vx, dy: vy };
+            if let Some(m) = cov.mahalanobis_sq(v) {
                 prop_assert!(m >= -1e-10);
             }
         }
@@ -802,6 +1051,329 @@ mod cov2_tests {
             prop_assert!(out.xx >= -1e-10, "out.xx negative: {}", out.xx);
             prop_assert!(out.yy >= -1e-10, "out.yy negative: {}", out.yy);
             prop_assert!(out.zz >= -1e-10, "out.zz negative: {}", out.zz);
+        }
+    }
+
+    // ------------------------------------------------------------------ //
+    // quad_form                                                            //
+    // ------------------------------------------------------------------ //
+
+    #[test]
+    fn quad_form_isotropic() {
+        // M = q*I  →  vᵀ M v = q * (vx² + vy²)
+        let q = 3.0_f64;
+        let m = Cov2::isotropic(q);
+        let v = TangentVec { dx: 3.0, dy: 4.0 };
+        assert_abs_diff_eq!(m.quad_form(v), q * 25.0, epsilon = EPS);
+    }
+
+    #[test]
+    fn quad_form_zero_cov_is_zero() {
+        let m = Cov2::zero();
+        let v = TangentVec { dx: 5.0, dy: 7.0 };
+        assert_abs_diff_eq!(m.quad_form(v), 0.0, epsilon = EPS);
+    }
+
+    #[test]
+    fn quad_form_full() {
+        // M = [[4,2],[2,9]]; v = [1, 1]
+        // vᵀ M v = 4 + 2 + 2 + 9 = 17
+        let m = Cov2 {
+            xx: 4.0,
+            yy: 9.0,
+            xy: 2.0,
+        };
+        let v = TangentVec { dx: 1.0, dy: 1.0 };
+        assert_abs_diff_eq!(m.quad_form(v), 17.0, epsilon = EPS);
+    }
+
+    // ------------------------------------------------------------------ //
+    // cholesky_lower / CholeskyLower2::solve_forward                      //
+    // ------------------------------------------------------------------ //
+
+    #[test]
+    fn cholesky_lower_diagonal() {
+        // Σ = diag(4, 9)  →  L = diag(2, 3)
+        let c = Cov2::diag(4.0, 9.0);
+        let l = c.cholesky_lower(1e-20).expect("SPD diagonal");
+        assert_abs_diff_eq!(l.l00, 2.0, epsilon = EPS);
+        assert_abs_diff_eq!(l.l10, 0.0, epsilon = EPS);
+        assert_abs_diff_eq!(l.l11, 3.0, epsilon = EPS);
+    }
+
+    #[test]
+    fn cholesky_lower_reconstructs_cov() {
+        // Σ = L Lᵀ check: [[l00²,  l00*l10],[l00*l10, l10²+l11²]]
+        let c = Cov2 {
+            xx: 4.0,
+            yy: 5.0,
+            xy: 2.0,
+        };
+        let l = c.cholesky_lower(1e-20).expect("SPD");
+        assert_abs_diff_eq!(l.l00 * l.l00, c.xx, epsilon = 1e-10);
+        assert_abs_diff_eq!(l.l10 * l.l10 + l.l11 * l.l11, c.yy, epsilon = 1e-10);
+        assert_abs_diff_eq!(l.l00 * l.l10, c.xy, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn cholesky_lower_singular_returns_none() {
+        // Singular: det = 0
+        let c = Cov2 {
+            xx: 1.0,
+            yy: 1.0,
+            xy: 1.0,
+        };
+        assert!(c.cholesky_lower(1e-20).is_none());
+    }
+
+    #[test]
+    fn cholesky_lower_nonfinite_returns_none() {
+        let c = Cov2 {
+            xx: f64::NAN,
+            yy: 1.0,
+            xy: 0.0,
+        };
+        assert!(c.cholesky_lower(1e-20).is_none());
+    }
+
+    #[test]
+    fn cholesky_lower_zero_floor_returns_none() {
+        let c = Cov2::isotropic(1.0);
+        assert!(c.cholesky_lower(0.0).is_none());
+    }
+
+    #[test]
+    fn cholesky_lower_negative_floor_returns_none() {
+        let c = Cov2::isotropic(1.0);
+        assert!(c.cholesky_lower(-1e-10).is_none());
+    }
+
+    #[test]
+    fn solve_forward_diagonal() {
+        // L = diag(2, 3); solve L z = v  →  z = [vx/2, vy/3]
+        let c = Cov2::diag(4.0, 9.0);
+        let l = c.cholesky_lower(1e-20).unwrap();
+        let v = TangentVec { dx: 6.0, dy: 9.0 };
+        let z = l.solve_forward(v);
+        assert_abs_diff_eq!(z.dx, 3.0, epsilon = EPS);
+        assert_abs_diff_eq!(z.dy, 3.0, epsilon = EPS);
+    }
+
+    #[test]
+    fn solve_forward_inverts_cholesky() {
+        // L z = v  →  z = L^{-1} v; then L z should recover v
+        let c = Cov2 {
+            xx: 4.0,
+            yy: 5.0,
+            xy: 2.0,
+        };
+        let l = c.cholesky_lower(1e-20).unwrap();
+        let v = TangentVec { dx: 1.0, dy: 2.0 };
+        let z = l.solve_forward(v);
+        // Verify L * z == v
+        let lz_x = l.l00 * z.dx;
+        let lz_y = l.l10 * z.dx + l.l11 * z.dy;
+        assert_abs_diff_eq!(lz_x, v.dx, epsilon = 1e-10);
+        assert_abs_diff_eq!(lz_y, v.dy, epsilon = 1e-10);
+    }
+
+    // ------------------------------------------------------------------ //
+    // whiten_cholesky                                                      //
+    // ------------------------------------------------------------------ //
+
+    #[test]
+    fn whiten_cholesky_isotropic() {
+        // Σ = q*I  →  z = v/sqrt(q); z_sq = (vx²+vy²)/q
+        let q = 4.0_f64;
+        let c = Cov2::isotropic(q);
+        let v = TangentVec { dx: 2.0, dy: 0.0 };
+        let (z, z_sq) = c.whiten_cholesky(v, 1e-20).expect("SPD");
+        assert_abs_diff_eq!(z.dx, 1.0, epsilon = 1e-10);
+        assert_abs_diff_eq!(z.dy, 0.0, epsilon = 1e-10);
+        assert_abs_diff_eq!(z_sq, 1.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn whiten_cholesky_z_sq_equals_mahalanobis() {
+        // For a valid SPD matrix, z_sq must equal mahalanobis_sq
+        let c = Cov2 {
+            xx: 4.0,
+            yy: 9.0,
+            xy: 2.0,
+        };
+        let v = TangentVec { dx: 1.0, dy: 2.0 };
+        let (_, z_sq) = c.whiten_cholesky(v, 1e-20).unwrap();
+        let mah = c.mahalanobis_sq(v).unwrap();
+        assert_abs_diff_eq!(z_sq, mah, epsilon = 1e-8);
+    }
+
+    #[test]
+    fn whiten_cholesky_singular_returns_none() {
+        let c = Cov2 {
+            xx: 1.0,
+            yy: 1.0,
+            xy: 1.0,
+        };
+        assert!(
+            c.whiten_cholesky(TangentVec { dx: 1.0, dy: 0.0 }, 1e-20)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn whiten_cholesky_z_sq_nonneg() {
+        let c = Cov2::isotropic(1.0);
+        let v = TangentVec { dx: -3.0, dy: -4.0 };
+        let (_, z_sq) = c.whiten_cholesky(v, 1e-20).unwrap();
+        assert!(z_sq >= 0.0);
+    }
+
+    // ------------------------------------------------------------------ //
+    // whiten_diag                                                          //
+    // ------------------------------------------------------------------ //
+
+    #[test]
+    fn whiten_diag_isotropic() {
+        // Σ = q*I  →  z = v / sqrt(q)
+        let q = 9.0_f64;
+        let c = Cov2::isotropic(q);
+        let v = TangentVec { dx: 3.0, dy: 6.0 };
+        let z = c.whiten_diag(v, 1e-20);
+        assert_abs_diff_eq!(z.dx, 1.0, epsilon = 1e-10);
+        assert_abs_diff_eq!(z.dy, 2.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn whiten_diag_independent_axes() {
+        // Each axis is whitened independently; off-diagonal xy is ignored.
+        let c = Cov2 {
+            xx: 4.0,
+            yy: 16.0,
+            xy: 100.0,
+        };
+        let v = TangentVec { dx: 2.0, dy: 4.0 };
+        let z = c.whiten_diag(v, 1e-20);
+        assert_abs_diff_eq!(z.dx, 1.0, epsilon = 1e-10); // 2 / sqrt(4)
+        assert_abs_diff_eq!(z.dy, 1.0, epsilon = 1e-10); // 4 / sqrt(16)
+    }
+
+    #[test]
+    fn whiten_diag_zero_variance_uses_floor() {
+        // If variance is 0, floor is used instead, result is finite.
+        let c = Cov2::zero();
+        let v = TangentVec { dx: 1.0, dy: 1.0 };
+        let z = c.whiten_diag(v, 1.0);
+        assert!(z.dx.is_finite());
+        assert!(z.dy.is_finite());
+    }
+
+    // ------------------------------------------------------------------ //
+    // Additional property-based tests                                      //
+    // ------------------------------------------------------------------ //
+
+    proptest! {
+        /// cholesky_lower succeeds for PSD matrices and L Lᵀ ≈ Σ.
+        #[test]
+        fn cholesky_reconstructs_psd(cov in psd_cov2()) {
+            let l = cov.cholesky_lower(1e-12).expect("PSD should decompose");
+            // Reconstruct: Σ' = L Lᵀ
+            let xx = l.l00 * l.l00;
+            let xy = l.l10 * l.l00;
+            let yy = l.l10 * l.l10 + l.l11 * l.l11;
+            prop_assert!((xx - cov.xx).abs() < 1e-8, "xx mismatch");
+            prop_assert!((xy - cov.xy).abs() < 1e-8, "xy mismatch");
+            prop_assert!((yy - cov.yy).abs() < 1e-8, "yy mismatch");
+        }
+
+        /// cholesky_lower diagonal entries are positive for PSD matrices.
+        #[test]
+        fn cholesky_diagonal_positive(cov in psd_cov2()) {
+            let l = cov.cholesky_lower(1e-12).expect("PSD should decompose");
+            prop_assert!(l.l00 > 0.0, "l00 non-positive");
+            prop_assert!(l.l11 > 0.0, "l11 non-positive");
+        }
+
+        /// whiten_cholesky z² ≈ Mahalanobis distance for PSD matrices.
+        #[test]
+        fn proptest_whiten_cholesky_z_sq_equals_mahalanobis(
+            cov in psd_cov2(),
+            vx in -5.0_f64..5.0,
+            vy in -5.0_f64..5.0,
+        ) {
+            let v = TangentVec { dx: vx, dy: vy };
+            if let Some((_z, z_sq)) = cov.whiten_cholesky(v, 1e-12)
+                && let Some(mah) = cov.mahalanobis_sq(v) {
+                    prop_assert!((z_sq - mah).abs() < 1e-8, "z² {} ≠ mah {}", z_sq, mah);
+                }
+        }
+
+        /// whiten_cholesky z² is non-negative for PSD matrices.
+        #[test]
+        fn proptest_whiten_cholesky_z_sq_nonneg(
+            cov in psd_cov2(),
+            vx in -5.0_f64..5.0,
+            vy in -5.0_f64..5.0,
+        ) {
+            let v = TangentVec { dx: vx, dy: vy };
+            if let Some((_z, z_sq)) = cov.whiten_cholesky(v, 1e-12) {
+                prop_assert!(z_sq >= -1e-10);
+            }
+        }
+
+        /// whiten_diag output is finite for PSD matrices with positive floor.
+        #[test]
+        fn whiten_diag_finite_for_psd(
+            cov in psd_cov2(),
+            vx in -5.0_f64..5.0,
+            vy in -5.0_f64..5.0,
+        ) {
+            let v = TangentVec { dx: vx, dy: vy };
+            let z = cov.whiten_diag(v, 1e-20);
+            prop_assert!(z.dx.is_finite(), "z.dx is not finite");
+            prop_assert!(z.dy.is_finite(), "z.dy is not finite");
+        }
+
+        /// quad_form is non-negative for PSD matrices.
+        #[test]
+        fn quad_form_nonneg_for_psd(
+            cov in psd_cov2(),
+            vx in -10.0_f64..10.0,
+            vy in -10.0_f64..10.0,
+        ) {
+            let v = TangentVec { dx: vx, dy: vy };
+            prop_assert!(cov.quad_form(v) >= -1e-10);
+        }
+
+        /// quad_form scales quadratically: (αv)ᵀ Σ (αv) = α² vᵀ Σ v.
+        #[test]
+        fn quad_form_homogeneous(
+            cov in psd_cov2(),
+            vx in -5.0_f64..5.0,
+            vy in -5.0_f64..5.0,
+            alpha in -3.0_f64..3.0,
+        ) {
+            let v = TangentVec { dx: vx, dy: vy };
+            let av = TangentVec { dx: alpha * vx, dy: alpha * vy };
+            let ratio = cov.quad_form(av);
+            let expected = alpha * alpha * cov.quad_form(v);
+            prop_assert!((ratio - expected).abs() < 1e-8, "{} ≠ {}", ratio, expected);
+        }
+
+        /// solve_forward inverts cholesky_lower: L (L⁻¹ v) ≈ v.
+        #[test]
+        fn solve_forward_inverts_cholesky_lower(
+            cov in psd_cov2(),
+            vx in -5.0_f64..5.0,
+            vy in -5.0_f64..5.0,
+        ) {
+            let v = TangentVec { dx: vx, dy: vy };
+            let l = cov.cholesky_lower(1e-12).expect("PSD should decompose");
+            let z = l.solve_forward(v);
+            // Recover: L z = v  ↔  z = L⁻¹ v
+            let rx = l.l00 * z.dx;
+            let ry = l.l10 * z.dx + l.l11 * z.dy;
+            prop_assert!((rx - vx).abs() < 1e-8, "rx {} ≠ vx {}", rx, vx);
+            prop_assert!((ry - vy).abs() < 1e-8, "ry {} ≠ vy {}", ry, vy);
         }
     }
 }

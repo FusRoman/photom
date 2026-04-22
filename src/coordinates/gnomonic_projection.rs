@@ -55,7 +55,7 @@ use std::{
     ops::{Add, Mul, Neg, Sub},
 };
 
-use crate::coordinates::{INV_COSC_MIN, equatorial::EquCoord};
+use crate::coordinates::{INV_COSC_MIN, cov2::Cov2, equatorial::EquCoord};
 
 /// Reference frame for a gnomonic (tangent-plane) projection.
 ///
@@ -396,9 +396,27 @@ impl TangentVec {
     /// # Returns
     ///
     /// `f64` — Non-negative length of the vector in the tangent plane.
+    ///
+    /// # Notes
+    ///
+    /// - Uses `f64::hypot` for numerical stability when `dx` and `dy` differ in magnitude.
     #[inline]
     pub fn norm(&self) -> f64 {
-        self.norm_sq().sqrt()
+        self.dx.hypot(self.dy)
+    }
+
+    /// Dot product $\mathbf{u} \cdot \mathbf{v} = u_x v_x + u_y v_y$.
+    ///
+    /// # Arguments
+    ///
+    /// - `other` — The second vector to dot with `self`.
+    ///
+    /// # Returns
+    ///
+    /// `f64` — The scalar result of the dot product.
+    #[inline]
+    pub fn dot(self, other: TangentVec) -> f64 {
+        self.dx * other.dx + self.dy * other.dy
     }
 }
 
@@ -413,6 +431,14 @@ impl Add for TangentVec {
     }
 }
 
+impl Add for &TangentVec {
+    type Output = TangentVec;
+    #[inline]
+    fn add(self, rhs: Self) -> TangentVec {
+        (*self) + (*rhs)
+    }
+}
+
 impl Sub for TangentVec {
     type Output = Self;
     #[inline]
@@ -421,6 +447,14 @@ impl Sub for TangentVec {
             dx: self.dx - rhs.dx,
             dy: self.dy - rhs.dy,
         }
+    }
+}
+
+impl Sub for &TangentVec {
+    type Output = TangentVec;
+    #[inline]
+    fn sub(self, rhs: Self) -> TangentVec {
+        (*self) - (*rhs)
     }
 }
 
@@ -435,6 +469,56 @@ impl Mul<f64> for TangentVec {
     }
 }
 
+impl Mul<f64> for &TangentVec {
+    type Output = TangentVec;
+    fn mul(self, k: f64) -> TangentVec {
+        (*self) * k
+    }
+}
+
+/// Apply a symmetric 2×2 covariance (viewed as a linear map) to a tangent vector.
+///
+/// Computes:
+///
+/// $$\Sigma \mathbf{v} = \begin{pmatrix} \sigma_{xx} & \sigma_{xy} \\ \sigma_{xy} & \sigma_{yy} \end{pmatrix} \begin{pmatrix} dx \\ dy \end{pmatrix}$$
+///
+/// # Arguments
+///
+/// - `v` — Tangent-plane vector to transform.
+///
+/// # Returns
+///
+/// [`TangentVec`] — Result of the matrix–vector product, expressed
+/// in the same tangent basis as `v`.
+///
+/// # Notes
+///
+/// - `Cov2` is symmetric by construction, so only `xx`, `yy`, and `xy`
+///   are needed.
+/// - Typically used to apply an inverse covariance (information matrix)
+///   to an innovation residual when computing Mahalanobis terms.
+impl Mul<TangentVec> for Cov2 {
+    type Output = TangentVec;
+
+    #[inline]
+    fn mul(self, v: TangentVec) -> TangentVec {
+        TangentVec {
+            dx: self.xx * v.dx + self.xy * v.dy,
+            dy: self.xy * v.dx + self.yy * v.dy,
+        }
+    }
+}
+
+// Reference overload to avoid copies in tight loops.
+impl Mul<TangentVec> for &Cov2 {
+    type Output = TangentVec;
+
+    #[inline]
+    fn mul(self, v: TangentVec) -> TangentVec {
+        (*self) * v
+    }
+}
+
 impl Neg for TangentVec {
     type Output = Self;
     #[inline]
@@ -443,6 +527,14 @@ impl Neg for TangentVec {
             dx: -self.dx,
             dy: -self.dy,
         }
+    }
+}
+
+impl Neg for &TangentVec {
+    type Output = TangentVec;
+    #[inline]
+    fn neg(self) -> TangentVec {
+        -(*self)
     }
 }
 
@@ -601,6 +693,73 @@ mod gnomonic_tests {
         assert_abs_diff_eq!(s.dy, 7.5, epsilon = 1e-15);
     }
 
+    // ------------------------------------------------------------------ //
+    // TangentVec::dot                                                      //
+    // ------------------------------------------------------------------ //
+
+    #[test]
+    fn vec_dot_orthogonal_is_zero() {
+        let a = TangentVec { dx: 1.0, dy: 0.0 };
+        let b = TangentVec { dx: 0.0, dy: 1.0 };
+        assert_abs_diff_eq!(a.dot(b), 0.0, epsilon = 1e-15);
+    }
+
+    #[test]
+    fn vec_dot_self_equals_norm_sq() {
+        let v = TangentVec { dx: 3.0, dy: 4.0 };
+        assert_abs_diff_eq!(v.dot(v), v.norm_sq(), epsilon = 1e-15);
+    }
+
+    #[test]
+    fn vec_dot_commutative() {
+        let a = TangentVec { dx: 1.5, dy: -2.0 };
+        let b = TangentVec { dx: 0.5, dy: 3.0 };
+        assert_abs_diff_eq!(a.dot(b), b.dot(a), epsilon = 1e-15);
+    }
+
+    // ------------------------------------------------------------------ //
+    // Cov2 * TangentVec                                                   //
+    // ------------------------------------------------------------------ //
+
+    #[test]
+    fn cov2_mul_vec_isotropic() {
+        // q*I * v == q*v
+        let q = 3.0_f64;
+        let m = crate::coordinates::cov2::Cov2::isotropic(q);
+        let v = TangentVec { dx: 2.0, dy: -1.0 };
+        let w = m * v;
+        assert_abs_diff_eq!(w.dx, q * v.dx, epsilon = 1e-15);
+        assert_abs_diff_eq!(w.dy, q * v.dy, epsilon = 1e-15);
+    }
+
+    #[test]
+    fn cov2_mul_vec_full() {
+        // M = [[4,2],[2,9]]; v = [1,1]  →  w = [6, 11]
+        let m = crate::coordinates::cov2::Cov2 {
+            xx: 4.0,
+            yy: 9.0,
+            xy: 2.0,
+        };
+        let v = TangentVec { dx: 1.0, dy: 1.0 };
+        let w = m * v;
+        assert_abs_diff_eq!(w.dx, 6.0, epsilon = 1e-15);
+        assert_abs_diff_eq!(w.dy, 11.0, epsilon = 1e-15);
+    }
+
+    #[test]
+    fn cov2_mul_vec_consistent_with_quad_form() {
+        // vᵀ (M v) should equal quad_form(v) == vᵀ M v
+        let m = crate::coordinates::cov2::Cov2 {
+            xx: 4.0,
+            yy: 9.0,
+            xy: 2.0,
+        };
+        let v = TangentVec { dx: 2.0, dy: 3.0 };
+        let mv = m * v;
+        let quad = v.dot(mv);
+        assert_abs_diff_eq!(quad, m.quad_form(v), epsilon = 1e-10);
+    }
+
     #[test]
     fn point_plus_vec_gives_point_on_same_plane() {
         let plane = make_plane(0.0, 0.0);
@@ -658,6 +817,13 @@ mod gnomonic_tests {
         /// Small offset in degrees so we stay well within the projection's
         /// valid region (avoids antipodal singularity).
         fn small_offset_deg()(off in -3.0_f64..3.0) -> f64 { off }
+    }
+
+    prop_compose! {
+        /// Generate a PSD Cov2 via Cholesky: Σ = L Lᵀ with L lower triangular.
+        fn psd_cov2()(a in 0.01_f64..10.0, b in -5.0_f64..5.0, c in 0.01_f64..10.0) -> Cov2 {
+            Cov2 { xx: a * a, yy: b * b + c * c, xy: a * b }
+        }
     }
 
     proptest! {
@@ -723,6 +889,38 @@ mod gnomonic_tests {
             let tp = TangentPoint::new(plane, 0.0, 0.0);
             let sky = tp.unproject();
             prop_assert!((sky.dec - plane.equ_ref.dec).abs() < 1e-12);
+        }
+
+        /// dot(v, w) == dot(w, v) (commutativity).
+        #[test]
+        fn dot_commutative(
+            dx1 in -10.0_f64..10.0, dy1 in -10.0_f64..10.0,
+            dx2 in -10.0_f64..10.0, dy2 in -10.0_f64..10.0,
+        ) {
+            let v = TangentVec { dx: dx1, dy: dy1 };
+            let w = TangentVec { dx: dx2, dy: dy2 };
+            prop_assert!((v.dot(w) - w.dot(v)).abs() < 1e-12);
+        }
+
+        /// dot(v, v) == norm_sq(v).
+        #[test]
+        fn dot_self_equals_norm_sq(dx in -10.0_f64..10.0, dy in -10.0_f64..10.0) {
+            let v = TangentVec { dx, dy };
+            prop_assert!((v.dot(v) - v.norm_sq()).abs() < 1e-12);
+        }
+
+        /// (Cov2 * v) is consistent with quad_form: vᵀ (Σ v) = quad_form(v).
+        #[test]
+        fn cov2_mul_tangent_vec_consistent_with_quad_form(
+            cov in psd_cov2(),
+            vx in -5.0_f64..5.0,
+            vy in -5.0_f64..5.0,
+        ) {
+            let v = TangentVec { dx: vx, dy: vy };
+            let sv = cov * v;         // Σ v
+            let qf = cov.quad_form(v); // vᵀ Σ v
+            let dot_v_sv = v.dot(sv);
+            prop_assert!((dot_v_sv - qf).abs() < 1e-8, "vᵀ(Σv)={} ≠ quad_form={}", dot_v_sv, qf);
         }
     }
 

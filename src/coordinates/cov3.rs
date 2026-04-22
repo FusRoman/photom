@@ -222,6 +222,16 @@ impl Add for Cov3 {
     }
 }
 
+impl Add for &Cov3 {
+    type Output = Cov3;
+
+    /// Component-wise addition of two [`Cov3`] matrices by reference.
+    #[inline]
+    fn add(self, rhs: Self) -> Self::Output {
+        *self + *rhs
+    }
+}
+
 impl Mul<f64> for Cov3 {
     type Output = Self;
 
@@ -236,6 +246,16 @@ impl Mul<f64> for Cov3 {
             xz: self.xz * rhs,
             yz: self.yz * rhs,
         }
+    }
+}
+
+impl Mul<f64> for &Cov3 {
+    type Output = Cov3;
+
+    /// Scalar multiplication by reference: scale all six entries by `rhs`.
+    #[inline]
+    fn mul(self, rhs: f64) -> Self::Output {
+        *self * rhs
     }
 }
 
@@ -562,6 +582,30 @@ mod cov3_tests {
         fn mul_scales_trace(c in psd_cov3(), s in 0.01_f64..10.0) {
             let scaled = c * s;
             prop_assert!((scaled.trace() - c.trace() * s).abs() < 1e-10);
+        }
+
+        /// Scaling bilinear form: (s·Σ).bilinear(v,v) = s · Σ.bilinear(v,v).
+        #[test]
+        fn scaled_bilinear_homogeneous(
+            c in psd_cov3(),
+            s in 0.01_f64..10.0,
+            vx in -3.0_f64..3.0, vy in -3.0_f64..3.0, vz in -3.0_f64..3.0,
+        ) {
+            let v = [vx, vy, vz];
+            let scaled = c * s;
+            let lhs = scaled.bilinear(v, v);
+            let rhs = s * c.bilinear(v, v);
+            prop_assert!((lhs - rhs).abs() < 1e-8, "lhs={lhs} rhs={rhs}");
+        }
+
+        /// Add is associative.
+        #[test]
+        fn add_associative(a in psd_cov3(), b in psd_cov3(), c in psd_cov3()) {
+            let ab_c = (a + b) + c;
+            let a_bc = a + (b + c);
+            prop_assert!((ab_c.xx - a_bc.xx).abs() < 1e-12, "xx: {} vs {}", ab_c.xx, a_bc.xx);
+            prop_assert!((ab_c.yy - a_bc.yy).abs() < 1e-12, "yy: {} vs {}", ab_c.yy, a_bc.yy);
+            prop_assert!((ab_c.zz - a_bc.zz).abs() < 1e-12, "zz: {} vs {}", ab_c.zz, a_bc.zz);
         }
     }
 }

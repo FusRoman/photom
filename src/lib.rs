@@ -306,6 +306,7 @@
 //! ```rust
 //! use photom::coordinates::cov2::Cov2;
 //! use photom::coordinates::equatorial::EquCoord;
+//! use photom::coordinates::gnomonic_projection::TangentVec;
 //!
 //! // Build from the marginal 1-σ errors of an EquCoord.
 //! let coord = EquCoord::from_degrees(45.0, 0.001, 20.0, 0.002);
@@ -316,7 +317,7 @@
 //! let sigma_minor = cov.lambda_min().max(0.0).sqrt();
 //!
 //! // Mahalanobis distance for an offset vector (radians).
-//! let offset = [1e-4_f64, 0.0_f64];
+//! let offset = TangentVec { dx: 1e-4, dy: 0.0 };
 //! if let Some(d2) = cov.mahalanobis_sq(offset) {
 //!     let _ = d2.sqrt(); // normalised distance
 //! }
