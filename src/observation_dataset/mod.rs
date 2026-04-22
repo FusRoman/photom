@@ -97,6 +97,13 @@ pub enum ObsDatasetError {
     /// This appends if the observation has not been pushed within a dataset or if the index was not assigned during dataset construction.
     #[error("Observation is missing its internal vector index")]
     MissingIndex,
+
+    /// One or more [`ObsId`] values from the dataset being merged already exist in `self`.
+    ///
+    /// The inner `Vec` contains every colliding identifier.  No modification
+    /// has been made to `self` when this error is returned.
+    #[error("duplicate ObsId(s) detected during merge: {0:?}")]
+    DuplicateObsIds(Vec<ObsId>),
 }
 
 /// A collection of [`observation::Observation`]s with associated observer metadata.
@@ -404,36 +411,100 @@ impl ObsDataset {
 
     /// Merge another `ObsDataset` into `self`, appending all of its observations.
     ///
-    /// Each observation from `other` is renumbered before insertion:
-    /// - `obs.index` is incremented by `offset` (the current length of
-    ///   `self.observations`).
-    /// - `obs.id` is incremented by `offset` cast to `u64`.
-    /// - Any `ObserverId::IntId(i)` is shifted by the custom-observer offset
-    ///   returned by [`ObserverDataset::merge_custom_observers`].
+    /// # Validation
     ///
-    /// Trajectory and alias maps are merged via
-    /// [`ObsDatasetIndex::merge_from`].
-    #[cfg_attr(not(any(feature = "ades", feature = "mpc_80_col")), allow(dead_code))]
-    pub(crate) fn merge_from(&mut self, other: ObsDataset) {
+    /// Before any mutation, every [`ObsId`] in `other` is checked against the
+    /// existing index.  If one or more identifiers already exist in `self`,
+    /// the method returns
+    /// [`Err(ObsDatasetError::DuplicateObsIds(ids))`][ObsDatasetError::DuplicateObsIds]
+    /// and `self` is left **unchanged**.
+    ///
+    /// # Observation identifiers
+    ///
+    /// [`ObsId`] values originate from the upstream data source and are never
+    /// modified during a merge.  Only the internal vector position
+    /// (`obs.index`) and custom-observer indices (`ObserverId::IntId`) are
+    /// adjusted.
+    ///
+    /// # Index preservation
+    ///
+    /// Night and trajectory index entries that exist only in `other` (no key
+    /// collision) retain their contiguous representation with bounds shifted by
+    /// the current size of `self`.  Colliding keys are merged into a scattered
+    /// index.
+    ///
+    /// Trajectory aliases from `other` are merged; keys from `other` overwrite
+    /// same-key entries already present in `self`.
+    pub fn merge_from(&mut self, other: ObsDataset) -> Result<(), ObsDatasetError> {
+        // ── Phase 1: validate — no mutation of self until this passes ──────
+        let duplicates = self.find_duplicate_obs_ids(&other);
+        if !duplicates.is_empty() {
+            return Err(ObsDatasetError::DuplicateObsIds(duplicates));
+        }
+
+        self.merge_from_unchecked(other);
+        Ok(())
+    }
+
+    /// Merge another `ObsDataset` into `self` **without** duplicate-id validation.
+    ///
+    /// Used internally by ingestion backends (ADES, MPC 80-column) whose
+    /// per-file `ObsId` values are synthetic sequential integers starting at 0
+    /// and would therefore always collide across files.  Those callers are
+    /// responsible for ensuring correctness; external callers should prefer
+    /// [`ObsDataset::merge_from`].
+    pub(crate) fn merge_from_unchecked(&mut self, other: ObsDataset) {
         let offset = self.observations.len();
 
-        // Merge custom observers; get the IntId offset for this dataset.
+        // ── Merge observers, obtain IntId shift ────────────────────────────
         let custom_offset = self
             .observer_dataset
             .merge_custom_observers(other.observer_dataset);
 
-        // Renumber and push observations from `other`.
-        for mut obs in other.observations {
+        // ── Shift internal positions and push observations ─────────────────
+        self.push_observations_from(other.observations, offset, custom_offset);
+
+        // ── Merge index maps ───────────────────────────────────────────────
+        self.index.merge_from(other.index, offset);
+    }
+
+    /// Return the list of [`ObsId`] values in `other` that already exist in `self`.
+    ///
+    /// An empty `Vec` means no collision; the merge can proceed safely.
+    fn find_duplicate_obs_ids(&self, other: &ObsDataset) -> Vec<ObsId> {
+        other
+            .observations
+            .iter()
+            .filter_map(|obs| {
+                if self.index.get_by_id(&obs.id).is_some() {
+                    Some(obs.id)
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    /// Shift internal positions inside each observation and push them into `self`.
+    ///
+    /// - `obs.index` is incremented by `offset` (the pre-merge length of
+    ///   `self.observations`).
+    /// - Any `ObserverId::IntId(i)` is incremented by `custom_offset` (the
+    ///   shift returned by [`ObserverDataset::merge_custom_observers`]).
+    /// - `obs.id` is **not** modified.
+    fn push_observations_from(
+        &mut self,
+        observations: Vec<Observation>,
+        offset: usize,
+        custom_offset: usize,
+    ) {
+        for mut obs in observations {
             obs.index = obs.index.map(|i| i + offset);
-            obs.id += offset as u64;
             if let Some(ObserverId::IntId(ref mut i)) = obs.observer {
                 *i += custom_offset;
             }
             self.observations.push(obs);
         }
-
-        // Merge indices (already accounts for offset internally).
-        self.index.merge_from(other.index, offset);
     }
 }
 
@@ -881,8 +952,137 @@ mod observation_tests {
     }
 
     // -----------------------------------------------------------------------
-    // ErrorModelParseError — additional variant coverage
+    // ObsDataset::merge_from
     // -----------------------------------------------------------------------
+
+    mod merge_from {
+        use super::*;
+
+        /// Verifies that merging two disjoint datasets succeeds and the total
+        /// observation count equals the sum of both.
+        #[test]
+        fn merge_disjoint_datasets_succeeds() {
+            let mut ds1 = make_dataset(vec![make_observation(1, None)], vec![]);
+            let ds2 = make_dataset(vec![make_observation(2, None)], vec![]);
+            ds1.merge_from(ds2).unwrap();
+            assert_eq!(ds1.observation_count(), 2);
+        }
+
+        /// Verifies that obs.id values are never modified during a merge.
+        #[test]
+        fn merge_does_not_modify_obs_id() {
+            let mut ds1 = make_dataset(vec![make_observation(10, None)], vec![]);
+            let ds2 = make_dataset(vec![make_observation(20, None)], vec![]);
+            ds1.merge_from(ds2).unwrap();
+            let ids: Vec<ObsId> = ds1.iter_observations().map(|o| o.id).collect();
+            assert!(
+                ids.contains(&10),
+                "id 10 must be present unchanged after merge"
+            );
+            assert!(
+                ids.contains(&20),
+                "id 20 must be present unchanged after merge"
+            );
+        }
+
+        /// Verifies that a merge with a duplicate ObsId returns Err and leaves
+        /// self completely unchanged.
+        #[test]
+        fn merge_with_duplicate_obs_id_returns_err_and_self_unchanged() {
+            let mut ds1 = make_dataset(
+                vec![make_observation(1, None), make_observation(2, None)],
+                vec![],
+            );
+            // ds2 contains id=2 which already exists in ds1.
+            let ds2 = make_dataset(
+                vec![make_observation(2, None), make_observation(3, None)],
+                vec![],
+            );
+
+            let result = ds1.merge_from(ds2);
+            assert!(result.is_err(), "expected Err for duplicate ObsId");
+            match result.unwrap_err() {
+                ObsDatasetError::DuplicateObsIds(ids) => {
+                    assert_eq!(ids, vec![2], "colliding id must be reported");
+                }
+                other => panic!("unexpected error variant: {other:?}"),
+            }
+            // self must be untouched.
+            assert_eq!(
+                ds1.observation_count(),
+                2,
+                "self must not be modified on Err"
+            );
+        }
+
+        /// Verifies that all colliding ids are reported when multiple duplicates exist.
+        #[test]
+        fn merge_reports_all_duplicate_obs_ids() {
+            let mut ds1 = make_dataset(
+                vec![
+                    make_observation(1, None),
+                    make_observation(2, None),
+                    make_observation(3, None),
+                ],
+                vec![],
+            );
+            let ds2 = make_dataset(
+                vec![make_observation(2, None), make_observation(3, None)],
+                vec![],
+            );
+            let result = ds1.merge_from(ds2);
+            match result.unwrap_err() {
+                ObsDatasetError::DuplicateObsIds(mut ids) => {
+                    ids.sort_unstable();
+                    assert_eq!(ids, vec![2, 3]);
+                }
+                other => panic!("unexpected error: {other:?}"),
+            }
+        }
+
+        /// Verifies that after a successful merge all observations from both
+        /// datasets are reachable by get_observation.
+        #[test]
+        fn merge_all_observations_reachable_by_id() {
+            let mut ds1 = make_dataset(vec![make_observation(1, None)], vec![]);
+            let ds2 = make_dataset(
+                vec![make_observation(2, None), make_observation(3, None)],
+                vec![],
+            );
+            ds1.merge_from(ds2).unwrap();
+            assert!(ds1.get_observation(1).is_some());
+            assert!(ds1.get_observation(2).is_some());
+            assert!(ds1.get_observation(3).is_some());
+        }
+
+        /// Verifies that custom observer IntId references are remapped correctly
+        /// after a merge: the observer for the transferred observation must still
+        /// resolve to the correct observer.
+        #[test]
+        fn merge_custom_observer_remapped_correctly() {
+            let obs1 = make_custom_observer();
+            let obs2 =
+                Observer::from_parallax(50.0, 0.7, 0.6, Some("Second".to_string()), None, None)
+                    .unwrap();
+
+            let mut ds1 = make_dataset(
+                vec![make_observation(1, Some(ObserverId::IntId(0)))],
+                vec![obs1],
+            );
+            let ds2 = make_dataset(
+                vec![make_observation(2, Some(ObserverId::IntId(0)))],
+                vec![obs2],
+            );
+            ds1.merge_from(ds2).unwrap();
+
+            let name = ds1.get_observer(2).and_then(|o| o.name.clone());
+            assert_eq!(
+                name.as_deref(),
+                Some("Second"),
+                "observer for obs id=2 must resolve to the second observer"
+            );
+        }
+    }
 
     mod error_model_parse_error_variants {
         use crate::observer::error_model::ErrorModelParseError;

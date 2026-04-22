@@ -81,6 +81,81 @@ pub type TrajIndexMap = AHashMap<TrajId, ObsMapIndex>;
 /// [`TrajIndexMap`]; aliases are secondary look-up names that resolve to it.
 pub type TrajAliasMap = AHashMap<String, TrajId>;
 
+/// Shift all vector positions stored in an [`ObsMapIndex`] by `offset`,
+/// preserving the variant: a [`ObsMapIndex::Contiguous`] entry remains
+/// contiguous (only its bounds are shifted), and a [`ObsMapIndex::Split`]
+/// entry has every element shifted individually.
+fn shift_obs_map_index(idx: ObsMapIndex, offset: usize) -> ObsMapIndex {
+    match idx {
+        ObsMapIndex::Contiguous { start, end } => ObsMapIndex::Contiguous {
+            start: start + offset,
+            end: end + offset,
+        },
+        ObsMapIndex::Split(v) => ObsMapIndex::Split(v.into_iter().map(|i| i + offset).collect()),
+    }
+}
+
+/// Merge `other_map` into `self_map`, shifting all stored positions by `offset`.
+///
+/// - New keys (absent from `self_map`) are inserted with their
+///   [`ObsMapIndex`] variant preserved via [`shift_obs_map_index`].
+/// - Colliding keys are merged: both sides are expanded into their index
+///   lists, concatenated, and stored as [`ObsMapIndex::Split`].
+fn merge_obs_map<K>(
+    self_map: &mut AHashMap<K, ObsMapIndex>,
+    other_map: AHashMap<K, ObsMapIndex>,
+    offset: usize,
+) where
+    K: Eq + std::hash::Hash,
+{
+    for (key, other_idx) in other_map {
+        let shifted = shift_obs_map_index(other_idx, offset);
+        self_map
+            .entry(key)
+            .and_modify(|existing| {
+                // Collision: expand both sides into a flat Vec, then store as Split.
+                let mut merged: Vec<ObsIndex> = match existing {
+                    ObsMapIndex::Contiguous { start, end } => (*start..*end).collect(),
+                    ObsMapIndex::Split(v) => std::mem::take(v),
+                };
+                match &shifted {
+                    ObsMapIndex::Contiguous { start, end } => merged.extend(*start..*end),
+                    ObsMapIndex::Split(v) => merged.extend_from_slice(v),
+                }
+                *existing = ObsMapIndex::Split(merged);
+            })
+            .or_insert(shifted);
+    }
+}
+
+/// Merge an optional index map from `other` into `self_opt`.
+///
+/// - If `other_opt` is `None`, nothing changes.
+/// - If `self_opt` is `None` but `other_opt` is `Some`, the shifted map is
+///   adopted directly via [`shift_obs_map_index`], preserving variants.
+/// - If both are `Some`, entries are merged via [`merge_obs_map`].
+fn merge_optional_obs_map<K>(
+    self_opt: &mut Option<AHashMap<K, ObsMapIndex>>,
+    other_opt: Option<AHashMap<K, ObsMapIndex>>,
+    offset: usize,
+) where
+    K: Eq + std::hash::Hash,
+{
+    let Some(other_map) = other_opt else { return };
+
+    match self_opt {
+        Some(self_map) => merge_obs_map(self_map, other_map, offset),
+        None => {
+            // Adopt other's map, shifting all positions.
+            let shifted = other_map
+                .into_iter()
+                .map(|(k, idx)| (k, shift_obs_map_index(idx, offset)))
+                .collect();
+            *self_opt = Some(shifted);
+        }
+    }
+}
+
 /// Composite index for an `ObsDataset`.
 ///
 /// Bundles three independent look-up maps:
@@ -390,78 +465,42 @@ impl ObsDatasetIndex {
     }
 
     /// Merge another `ObsDatasetIndex` into this one, applying `offset` to all
-    /// stored vector positions (and observation ids used as map keys).
+    /// stored vector positions.
     ///
     /// Called by [`crate::observation_dataset::ObsDataset::merge_from`] after
-    /// the observations from the other dataset have been appended (and
-    /// re-numbered) into `self.observations`.
+    /// the observations from the other dataset have been appended into
+    /// `self.observations`.
     ///
     /// # Merge rules
     ///
     /// - `obs_index_by_id`: every `(id, pos)` pair from `other` is inserted as
-    ///   `(id + offset, pos + offset)`.
-    /// - `obs_index_by_trajectory`:
-    ///   - If `self` has no trajectory index but `other` does, a new index is
-    ///     created from `other` (positions shifted by `offset`).
-    ///   - If both have a trajectory index, entries whose `TrajId` already
-    ///     exists in `self` have their position lists *appended to* (existing
-    ///     `Contiguous` entries are first converted to `Split`).  New entries
-    ///     are inserted directly.
-    ///   - If `other` has no trajectory index the existing one is unchanged.
+    ///   `(id, pos + offset)`.  Observation identifiers are never modified.
+    /// - `obs_index_by_night` and `obs_index_by_trajectory`: merged via
+    ///   [`merge_obs_map`].  New keys preserve the [`ObsMapIndex::Contiguous`]
+    ///   variant (with bounds shifted by `offset`); colliding keys are merged
+    ///   into a [`ObsMapIndex::Split`].
     /// - `traj_aliases`: merged with `extend`; keys from `other` overwrite
     ///   any same-key entries already present in `self`.
     #[cfg_attr(not(any(feature = "ades", feature = "mpc_80_col")), allow(dead_code))]
     pub(crate) fn merge_from(&mut self, other: ObsDatasetIndex, offset: usize) {
         // ── obs_index_by_id ────────────────────────────────────────────────
         for (id, pos) in other.obs_index_by_id {
-            self.obs_index_by_id
-                .insert(id + offset as u64, pos + offset);
+            self.obs_index_by_id.insert(id, pos + offset);
         }
 
+        // ── obs_index_by_night ─────────────────────────────────────────────
+        merge_optional_obs_map(
+            &mut self.obs_index_by_night,
+            other.obs_index_by_night,
+            offset,
+        );
+
         // ── obs_index_by_trajectory ────────────────────────────────────────
-        match (
-            self.obs_index_by_trajectory.as_mut(),
+        merge_optional_obs_map(
+            &mut self.obs_index_by_trajectory,
             other.obs_index_by_trajectory,
-        ) {
-            (Some(self_traj), Some(other_traj)) => {
-                for (traj_id, other_idx) in other_traj {
-                    let shifted: Vec<ObsIndex> = match other_idx {
-                        ObsMapIndex::Split(v) => v.into_iter().map(|i| i + offset).collect(),
-                        ObsMapIndex::Contiguous { start, end } => {
-                            (start..end).map(|i| i + offset).collect()
-                        }
-                    };
-                    self_traj
-                        .entry(traj_id)
-                        .and_modify(|existing| match existing {
-                            ObsMapIndex::Split(v) => v.extend_from_slice(&shifted),
-                            ObsMapIndex::Contiguous { start, end } => {
-                                let mut v: Vec<ObsIndex> = (*start..*end).collect();
-                                v.extend_from_slice(&shifted);
-                                *existing = ObsMapIndex::Split(v);
-                            }
-                        })
-                        .or_insert_with(|| ObsMapIndex::Split(shifted));
-                }
-            }
-            (None, Some(other_traj)) => {
-                // self had no traj index — adopt other's (shifted).
-                let shifted: TrajIndexMap = other_traj
-                    .into_iter()
-                    .map(|(traj_id, idx)| {
-                        let v: Vec<ObsIndex> = match idx {
-                            ObsMapIndex::Split(v) => v.into_iter().map(|i| i + offset).collect(),
-                            ObsMapIndex::Contiguous { start, end } => {
-                                (start..end).map(|i| i + offset).collect()
-                            }
-                        };
-                        (traj_id, ObsMapIndex::Split(v))
-                    })
-                    .collect();
-                self.obs_index_by_trajectory = Some(shifted);
-            }
-            _ => {} // other had no traj index — nothing to do
-        }
+            offset,
+        );
 
         // ── traj_aliases ───────────────────────────────────────────────────
         self.traj_aliases.extend(other.traj_aliases);
@@ -674,5 +713,151 @@ mod obs_map_index_unit_tests {
             idx.get_by_trajectory(&TrajId::Int(42)).is_none(),
             "no traj index → get_by_trajectory must return None"
         );
+    }
+
+    // ── merge tests ───────────────────────────────────────────────────────────
+
+    /// Verify that obs_index_by_id keys are not offset during merge (only positions are shifted).
+    #[test]
+    fn merge_from_obs_id_key_not_offset() {
+        let mut id_map_self = ObservationIndexMap::new();
+        id_map_self.insert(10, 0);
+        let mut self_idx = ObsDatasetIndex::new(id_map_self, None, None);
+
+        let mut id_map_other = ObservationIndexMap::new();
+        id_map_other.insert(20, 0); // pos 0 in other → pos 1 in merged (offset=1)
+        let other_idx = ObsDatasetIndex::new(id_map_other, None, None);
+
+        self_idx.merge_from(other_idx, 1);
+
+        // Key 20 must remain 20 (not 21).
+        assert_eq!(
+            self_idx.get_by_id(&20),
+            Some(1),
+            "id key must not be offset; position must be shifted by 1"
+        );
+        // Original key 10 must still resolve correctly.
+        assert_eq!(self_idx.get_by_id(&10), Some(0));
+    }
+
+    /// Verify that a Contiguous traj entry from `other` is preserved as
+    /// Contiguous (with shifted bounds) when the key is absent from `self`.
+    #[test]
+    fn merge_from_traj_contiguous_preserved_for_new_key() {
+        let self_idx = ObsDatasetIndex::new(ObservationIndexMap::new(), None, None);
+
+        let mut traj_map = TrajIndexMap::new();
+        traj_map.insert(TrajId::Int(1), ObsMapIndex::Contiguous { start: 0, end: 3 });
+        let other_idx = ObsDatasetIndex::new(ObservationIndexMap::new(), None, Some(traj_map));
+        // Give other_idx a traj index so it gets adopted.
+        let mut self_idx = self_idx;
+        // self has no traj index → will adopt other's.
+        self_idx.merge_from(other_idx, 5);
+
+        match self_idx.get_by_trajectory(&TrajId::Int(1)).unwrap() {
+            ObsMapIndex::Contiguous { start, end } => {
+                assert_eq!(*start, 5, "start must be shifted by offset");
+                assert_eq!(*end, 8, "end must be shifted by offset");
+            }
+            ObsMapIndex::Split(_) => panic!("expected Contiguous, got Split"),
+        }
+    }
+
+    /// Verify that a Contiguous traj entry inserted into an already-populated
+    /// self traj index (new key) is also preserved as Contiguous.
+    #[test]
+    fn merge_from_traj_contiguous_preserved_when_self_has_other_keys() {
+        let mut self_traj = TrajIndexMap::new();
+        self_traj.insert(TrajId::Int(99), ObsMapIndex::Split(vec![0]));
+        let mut self_idx = ObsDatasetIndex::new(ObservationIndexMap::new(), None, Some(self_traj));
+
+        let mut other_traj = TrajIndexMap::new();
+        other_traj.insert(TrajId::Int(1), ObsMapIndex::Contiguous { start: 0, end: 2 });
+        let other_idx = ObsDatasetIndex::new(ObservationIndexMap::new(), None, Some(other_traj));
+
+        self_idx.merge_from(other_idx, 4);
+
+        match self_idx.get_by_trajectory(&TrajId::Int(1)).unwrap() {
+            ObsMapIndex::Contiguous { start, end } => {
+                assert_eq!(*start, 4);
+                assert_eq!(*end, 6);
+            }
+            ObsMapIndex::Split(_) => panic!("expected Contiguous, got Split"),
+        }
+    }
+
+    /// Verify that a colliding traj key produces a correct Split containing
+    /// indices from both sides.
+    #[test]
+    fn merge_from_traj_collision_produces_split() {
+        let mut self_traj = TrajIndexMap::new();
+        self_traj.insert(
+            TrajId::Int(1),
+            ObsMapIndex::Contiguous { start: 0, end: 2 }, // indices 0, 1
+        );
+        let mut self_idx = ObsDatasetIndex::new(ObservationIndexMap::new(), None, Some(self_traj));
+
+        let mut other_traj = TrajIndexMap::new();
+        other_traj.insert(
+            TrajId::Int(1),
+            ObsMapIndex::Contiguous { start: 0, end: 2 }, // indices 0, 1 → shifted to 2, 3
+        );
+        let other_idx = ObsDatasetIndex::new(ObservationIndexMap::new(), None, Some(other_traj));
+
+        self_idx.merge_from(other_idx, 2);
+
+        match self_idx.get_by_trajectory(&TrajId::Int(1)).unwrap() {
+            ObsMapIndex::Split(v) => assert_eq!(v, &[0, 1, 2, 3]),
+            ObsMapIndex::Contiguous { .. } => panic!("expected Split after collision"),
+        }
+    }
+
+    /// Verify that obs_index_by_night is merged correctly and Contiguous is
+    /// preserved for new night keys.
+    #[test]
+    fn merge_from_night_contiguous_preserved_for_new_key() {
+        let mut self_night = NightIndexMap::new();
+        self_night.insert(NightId(1), ObsMapIndex::Contiguous { start: 0, end: 2 });
+        let mut self_idx = ObsDatasetIndex::new(ObservationIndexMap::new(), Some(self_night), None);
+
+        let mut other_night = NightIndexMap::new();
+        other_night.insert(NightId(2), ObsMapIndex::Contiguous { start: 0, end: 3 });
+        let other_idx = ObsDatasetIndex::new(ObservationIndexMap::new(), Some(other_night), None);
+
+        self_idx.merge_from(other_idx, 2);
+
+        // Night 1 unchanged.
+        match self_idx.get_by_night(&NightId(1)).unwrap() {
+            ObsMapIndex::Contiguous { start, end } => {
+                assert_eq!((*start, *end), (0, 2));
+            }
+            _ => panic!("expected Contiguous for night 1"),
+        }
+        // Night 2 shifted by offset=2.
+        match self_idx.get_by_night(&NightId(2)).unwrap() {
+            ObsMapIndex::Contiguous { start, end } => {
+                assert_eq!((*start, *end), (2, 5));
+            }
+            ObsMapIndex::Split(_) => panic!("expected Contiguous for new night key"),
+        }
+    }
+
+    /// Verify that a colliding night key produces a correct Split.
+    #[test]
+    fn merge_from_night_collision_produces_split() {
+        let mut self_night = NightIndexMap::new();
+        self_night.insert(NightId(1), ObsMapIndex::Split(vec![0, 1]));
+        let mut self_idx = ObsDatasetIndex::new(ObservationIndexMap::new(), Some(self_night), None);
+
+        let mut other_night = NightIndexMap::new();
+        other_night.insert(NightId(1), ObsMapIndex::Split(vec![0, 1])); // shifted to 2, 3
+        let other_idx = ObsDatasetIndex::new(ObservationIndexMap::new(), Some(other_night), None);
+
+        self_idx.merge_from(other_idx, 2);
+
+        match self_idx.get_by_night(&NightId(1)).unwrap() {
+            ObsMapIndex::Split(v) => assert_eq!(v, &[0, 1, 2, 3]),
+            ObsMapIndex::Contiguous { .. } => panic!("expected Split after collision"),
+        }
     }
 }

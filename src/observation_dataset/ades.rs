@@ -53,7 +53,7 @@ impl ObsDataset {
             match parse_ades_file(path, error_ra, error_dec) {
                 Ok(other) => {
                     if let Some(ref mut ds) = dataset {
-                        ds.merge_from(other);
+                        ds.merge_from_unchecked(other);
                     } else {
                         dataset = Some(other);
                     }
@@ -84,7 +84,7 @@ impl ObsDataset {
         let mut errors: Vec<(Utf8PathBuf, AdesError)> = Vec::new();
         for &path in paths {
             match parse_ades_file(path, error_ra, error_dec) {
-                Ok(other) => self.merge_from(other),
+                Ok(other) => self.merge_from_unchecked(other),
                 Err(e) => errors.push((path.to_owned(), e)),
             }
         }
@@ -113,7 +113,7 @@ impl ObsDatasetBuilder {
             match crate::io::ades::parse_ades_file(path, error_ra, error_dec) {
                 Ok(other) => {
                     if let Some(ref mut ds) = self.dataset {
-                        ds.merge_from(other);
+                        ds.merge_from_unchecked(other);
                     } else {
                         self.dataset = Some(other);
                     }
