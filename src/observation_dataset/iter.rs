@@ -200,6 +200,27 @@ impl ObsDataset {
     pub fn len_night(&self, night_id: &NightId) -> Option<usize> {
         self.index.len_night(night_id)
     }
+
+    /// Return whether the index entry for a given night is stored as a
+    /// contiguous block (`true`) or as a scattered list (`false`).
+    ///
+    /// A contiguous entry means all observations for that night occupy a
+    /// single uninterrupted span in the internal observations vector, which
+    /// allows cheaper slicing operations.  The representation is an
+    /// implementation detail of the ingestion and merge logic; callers
+    /// should not rely on it for correctness, but it is useful for
+    /// verifying that index preservation guarantees hold in tests.
+    ///
+    /// # Returns
+    ///
+    /// `Some(true)` if the night index exists, the night is present, and its
+    /// entry is `Contiguous`; `Some(false)` if the entry is
+    /// `Split`; `None` if the night index is absent or the
+    /// given `night_id` is not found.
+    pub fn is_night_contiguous(&self, night_id: &NightId) -> Option<bool> {
+        let entry = self.index.obs_index_by_night.as_ref()?.get(night_id)?;
+        Some(matches!(entry, ObsMapIndex::Contiguous { .. }))
+    }
 }
 
 // Trajectory iterator implementation for ObsDataset.
@@ -288,6 +309,23 @@ impl ObsDataset {
     /// `None` otherwise.
     pub fn len_trajectory(&self, traj_id: &TrajId) -> Option<usize> {
         self.index.len_trajectory(traj_id)
+    }
+
+    /// Return whether the index entry for a given trajectory is stored as a
+    /// contiguous block (`true`) or as a scattered list (`false`).
+    ///
+    /// Same semantics as [`ObsDataset::is_night_contiguous`] but for the
+    /// trajectory index.
+    ///
+    /// # Returns
+    ///
+    /// `Some(true)` if the trajectory index exists, the trajectory is present,
+    /// and its entry is `Contiguous`; `Some(false)` if the
+    /// entry is `Split`; `None` if the trajectory index is
+    /// absent or the given `traj_id` is not found.
+    pub fn is_traj_contiguous(&self, traj_id: &TrajId) -> Option<bool> {
+        let entry = self.index.obs_index_by_trajectory.as_ref()?.get(traj_id)?;
+        Some(matches!(entry, ObsMapIndex::Contiguous { .. }))
     }
 }
 

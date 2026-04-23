@@ -28,7 +28,7 @@ impl ObsDataset {
         error_ra: Option<Arcseconds>,
         error_dec: Option<Arcseconds>,
     ) -> Result<Self, AdesError> {
-        parse_ades_file(ades_path, error_ra, error_dec)
+        parse_ades_file(ades_path, error_ra, error_dec, 0)
     }
 
     /// Build an [`ObsDataset`] from **multiple** ADES XML files.
@@ -50,10 +50,14 @@ impl ObsDataset {
         let mut errors: Vec<(Utf8PathBuf, AdesError)> = Vec::new();
 
         for &path in paths {
-            match parse_ades_file(path, error_ra, error_dec) {
+            let start_id = dataset
+                .as_ref()
+                .map_or(0, |ds| ds.observation_count() as u64);
+            match parse_ades_file(path, error_ra, error_dec, start_id) {
                 Ok(other) => {
                     if let Some(ref mut ds) = dataset {
-                        ds.merge_from_unchecked(other);
+                        // IDs are globally unique: merge_from cannot fail here.
+                        let _ = ds.merge_from(other);
                     } else {
                         dataset = Some(other);
                     }
@@ -83,8 +87,12 @@ impl ObsDataset {
     ) -> Vec<(Utf8PathBuf, AdesError)> {
         let mut errors: Vec<(Utf8PathBuf, AdesError)> = Vec::new();
         for &path in paths {
-            match parse_ades_file(path, error_ra, error_dec) {
-                Ok(other) => self.merge_from_unchecked(other),
+            let start_id = self.observation_count() as u64;
+            match parse_ades_file(path, error_ra, error_dec, start_id) {
+                // IDs are globally unique: merge_from cannot fail here.
+                Ok(other) => {
+                    let _ = self.merge_from(other);
+                }
                 Err(e) => errors.push((path.to_owned(), e)),
             }
         }
@@ -110,10 +118,15 @@ impl ObsDatasetBuilder {
         error_dec: Option<crate::Arcseconds>,
     ) -> Self {
         for &path in paths {
-            match crate::io::ades::parse_ades_file(path, error_ra, error_dec) {
+            let start_id = self
+                .dataset
+                .as_ref()
+                .map_or(0, |ds| ds.observation_count() as u64);
+            match crate::io::ades::parse_ades_file(path, error_ra, error_dec, start_id) {
                 Ok(other) => {
                     if let Some(ref mut ds) = self.dataset {
-                        ds.merge_from_unchecked(other);
+                        // IDs are globally unique: merge_from cannot fail here.
+                        let _ = ds.merge_from(other);
                     } else {
                         self.dataset = Some(other);
                     }

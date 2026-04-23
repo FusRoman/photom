@@ -92,6 +92,78 @@ mod mpc_multi_file {
         assert!(errors.is_empty());
         assert!(ds.observation_count() > before);
     }
+
+    /// All ObsIds must be globally unique after a multi-file load.
+    ///
+    /// Before this was guaranteed by passing a per-file `start_id` offset to
+    /// the parser so that each file's sequential ids are anchored at the
+    /// current dataset size.
+    #[test]
+    fn obs_ids_globally_unique_after_multi_file_load() {
+        let p1 = data("8467.obs");
+        let p2 = data("33803.obs");
+        let (ds, errors) = ObsDataset::from_mpc_80_col_files(&[p1.as_path(), p2.as_path()]);
+        assert!(errors.is_empty());
+
+        let ids: std::collections::HashSet<_> =
+            ds.iter_observations().map(|obs| obs.id()).collect();
+        assert_eq!(
+            ids.len(),
+            ds.observation_count(),
+            "duplicate ObsIds found after multi-file load"
+        );
+    }
+
+    /// The trajectory index for a single-file load should be Split (MPC builds
+    /// Split entries; there is no Contiguous ingestion path for this format).
+    #[test]
+    fn traj_index_is_split_for_single_file() {
+        let p = data("8467.obs");
+        let ds = ObsDataset::from_mpc_80_col(p.as_path()).unwrap();
+        assert_eq!(
+            ds.is_traj_contiguous(&TrajId::Int(8467)),
+            Some(false),
+            "MPC single-file trajectory index should be Split"
+        );
+    }
+
+    /// After loading two files with different TrajIds, the trajectory count for
+    /// the second file's key should equal the number of observations in that file.
+    #[test]
+    fn traj_no_collision_count_matches_single_file() {
+        let p1 = data("8467.obs");
+        let p2 = data("33803.obs");
+        let single_count_2 = ObsDataset::from_mpc_80_col(p2.as_path())
+            .unwrap()
+            .observation_count();
+
+        let (ds, _) = ObsDataset::from_mpc_80_col_files(&[p1.as_path(), p2.as_path()]);
+        assert_eq!(
+            ds.len_trajectory(&TrajId::Int(33803)),
+            Some(single_count_2),
+            "count for TrajId from second file must equal that file's observation count"
+        );
+    }
+
+    /// Merging the same file twice produces a single Split entry whose count
+    /// is twice the single-file count, confirming collision handling.
+    #[test]
+    fn traj_collision_produces_split_with_doubled_count() {
+        let p = data("8467.obs");
+        let single = ObsDataset::from_mpc_80_col(p.as_path()).unwrap();
+        let single_count = single.observation_count();
+
+        let (ds, _) = ObsDataset::from_mpc_80_col_files(&[p.as_path(), p.as_path()]);
+        assert_eq!(
+            ds.is_traj_contiguous(&TrajId::Int(8467)),
+            Some(false),
+            "colliding TrajId must produce a Split index entry"
+        );
+        assert_eq!(
+            ds.len_trajectory(&TrajId::Int(8467)),
+            Some(single_count * 2),
+        );
+    }
 }
 
 // ── ADES multi-file tests ────────────────────────────────────────────────────
@@ -99,7 +171,7 @@ mod mpc_multi_file {
 #[cfg(feature = "ades")]
 mod ades_multi_file {
     use super::*;
-    use photom::observation_dataset::ObsDataset;
+    use photom::{TrajId, observation_dataset::ObsDataset};
 
     /// Loading two ADES files should sum their observation counts.
     #[test]
@@ -141,6 +213,58 @@ mod ades_multi_file {
         let errors = ds.extend_from_ades(&[p2.as_path()], None, None);
         assert!(errors.is_empty());
         assert!(ds.observation_count() > before);
+    }
+
+    /// All ObsIds must be globally unique after loading two ADES files.
+    #[test]
+    fn obs_ids_globally_unique_after_multi_file_load() {
+        let p1 = data("example_ades.xml");
+        let p2 = data("example_ades2.xml");
+        let (ds, errors) = ObsDataset::from_ades_files(&[p1.as_path(), p2.as_path()], None, None);
+        assert!(errors.is_empty());
+
+        let ids: std::collections::HashSet<_> =
+            ds.iter_observations().map(|obs| obs.id()).collect();
+        assert_eq!(
+            ids.len(),
+            ds.observation_count(),
+            "duplicate ObsIds found after multi-file ADES load"
+        );
+    }
+
+    /// The trajectory index for a single ADES file should be Split (ADES builds
+    /// Split entries; there is no Contiguous ingestion path for this format).
+    #[test]
+    fn traj_index_is_split_for_single_file() {
+        let p = data("example_ades.xml");
+        let ds = ObsDataset::from_ades(p.as_path(), None, None).unwrap();
+        // example_ades.xml uses permID values that parse as integers.
+        assert_eq!(
+            ds.is_traj_contiguous(&TrajId::Int(1234456)),
+            Some(false),
+            "ADES single-file trajectory index should be Split"
+        );
+    }
+
+    /// After merging two files with non-colliding TrajIds, the trajectory count
+    /// for a key from the second file equals that file's single-load count.
+    #[test]
+    fn traj_no_collision_count_matches_single_file() {
+        let p1 = data("example_ades.xml");
+        let p2 = data("example_ades2.xml");
+
+        // example_ades2.xml uses trkSub "P10kefK" as its first trajectory key.
+        let single_count_2 = ObsDataset::from_ades(p2.as_path(), None, None)
+            .unwrap()
+            .len_trajectory(&TrajId::Str("P10kefK".to_string()))
+            .expect("P10kefK must be present in example_ades2.xml");
+
+        let (ds, _) = ObsDataset::from_ades_files(&[p1.as_path(), p2.as_path()], None, None);
+        assert_eq!(
+            ds.len_trajectory(&TrajId::Str("P10kefK".to_string())),
+            Some(single_count_2),
+            "count for non-colliding TrajId must equal the second file's single-load count"
+        );
     }
 }
 

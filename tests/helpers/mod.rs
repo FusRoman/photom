@@ -26,12 +26,15 @@ pub const PATH_STR: &str = "tests/data/test_data_traj_str.parquet";
 pub const TOTAL_ROWS: usize = 561_287;
 
 /// Number of distinct nights in both fixture files.
+#[allow(dead_code)]
 pub const NIGHT_COUNT: usize = 10;
 
 /// Number of observations with a non-null trajectory identifier.
+#[allow(dead_code)]
 pub const TRAJ_NON_NULL: usize = 68_145;
 
 /// Number of distinct trajectory identifiers.
+#[allow(dead_code)]
 pub const TRAJ_UNIQUE: usize = 38_024;
 
 /// Night identifiers and their expected observation counts (from the fixture).

@@ -24,7 +24,7 @@ use crate::{
     constants::ARCSEC_TO_DEG,
     coordinates::equatorial::EquCoord,
     observation_dataset::{
-        ObsDataset,
+        ObsDataset, ObsId,
         index::{ObsMapIndex, TrajIndexMap},
         observation::Observation,
     },
@@ -71,16 +71,22 @@ pub enum Mpc80ColError {
 ///
 /// Every *other* designation string found in the file is registered as an
 /// alias via [`ObsDataset::resolve_alias`], pointing to the canonical key.
-pub(crate) fn parse_mpc_80_col_file(path: &Utf8Path) -> Result<ObsDataset, Mpc80ColError> {
+pub(crate) fn parse_mpc_80_col_file(
+    path: &Utf8Path,
+    start_id: ObsId,
+) -> Result<ObsDataset, Mpc80ColError> {
     let content = std::fs::read_to_string(path)?;
-    parse_mpc_80_col_str(&content)
+    parse_mpc_80_col_str(&content, start_id)
 }
 
 /// Build an [`ObsDataset`] from an in-memory MPC 80-column string.
 ///
 /// Same semantics as [`parse_mpc_80_col_file`] but accepts an
 /// already-loaded string, which is useful for unit tests.
-pub(crate) fn parse_mpc_80_col_str(content: &str) -> Result<ObsDataset, Mpc80ColError> {
+pub(crate) fn parse_mpc_80_col_str(
+    content: &str,
+    start_id: ObsId,
+) -> Result<ObsDataset, Mpc80ColError> {
     // ── Pass 1: parse all valid lines ──────────────────────────────────────
     let mut records: Vec<(TrajId, LineRecord)> = Vec::new();
 
@@ -118,7 +124,7 @@ pub(crate) fn parse_mpc_80_col_str(content: &str) -> Result<ObsDataset, Mpc80Col
 
     for (traj_id, record) in records {
         let idx = observations.len();
-        observations.push(record.into_observation(idx));
+        observations.push(record.into_observation(idx, start_id));
 
         // Register every designation that differs from the primary as an alias.
         if let TrajId::Str(s) = &traj_id
@@ -161,7 +167,7 @@ struct LineRecord {
 }
 
 impl LineRecord {
-    fn into_observation(self, idx: usize) -> Observation {
+    fn into_observation(self, idx: usize, start_id: ObsId) -> Observation {
         let ra_err_deg = self.ra_acc_arcsec * ARCSEC_TO_DEG;
         let dec_err_deg = self.dec_acc_arcsec * ARCSEC_TO_DEG;
         let equ_coord = EquCoord::from_degrees(self.ra_deg, ra_err_deg, self.dec_deg, dec_err_deg);
@@ -177,7 +183,7 @@ impl LineRecord {
 
         Observation {
             index: Some(idx),
-            id: idx as u64,
+            id: start_id + idx as u64,
             equ_coord,
             photometry,
             mjd_tt: self.mjd_tt,

@@ -11,6 +11,7 @@ use crate::{
     Arcseconds, Degrees, TrajId,
     constants::ARCSEC_TO_DEG,
     coordinates::equatorial::EquCoord,
+    observation_dataset::ObsId,
     observation_dataset::{
         ObsDataset,
         index::{ObsMapIndex, TrajIndexMap},
@@ -77,6 +78,7 @@ pub enum AdesError {
 ///   used for any observation that has neither `rmsRA` nor `precRA`.
 /// - `error_dec` — optional fallback 1-σ Dec uncertainty in **arcseconds**,
 ///   used for any observation that has neither `rmsDec` nor `precDec`.
+/// - `start_id`  — starting value for observation IDs; the first observation will have ID `start_id`, the second `start_id + 1`, and so on.
 ///
 /// # Errors
 ///
@@ -88,9 +90,10 @@ pub(crate) fn parse_ades_file(
     ades_path: &Utf8Path,
     error_ra: Option<f64>,
     error_dec: Option<f64>,
+    start_id: ObsId,
 ) -> Result<ObsDataset, AdesError> {
     let xml = std::fs::read_to_string(ades_path)?;
-    parse_ades_xml(&xml, error_ra, error_dec)
+    parse_ades_xml(&xml, error_ra, error_dec, start_id)
 }
 
 /// Build an [`ObsDataset`] from an in-memory ADES XML string.
@@ -100,11 +103,12 @@ pub(crate) fn parse_ades_xml(
     xml: &str,
     error_ra: Option<f64>,
     error_dec: Option<f64>,
+    start_id: ObsId,
 ) -> Result<ObsDataset, AdesError> {
     match from_str::<FlatAdes>(xml) {
-        Ok(flat) => build_from_flat(&flat.opticals, error_ra, error_dec),
+        Ok(flat) => build_from_flat(&flat.opticals, error_ra, error_dec, start_id),
         Err(flat_err) => match from_str::<StructuredAdes>(xml) {
-            Ok(structured) => build_from_structured(&structured, error_ra, error_dec),
+            Ok(structured) => build_from_structured(&structured, error_ra, error_dec, start_id),
             Err(structured_err) => Err(AdesError::ParseXml {
                 flat_err: flat_err.to_string(),
                 structured_err: structured_err.to_string(),
@@ -123,9 +127,10 @@ fn build_from_flat(
     opticals: &[OpticalObs],
     error_ra: Option<f64>,
     error_dec: Option<f64>,
+    start_id: ObsId,
 ) -> Result<ObsDataset, AdesError> {
     let records: Vec<(&OpticalObs, Option<[u8; 3]>)> = opticals.iter().map(|o| (o, None)).collect();
-    build_dataset(records, error_ra, error_dec)
+    build_dataset(records, error_ra, error_dec, start_id)
 }
 
 /// Build from a structured ADES document, propagating the `obsContext` MPC
@@ -134,6 +139,7 @@ fn build_from_structured(
     structured: &StructuredAdes,
     error_ra: Option<f64>,
     error_dec: Option<f64>,
+    start_id: ObsId,
 ) -> Result<ObsDataset, AdesError> {
     let mut records: Vec<(&OpticalObs, Option<[u8; 3]>)> = Vec::new();
     for block in &structured.obs_blocks {
@@ -142,7 +148,7 @@ fn build_from_structured(
             records.push((optical, Some(ctx_bytes)));
         }
     }
-    build_dataset(records, error_ra, error_dec)
+    build_dataset(records, error_ra, error_dec, start_id)
 }
 
 // ---------------------------------------------------------------------------
@@ -165,6 +171,7 @@ fn build_dataset(
     records: Vec<(&OpticalObs, Option<[u8; 3]>)>,
     error_ra: Option<Arcseconds>,
     error_dec: Option<Arcseconds>,
+    start_id: ObsId,
 ) -> Result<ObsDataset, AdesError> {
     let mut observations: Vec<Observation> = Vec::with_capacity(records.len());
     let mut traj_index: AHashMap<TrajId, Vec<usize>> =
@@ -205,7 +212,7 @@ fn build_dataset(
 
         observations.push(Observation {
             index: Some(idx),
-            id: idx as u64,
+            id: start_id + idx as u64,
             equ_coord,
             photometry,
             mjd_tt: optical.obs_time,

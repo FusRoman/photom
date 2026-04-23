@@ -426,6 +426,11 @@ impl ObsDataset {
     /// (`obs.index`) and custom-observer indices (`ObserverId::IntId`) are
     /// adjusted.
     ///
+    /// Ingestion backends (ADES, MPC 80-column) assign [`ObsId`] values that
+    /// are globally unique across files by anchoring each file's sequential
+    /// counter at the current dataset size, so this method is safe to use
+    /// for all multi-file assembly paths.
+    ///
     /// # Index preservation
     ///
     /// Night and trajectory index entries that exist only in `other` (no key
@@ -442,18 +447,6 @@ impl ObsDataset {
             return Err(ObsDatasetError::DuplicateObsIds(duplicates));
         }
 
-        self.merge_from_unchecked(other);
-        Ok(())
-    }
-
-    /// Merge another `ObsDataset` into `self` **without** duplicate-id validation.
-    ///
-    /// Used internally by ingestion backends (ADES, MPC 80-column) whose
-    /// per-file `ObsId` values are synthetic sequential integers starting at 0
-    /// and would therefore always collide across files.  Those callers are
-    /// responsible for ensuring correctness; external callers should prefer
-    /// [`ObsDataset::merge_from`].
-    pub(crate) fn merge_from_unchecked(&mut self, other: ObsDataset) {
         let offset = self.observations.len();
 
         // ── Merge observers, obtain IntId shift ────────────────────────────
@@ -466,6 +459,7 @@ impl ObsDataset {
 
         // ── Merge index maps ───────────────────────────────────────────────
         self.index.merge_from(other.index, offset);
+        Ok(())
     }
 
     /// Return the list of [`ObsId`] values in `other` that already exist in `self`.

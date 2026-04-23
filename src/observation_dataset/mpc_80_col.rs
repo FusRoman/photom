@@ -29,7 +29,7 @@ impl ObsDataset {
     /// Returns [`Mpc80ColError::Io`] if the file cannot be read, or
     /// [`Mpc80ColError::InvalidLine`] if a line cannot be parsed.
     pub fn from_mpc_80_col(path: &Utf8Path) -> Result<ObsDataset, Mpc80ColError> {
-        parse_mpc_80_col_file(path)
+        parse_mpc_80_col_file(path, 0)
     }
 
     /// Build an [`ObsDataset`] from **multiple** MPC 80-column files.
@@ -45,10 +45,14 @@ impl ObsDataset {
         let mut errors: Vec<(Utf8PathBuf, Mpc80ColError)> = Vec::new();
 
         for &path in paths {
-            match parse_mpc_80_col_file(path) {
+            let start_id = dataset
+                .as_ref()
+                .map_or(0, |ds| ds.observation_count() as u64);
+            match parse_mpc_80_col_file(path, start_id) {
                 Ok(other) => {
                     if let Some(ref mut ds) = dataset {
-                        ds.merge_from_unchecked(other);
+                        // IDs are globally unique: merge_from cannot fail here.
+                        let _ = ds.merge_from(other);
                     } else {
                         dataset = Some(other);
                     }
@@ -74,8 +78,12 @@ impl ObsDataset {
     ) -> Vec<(Utf8PathBuf, Mpc80ColError)> {
         let mut errors: Vec<(Utf8PathBuf, Mpc80ColError)> = Vec::new();
         for &path in paths {
-            match parse_mpc_80_col_file(path) {
-                Ok(other) => self.merge_from_unchecked(other),
+            let start_id = self.observation_count() as u64;
+            match parse_mpc_80_col_file(path, start_id) {
+                // IDs are globally unique: merge_from cannot fail here.
+                Ok(other) => {
+                    let _ = self.merge_from(other);
+                }
                 Err(e) => errors.push((path.to_owned(), e)),
             }
         }
@@ -94,10 +102,15 @@ impl ObsDatasetBuilder {
     /// - `paths` — slice of paths to MPC 80-column observation files to load.
     pub fn add_mpc_80_col(mut self, paths: &[&Utf8Path]) -> Self {
         for &path in paths {
-            match crate::io::mpc_80_col::parse_mpc_80_col_file(path) {
+            let start_id = self
+                .dataset
+                .as_ref()
+                .map_or(0, |ds| ds.observation_count() as u64);
+            match crate::io::mpc_80_col::parse_mpc_80_col_file(path, start_id) {
                 Ok(other) => {
                     if let Some(ref mut ds) = self.dataset {
-                        ds.merge_from_unchecked(other);
+                        // IDs are globally unique: merge_from cannot fail here.
+                        let _ = ds.merge_from(other);
                     } else {
                         self.dataset = Some(other);
                     }

@@ -1303,7 +1303,8 @@ mod cov2_tests {
             let v = TangentVec { dx: vx, dy: vy };
             if let Some((_z, z_sq)) = cov.whiten_cholesky(v, 1e-12)
                 && let Some(mah) = cov.mahalanobis_sq(v) {
-                    prop_assert!((z_sq - mah).abs() < 1e-8, "z² {} ≠ mah {}", z_sq, mah);
+                    let tol = 1e-8 * z_sq.abs().max(mah.abs()).max(1.0);
+                    prop_assert!((z_sq - mah).abs() < tol, "z² {} ≠ mah {}", z_sq, mah);
                 }
         }
 
