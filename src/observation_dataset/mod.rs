@@ -146,13 +146,11 @@ impl ObsDataset {
         Self::new(vec![], vec![], None, None, None)
     }
 
-    /// Add a new observation to the dataset, assigning it the next available index and returning its `ObsId`.
-    /// The observation's `index` field is updated to reflect its position in the internal observations vector.
-    /// The `id` field of the observation is not modified by this method; it is the caller's responsibility to ensure that it is unique within the dataset.
-    ///
+    /// Add new observations to the dataset, returning their `ObsId` values.
+    /// The new observations are appended to the internal list, and their `ObsId` values are returned in a `Vec` in the same order.
     ///
     /// # Arguments
-    /// - `obs` — the `Observation` to add to the dataset.  Its `index` field will be updated to reflect its position in the internal observations vector.
+    /// - `new_obs` — a vector of `Observation` instances to add to the dataset.
     ///
     /// # Returns
     /// The `ObsId` of the newly added observation.
