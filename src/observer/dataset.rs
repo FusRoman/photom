@@ -131,7 +131,7 @@ impl ObserverDataset {
     /// `Some(&Observer)` if the identifier is valid and the corresponding
     /// observer is found, or `None` if the index is out of range, the MPC
     /// code is not present in the catalogue, or the MPC table failed to load.
-    pub(crate) fn get(&self, obs_id: &ObserverId) -> Option<&Observer> {
+    pub fn get(&self, obs_id: &ObserverId) -> Option<&Observer> {
         match obs_id {
             ObserverId::IntId(idx) => self.custom_observers.get(*idx),
             ObserverId::MpcCode(code) => self.mpc_observers().ok()?.get(code),

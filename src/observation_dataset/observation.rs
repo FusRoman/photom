@@ -139,6 +139,16 @@ impl Observation {
         &self.id
     }
 
+    /// Return a reference to the observer identifier for this observation, if any.
+    ///
+    /// # Returns
+    ///
+    /// `Some(&ObserverId)` when an observer is associated with this observation;
+    /// `None` when the observer is unknown.
+    pub fn observer_id(&self) -> Option<&ObserverId> {
+        self.observer.as_ref()
+    }
+
     /// Return a reference to the equatorial sky coordinates of this observation.
     ///
     /// The coordinates include right ascension and declination together with their

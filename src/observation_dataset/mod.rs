@@ -49,6 +49,7 @@ use crate::io::polars::error::PolarsError;
 #[cfg(feature = "datafusion")]
 pub mod datafusion;
 
+use ahash::AHashSet;
 use thiserror::Error;
 
 use crate::{
@@ -149,16 +150,69 @@ impl ObsDataset {
     /// The observation's `index` field is updated to reflect its position in the internal observations vector.
     /// The `id` field of the observation is not modified by this method; it is the caller's responsibility to ensure that it is unique within the dataset.
     ///
+    ///
     /// # Arguments
     /// - `obs` — the `Observation` to add to the dataset.  Its `index` field will be updated to reflect its position in the internal observations vector.
     ///
     /// # Returns
     /// The `ObsId` of the newly added observation.
-    pub fn push_observation(&mut self, mut obs: Observation) -> ObsId {
-        let id = obs.id;
-        obs.index = Some(self.observations.len());
-        self.observations.push(obs);
-        id
+    pub fn push_observation(
+        &mut self,
+        new_obs: Vec<Observation>,
+    ) -> Result<Vec<ObsIndex>, ObsDatasetError> {
+        let mut obs_index_result = Vec::with_capacity(new_obs.len());
+
+        // ── Phase 1: validate — no mutation of self until this passes ──────
+        let duplicates = self.find_duplicate_obs_ids(&new_obs);
+        if !duplicates.is_empty() {
+            return Err(ObsDatasetError::DuplicateObsIds(duplicates));
+        }
+
+        // ── Phase 2: build new observer dataset from the Observer contained in new_obs ──────
+        let new_observer_dataset = ObserverDataset::new(
+            new_obs
+                .iter()
+                .filter_map(|o| o.observer)
+                .collect::<AHashSet<_>>()
+                .into_iter()
+                .filter_map(|id| self.observer_dataset.get(&id))
+                .cloned()
+                .collect(),
+            None,
+        );
+
+        let offset = self.observations.len();
+
+        // ── Merge observers, obtain IntId shift ────────────────────────────
+        let custom_offset = self
+            .observer_dataset
+            .merge_custom_observers(new_observer_dataset);
+
+        // ── Add new observations in the index maps ───────────────────────────────────────────────
+        for (idx, obs) in new_obs.iter().enumerate() {
+            obs_index_result.push(idx + offset);
+            self.index.obs_index_by_id.insert(obs.id, idx + offset);
+        }
+
+        // ── Shift internal positions and push observations ─────────────────
+        self.push_observations_from(new_obs, offset, custom_offset);
+
+        Ok(obs_index_result)
+    }
+
+    /// Add a new observer to the dataset, returning its `ObserverId::IntId` index.
+    /// The observer is appended to the `custom_observers` list, and its index is returned as an `ObserverId::IntId`.
+    ///
+    /// # Arguments
+    ///
+    /// - `observer` — the `Observer` to add to the dataset.
+    ///
+    /// # Returns
+    /// The `ObserverId::IntId` index of the newly added observer.
+    pub fn push_observer(&mut self, observer: Observer) -> ObserverId {
+        let offset = self.observer_dataset.custom_observers.len();
+        self.observer_dataset.custom_observers.push(observer);
+        ObserverId::IntId(offset)
     }
 
     /// Look up a single observation by its [`ObsId`].
@@ -449,7 +503,7 @@ impl ObsDataset {
     /// same-key entries already present in `self`.
     pub fn merge_from(&mut self, other: ObsDataset) -> Result<(), ObsDatasetError> {
         // ── Phase 1: validate — no mutation of self until this passes ──────
-        let duplicates = self.find_duplicate_obs_ids(&other);
+        let duplicates = self.find_duplicate_obs_ids(&other.observations);
         if !duplicates.is_empty() {
             return Err(ObsDatasetError::DuplicateObsIds(duplicates));
         }
@@ -472,9 +526,8 @@ impl ObsDataset {
     /// Return the list of [`ObsId`] values in `other` that already exist in `self`.
     ///
     /// An empty `Vec` means no collision; the merge can proceed safely.
-    fn find_duplicate_obs_ids(&self, other: &ObsDataset) -> Vec<ObsId> {
+    fn find_duplicate_obs_ids(&self, other: &[Observation]) -> Vec<ObsId> {
         other
-            .observations
             .iter()
             .filter_map(|obs| {
                 if self.index.get_by_id(&obs.id).is_some() {

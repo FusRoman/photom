@@ -176,7 +176,7 @@ fn merge_optional_obs_map<K>(
 #[derive(Debug)]
 pub struct ObsDatasetIndex {
     /// Mapping from `ObsId` to the index in the `observations` vector, used for look-up by observation identifier.
-    obs_index_by_id: ObservationIndexMap,
+    pub(crate) obs_index_by_id: ObservationIndexMap,
 
     /// Mapping from `NightId` to the list of observation indices belonging to that night.
     ///
