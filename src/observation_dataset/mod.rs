@@ -129,6 +129,13 @@ pub struct ObsDataset {
     pub(crate) observer_dataset: ObserverDataset,
 }
 
+/// Default implementation for `ObsDataset` creates an empty dataset with no observations and no observers.
+impl Default for ObsDataset {
+    fn default() -> Self {
+        Self::empty()
+    }
+}
+
 impl ObsDataset {
     /// Create an empty `ObsDataset` with no observations and no observers.
     ///
@@ -492,6 +499,7 @@ impl ObsDataset {
         offset: usize,
         custom_offset: usize,
     ) {
+        self.observations.reserve(observations.len());
         for mut obs in observations {
             obs.index = obs.index.map(|i| i + offset);
             if let Some(ObserverId::IntId(ref mut i)) = obs.observer {

@@ -91,7 +91,10 @@ fn shift_obs_map_index(idx: ObsMapIndex, offset: usize) -> ObsMapIndex {
             start: start + offset,
             end: end + offset,
         },
-        ObsMapIndex::Split(v) => ObsMapIndex::Split(v.into_iter().map(|i| i + offset).collect()),
+        ObsMapIndex::Split(mut v) => {
+            v.iter_mut().for_each(|i| *i += offset);
+            ObsMapIndex::Split(v)
+        }
     }
 }
 
@@ -484,6 +487,7 @@ impl ObsDatasetIndex {
     #[cfg_attr(not(any(feature = "ades", feature = "mpc_80_col")), allow(dead_code))]
     pub(crate) fn merge_from(&mut self, other: ObsDatasetIndex, offset: usize) {
         // ── obs_index_by_id ────────────────────────────────────────────────
+        self.obs_index_by_id.reserve(other.obs_index_by_id.len());
         for (id, pos) in other.obs_index_by_id {
             self.obs_index_by_id.insert(id, pos + offset);
         }

@@ -201,6 +201,15 @@ impl ObsDataset {
         self.index.len_night(night_id)
     }
 
+    /// Return the total number of nights present in the dataset, as determined by the night index.
+    ///
+    /// # Returns
+    ///
+    /// `Some(count)` if the night index exists; `None` otherwise.
+    pub fn nb_night(&self) -> Option<usize> {
+        self.iter_night_id().map(|iter| iter.count())
+    }
+
     /// Return whether the index entry for a given night is stored as a
     /// contiguous block (`true`) or as a scattered list (`false`).
     ///

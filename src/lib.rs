@@ -578,6 +578,8 @@ pub mod observation_dataset;
 pub mod observer;
 pub mod photometry;
 
+use std::fmt::{self, Display};
+
 #[cfg(feature = "mpc_80_col")]
 pub use io::mpc_80_col::Mpc80ColError;
 
@@ -605,9 +607,41 @@ pub type Meters = f64;
 /// Wraps a `u32` that typically represents an integer MJD day number
 /// (e.g. `60312`).  The value must be stable across runs because it is used
 /// as a directory name in on-disk outputs.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct NightId(pub u32);
+
+impl Display for NightId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl NightId {
+    /// Create a new `NightId` from an integer.
+    pub fn new(id: u32) -> Self {
+        Self(id)
+    }
+
+    /// Return the underlying integer.
+    pub fn value(self) -> u32 {
+        self.0
+    }
+}
+
+impl From<u32> for NightId {
+    #[inline]
+    fn from(v: u32) -> Self {
+        NightId(v)
+    }
+}
+
+impl From<NightId> for u32 {
+    #[inline]
+    fn from(n: NightId) -> Self {
+        n.0
+    }
+}
 
 // ── TrajId ────────────────────────────────────────────────────────────────────
 
@@ -629,6 +663,15 @@ pub enum TrajId {
     Int(u32),
     /// A string label (e.g. a MPC provisional designation or a proper name).
     Str(String),
+}
+
+impl Display for TrajId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            TrajId::Int(n) => write!(f, "{}", n),
+            TrajId::Str(s) => write!(f, "{}", s),
+        }
+    }
 }
 
 pub use crate::observation_dataset::index::ObsIndex;
