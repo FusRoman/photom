@@ -112,7 +112,7 @@ fn int_file_iter_observations_order() {
     for (expected_idx, obs) in ds.iter_observations().enumerate() {
         assert_eq!(
             obs.index(),
-            Some(expected_idx),
+            expected_idx,
             "Observation at position {expected_idx} must have index == {expected_idx}"
         );
     }
@@ -198,7 +198,7 @@ fn night_index_iter_night_observations_consistent() {
     );
     // Every observation index must be a valid position in the dataset.
     for o in &obs {
-        let idx = o.index().unwrap();
+        let idx = o.index();
         assert!(
             idx < TOTAL_ROWS,
             "Observation index {} is out of bounds",
@@ -486,13 +486,13 @@ fn get_obs_by_index_bounds() {
     let obs = ds
         .get_obs_by_index(0)
         .expect("Index 0 must be a valid position");
-    assert_eq!(obs.index(), Some(0));
+    assert_eq!(obs.index(), 0);
 
     // Last valid index.
     let last = ds
         .get_obs_by_index(TOTAL_ROWS - 1)
         .expect("Last index must be valid");
-    assert_eq!(last.index(), Some(TOTAL_ROWS - 1));
+    assert_eq!(last.index(), TOTAL_ROWS - 1);
 
     // One past the end must be None.
     assert!(
@@ -523,7 +523,7 @@ fn get_observation_consistent_with_get_obs_by_index() {
 
         assert_eq!(
             by_id.index(),
-            Some(idx),
+            idx,
             "get_observation and get_obs_by_index must return the same observation"
         );
     }
@@ -553,7 +553,7 @@ fn night_obs_reachable_by_index() {
     let indices: Vec<usize> = ds
         .iter_night_observations(&nid)
         .expect("night 3248 must exist")
-        .map(|o| o.index().unwrap())
+        .map(|o| o.index())
         .collect();
 
     assert_eq!(indices.len(), 11_674);
@@ -569,7 +569,7 @@ fn night_obs_reachable_by_index() {
         let obs = ds
             .get_obs_by_index(i)
             .unwrap_or_else(|| panic!("Index {i} from night index must be reachable"));
-        assert_eq!(obs.index(), Some(i));
+        assert_eq!(obs.index(), i);
     }
 }
 
@@ -633,7 +633,7 @@ fn push_new_trajectory_int_file() {
 /// (all rows carry complete geodetic columns).
 #[test]
 fn int_obs_all_have_observer() {
-    let mut ds = load_int();
+    let ds = load_int();
 
     // Sample every 50 000th observation to keep the test fast.
     for idx in (0..TOTAL_ROWS).step_by(50_000) {
@@ -657,7 +657,7 @@ fn int_obs_all_have_observer() {
 /// that `get_observer` always returns the longitude equal to `OBS_LON`.
 #[test]
 fn int_obs_single_unique_observer_longitude() {
-    let mut ds = load_int();
+    let ds = load_int();
 
     let sample_indices = [0usize, 100_000, 300_000, 560_000];
 
@@ -689,7 +689,7 @@ fn int_obs_single_unique_observer_longitude() {
 fn int_obs_parallax_constants_correct() {
     use photom::observer::geodetic_to_parallax;
 
-    let mut ds = load_int();
+    let ds = load_int();
 
     // Use the first observation as the reference.
     let first_id: u64 = 3_026_230_983_415_015_002;
@@ -718,7 +718,7 @@ fn int_obs_parallax_constants_correct() {
 /// (same longitude, rho_cos_phi, rho_sin_phi).
 #[test]
 fn int_obs_identical_sites_interned() {
-    let mut ds = load_int();
+    let ds = load_int();
 
     let first_id = *ds.get_obs_by_index(0).unwrap().id();
     let last_id = *ds.get_obs_by_index(TOTAL_ROWS - 1).unwrap().id();
@@ -755,7 +755,7 @@ fn int_obs_identical_sites_interned() {
 /// the fixture).
 #[test]
 fn int_obs_accuracy_values_present() {
-    let mut ds = load_int();
+    let ds = load_int();
 
     for idx in (0..TOTAL_ROWS).step_by(100_000) {
         let obs_id = *ds
@@ -782,7 +782,7 @@ fn int_obs_accuracy_values_present() {
 /// The fixture carries a single constant dec_accuracy ≈ 2.424e-6 rad for all rows.
 #[test]
 fn int_obs_dec_accuracy_positive() {
-    let mut ds = load_int();
+    let ds = load_int();
 
     let first_id: u64 = 3_026_230_983_415_015_002;
     let observer = ds
@@ -804,7 +804,7 @@ fn int_obs_dec_accuracy_positive() {
 /// (3248, 11 674 rows) are non-None and share the same longitude.
 #[test]
 fn int_obs_night_3248_all_observers_consistent() {
-    let mut ds = load_int();
+    let ds = load_int();
     let nid = NightId(3248);
 
     // Collect all observation ids for the night first (immutable borrow).
@@ -844,7 +844,7 @@ fn int_obs_night_3248_all_observers_consistent() {
 /// an error model to produce `None` without fetching the MPC catalogue.
 #[test]
 fn str_obs_mpc_no_error_model_returns_none() {
-    let mut ds = load_str();
+    let ds = load_str();
 
     // The dataset was loaded without an error model (None passed to from_lazy).
     // Attempting to resolve an MPC-coded observer must return None because the
@@ -868,7 +868,7 @@ fn str_obs_mpc_no_error_model_returns_none() {
 /// not `Some` (which would indicate an unexpected geodetic resolution).
 #[test]
 fn str_obs_no_geodetic_fallback() {
-    let mut ds = load_str();
+    let ds = load_str();
 
     for idx in (0..TOTAL_ROWS).step_by(50_000) {
         let obs_id = {
@@ -897,7 +897,7 @@ fn str_obs_no_geodetic_fallback() {
 /// in bounds.
 #[test]
 fn int_obs_get_observer_never_panics_across_nights() {
-    let mut ds = load_int();
+    let ds = load_int();
 
     // Collect one observation id per night.
     let night_obs_ids: Vec<u64> = NIGHT_EXPECTED
@@ -927,7 +927,7 @@ fn int_obs_get_observer_never_panics_across_nights() {
 /// trajectory index.
 #[test]
 fn int_obs_trajectory_observer_index_valid() {
-    let mut ds = load_int();
+    let ds = load_int();
 
     // Collect a sample of (traj_id, obs_id) pairs from the trajectory index.
     let sample: Vec<u64> = ds

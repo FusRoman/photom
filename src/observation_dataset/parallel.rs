@@ -362,7 +362,7 @@ mod obsdataset_parallel_tests {
         coordinates::equatorial::EquCoord,
         observation_dataset::{
             index::{NightIndexMap, TrajIndexMap},
-            observation::Observation,
+            observation::ObservationInput,
         },
         observer::error_model::ObsErrorModel,
         photometry::{Filter, Photometry},
@@ -376,9 +376,8 @@ mod obsdataset_parallel_tests {
     ///
     /// No observer is attached; all coordinate/photometry values are fixed constants
     /// so tests remain purely structural and do not depend on astrometric values.
-    fn make_obs(id: u64, index: usize) -> Observation {
-        Observation {
-            index: Some(index),
+    fn make_obs(id: u64, _index: usize) -> ObservationInput {
+        ObservationInput {
             id,
             equ_coord: EquCoord::new(0.5, 1e-5, 0.2, 1e-5),
             photometry: Photometry {

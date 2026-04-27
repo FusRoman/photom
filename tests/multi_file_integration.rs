@@ -86,11 +86,11 @@ mod mpc_multi_file {
     fn extend_from_mpc_80_col_increases_count() {
         let p1 = data("8467.obs");
         let p2 = data("33803.obs");
-        let mut ds = ObsDataset::from_mpc_80_col(p1.as_path()).unwrap();
+        let ds = ObsDataset::from_mpc_80_col(p1.as_path()).unwrap();
         let before = ds.observation_count();
-        let errors = ds.extend_from_mpc_80_col(&[p2.as_path()]);
+        let (ds2, errors) = ds.extend_from_mpc_80_col(&[p2.as_path()]);
         assert!(errors.is_empty());
-        assert!(ds.observation_count() > before);
+        assert!(ds2.observation_count() > before);
     }
 
     /// All ObsIds must be globally unique after a multi-file load.
@@ -208,11 +208,11 @@ mod ades_multi_file {
     fn extend_from_ades_increases_count() {
         let p1 = data("example_ades.xml");
         let p2 = data("example_ades2.xml");
-        let mut ds = ObsDataset::from_ades(p1.as_path(), None, None).unwrap();
+        let ds = ObsDataset::from_ades(p1.as_path(), None, None).unwrap();
         let before = ds.observation_count();
-        let errors = ds.extend_from_ades(&[p2.as_path()], None, None);
+        let (ds2, errors) = ds.extend_from_ades(&[p2.as_path()], None, None);
         assert!(errors.is_empty());
-        assert!(ds.observation_count() > before);
+        assert!(ds2.observation_count() > before);
     }
 
     /// All ObsIds must be globally unique after loading two ADES files.

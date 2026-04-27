@@ -37,17 +37,16 @@ pub mod observer;
 
 use std::collections::HashMap;
 
-use serde::ser::Error as _;
 use serde::{Deserialize, Serialize, de::DeserializeSeed, ser::SerializeStruct};
 
 use crate::{
     MJDTT, NightId, TrajId,
     coordinates::equatorial::EquCoord,
+    observation_dataset::ObsDataset,
     observation_dataset::ObsId,
     observation_dataset::{
-        ObsDataset,
         index::{NightIndexMap, ObsIndex, ObsMapIndex, TrajAliasMap, TrajIndexMap},
-        observation::Observation,
+        observation::ObservationInput,
     },
     observer::dataset::{ObserverDataset, ObserverId},
     photometry::Photometry,
@@ -75,7 +74,8 @@ const FORMAT_VERSION: u32 = 2;
 /// Serialisable proxy for a single [`Observation`] **in the context of an
 /// [`ObsDataset`]**.
 ///
-/// In addition to all fields of [`Observation`], this proxy carries:
+/// In addition to all measurement fields of [`Observation`], this proxy
+/// carries:
 ///
 /// - `night_id`  — the [`NightId`] of the night this observation belongs to,
 ///   or `None` if no night index was built or this observation has no night.
@@ -83,13 +83,16 @@ const FORMAT_VERSION: u32 = 2;
 ///   observation belongs to.  An observation may belong to zero, one, or
 ///   several trajectories.
 ///
+/// The internal vector position (`ObsIndex`) is **not** stored.  It is
+/// reconstructed from the enumeration order during deserialisation by
+/// [`ObsDataset::new_from_parts`].
+///
 /// [`Observation`] itself keeps its own standalone `Serialize`/`Deserialize`
 /// derives (useful for individual round-trips); this proxy is only used
 /// inside the `ObsDataset` serialisation path.
 #[derive(Serialize, Deserialize)]
 struct ObservationProxy {
     // ── Observation fields ───────────────────────────────────────────────
-    index: ObsIndex,
     id: ObsId,
     equ_coord: EquCoord,
     photometry: Photometry,
@@ -106,10 +109,12 @@ struct ObservationProxy {
 }
 
 impl ObservationProxy {
-    /// Extract the core [`Observation`] fields, discarding the index hints.
-    fn into_observation(self) -> Observation {
-        Observation {
-            index: Some(self.index),
+    /// Extract the measurement fields as an [`ObservationInput`].
+    ///
+    /// The `night_id` and `traj_ids` membership hints are discarded here;
+    /// they are consumed by [`build_index_maps`] before this method is called.
+    fn into_observation_input(self) -> ObservationInput {
+        ObservationInput {
             id: self.id,
             equ_coord: self.equ_coord,
             photometry: self.photometry,
@@ -284,10 +289,10 @@ fn dataset_from_proxy<E: serde::de::Error>(
 
     let (night_map, traj_map) = build_index_maps(&proxy.observations, layout);
 
-    let observations: Vec<Observation> = proxy
+    let observations: Vec<ObservationInput> = proxy
         .observations
         .into_iter()
-        .map(ObservationProxy::into_observation)
+        .map(ObservationProxy::into_observation_input)
         .collect();
 
     let traj_aliases: TrajAliasMap = proxy.traj_aliases.into_iter().collect();
@@ -344,17 +349,9 @@ impl Serialize for ObsDataset {
         let proxies: Vec<ObservationProxy> = self
             .observations
             .iter()
-            .map(|obs| -> Result<ObservationProxy, S::Error> {
-                let obs_index = obs.index.ok_or_else(|| {
-                    S::Error::custom(format!(
-                        "observation with id {} is missing its internal vector index; \
-                 cannot serialise",
-                        obs.id
-                    ))
-                })?;
-
-                Ok(ObservationProxy {
-                    index: obs_index,
+            .map(|obs| {
+                let obs_index = obs.index();
+                ObservationProxy {
                     id: obs.id,
                     equ_coord: obs.equ_coord,
                     photometry: obs.photometry.clone(),
@@ -362,9 +359,9 @@ impl Serialize for ObsDataset {
                     observer: obs.observer,
                     night_id: night_by_pos.get(&obs_index).copied(),
                     traj_ids: traj_by_pos.get(&obs_index).cloned().unwrap_or_default(),
-                })
+                }
             })
-            .collect::<Result<Vec<_>, _>>()?;
+            .collect();
 
         // ── Collect traj aliases ────────────────────────────────────────
         let traj_aliases: Vec<(String, TrajId)> = self
@@ -433,7 +430,7 @@ mod obsdataset_serde_tests {
         observation_dataset::{
             ObsDataset,
             index::{NightIndexMap, ObsIndex, ObsMapIndex, TrajIndexMap},
-            observation::Observation,
+            observation::{Observation, ObservationInput},
         },
         observer::{Observer, dataset::ObserverId},
         photometry::{Filter, Photometry},
@@ -443,9 +440,8 @@ mod obsdataset_serde_tests {
 
     // ── helpers ─────────────────────────────────────────────────────────
 
-    fn make_obs(id: u64, idx: ObsIndex, mjd_tt: f64) -> Observation {
-        Observation {
-            index: Some(idx),
+    fn make_obs_input(id: u64, mjd_tt: f64) -> ObservationInput {
+        ObservationInput {
             id,
             equ_coord: EquCoord::new(0.1 + id as f64 * 0.01, 0.001, 0.2, 0.001),
             photometry: Photometry {
@@ -458,6 +454,11 @@ mod obsdataset_serde_tests {
         }
     }
 
+    /// Build a placed [`Observation`] at a specific index (for standalone tests).
+    fn make_obs_placed(id: u64, idx: ObsIndex, mjd_tt: f64) -> Observation {
+        Observation::place(make_obs_input(id, mjd_tt), idx)
+    }
+
     fn make_observer() -> Observer {
         Observer::new(0.0, 0.7, 100.0, Some("Test site".to_string()), None, None)
             .expect("valid observer")
@@ -465,8 +466,7 @@ mod obsdataset_serde_tests {
 
     /// Build a dataset without night/traj indices.
     fn build_basic_dataset() -> ObsDataset {
-        let obs0 = Observation {
-            index: Some(0),
+        let obs0 = ObservationInput {
             id: 0,
             equ_coord: EquCoord::new(0.1, 0.001, 0.2, 0.001),
             photometry: Photometry {
@@ -477,8 +477,7 @@ mod obsdataset_serde_tests {
             mjd_tt: 59_000.0,
             observer: Some(ObserverId::IntId(0)),
         };
-        let obs1 = Observation {
-            index: Some(1),
+        let obs1 = ObservationInput {
             id: 1,
             equ_coord: EquCoord::new(0.15, 0.001, 0.25, 0.001),
             photometry: Photometry {
@@ -495,10 +494,10 @@ mod obsdataset_serde_tests {
     /// Build a dataset with a night index (two nights, two obs each).
     fn build_dataset_with_nights() -> ObsDataset {
         let obs = vec![
-            make_obs(0, 0, 59_000.5),
-            make_obs(1, 1, 59_000.6),
-            make_obs(2, 2, 59_001.5),
-            make_obs(3, 3, 59_001.6),
+            make_obs_input(0, 59_000.5),
+            make_obs_input(1, 59_000.6),
+            make_obs_input(2, 59_001.5),
+            make_obs_input(3, 59_001.6),
         ];
         let mut night_map: NightIndexMap = ahash::AHashMap::new();
         night_map.insert(NightId(59_000), ObsMapIndex::Split(vec![0, 1]));
@@ -510,9 +509,9 @@ mod obsdataset_serde_tests {
     /// Build a dataset with a trajectory index.
     fn build_dataset_with_trajs() -> ObsDataset {
         let obs = vec![
-            make_obs(0, 0, 59_000.5),
-            make_obs(1, 1, 59_001.5),
-            make_obs(2, 2, 59_002.5),
+            make_obs_input(0, 59_000.5),
+            make_obs_input(1, 59_001.5),
+            make_obs_input(2, 59_002.5),
         ];
         let mut traj_map: TrajIndexMap = ahash::AHashMap::new();
         traj_map.insert(
@@ -530,9 +529,9 @@ mod obsdataset_serde_tests {
     /// Build a dataset where one observation belongs to two trajectories.
     fn build_dataset_obs_in_multiple_trajs() -> ObsDataset {
         let obs = vec![
-            make_obs(0, 0, 59_000.5),
-            make_obs(1, 1, 59_001.5),
-            make_obs(2, 2, 59_002.5),
+            make_obs_input(0, 59_000.5),
+            make_obs_input(1, 59_001.5),
+            make_obs_input(2, 59_002.5),
         ];
         // obs index 1 belongs to both trajectories.
         let mut traj_map: TrajIndexMap = ahash::AHashMap::new();
@@ -579,7 +578,7 @@ mod obsdataset_serde_tests {
     #[test]
     fn round_trip_custom_observer() {
         let ds = build_basic_dataset();
-        let mut restored = roundtrip(&ds);
+        let restored = roundtrip(&ds);
         let observer = restored.get_observer(0).expect("observer must resolve");
         assert_eq!(observer.name.as_deref(), Some("Test site"));
     }
@@ -588,8 +587,7 @@ mod obsdataset_serde_tests {
 
     #[test]
     fn observation_standalone_round_trip_fields() {
-        let obs = Observation {
-            index: Some(3),
+        let input = ObservationInput {
             id: 42,
             equ_coord: EquCoord::new(1.23, 0.002, -0.45, 0.003),
             photometry: Photometry {
@@ -600,6 +598,7 @@ mod obsdataset_serde_tests {
             mjd_tt: 59_100.5,
             observer: Some(ObserverId::IntId(0)),
         };
+        let obs = Observation::place(input, 3);
         let json = serde_json::to_string(&obs).expect("serialise");
         let restored: Observation = serde_json::from_str(&json).expect("deserialise");
         assert_eq!(obs, restored);
@@ -612,8 +611,8 @@ mod obsdataset_serde_tests {
 
     #[test]
     fn observation_ordering_preserved_after_round_trip() {
-        let earlier = make_obs(1, 0, 59_000.0);
-        let later = make_obs(2, 1, 59_001.0);
+        let earlier = make_obs_placed(1, 0, 59_000.0);
+        let later = make_obs_placed(2, 1, 59_001.0);
         let r_e: Observation =
             serde_json::from_str(&serde_json::to_string(&earlier).unwrap()).unwrap();
         let r_l: Observation =
@@ -733,7 +732,7 @@ mod obsdataset_serde_tests {
 
     #[test]
     fn round_trip_traj_aliases() {
-        let obs = vec![make_obs(0, 0, 59_000.0)];
+        let obs = vec![make_obs_input(0, 59_000.0)];
         let mut traj_map: TrajIndexMap = ahash::AHashMap::new();
         traj_map.insert(
             TrajId::Str("2003 QQ47".to_string()),
@@ -788,9 +787,9 @@ mod obsdataset_serde_tests {
         // Build a dataset where the observations of a night are NOT contiguous
         // in the vector (positions 0 and 2, skipping 1).
         let obs = vec![
-            make_obs(0, 0, 59_000.5),
-            make_obs(1, 1, 59_001.5), // belongs to a different night
-            make_obs(2, 2, 59_000.6),
+            make_obs_input(0, 59_000.5),
+            make_obs_input(1, 59_001.5), // belongs to a different night
+            make_obs_input(2, 59_000.6),
         ];
         let mut night_map: NightIndexMap = ahash::AHashMap::new();
         night_map.insert(NightId(59_000), ObsMapIndex::Split(vec![0, 2])); // non-contiguous

@@ -50,9 +50,12 @@ impl ObsDataset {
                 .map_or(0, |ds| ds.observation_count() as u64);
             match parse_mpc_80_col_file(path, start_id) {
                 Ok(other) => {
-                    if let Some(ref mut ds) = dataset {
+                    if let Some(ds) = dataset.take() {
                         // IDs are globally unique: merge_from cannot fail here.
-                        let _ = ds.merge_from(other);
+                        dataset = Some(
+                            ds.merge_from(other)
+                                .expect("IDs are globally unique: merge_from cannot fail"),
+                        );
                     } else {
                         dataset = Some(other);
                     }
@@ -73,21 +76,23 @@ impl ObsDataset {
     ///
     /// - `paths` — slice of paths to MPC 80-column files.
     pub fn extend_from_mpc_80_col(
-        &mut self,
+        mut self,
         paths: &[&Utf8Path],
-    ) -> Vec<(Utf8PathBuf, Mpc80ColError)> {
+    ) -> (Self, Vec<(Utf8PathBuf, Mpc80ColError)>) {
         let mut errors: Vec<(Utf8PathBuf, Mpc80ColError)> = Vec::new();
         for &path in paths {
             let start_id = self.observation_count() as u64;
             match parse_mpc_80_col_file(path, start_id) {
                 // IDs are globally unique: merge_from cannot fail here.
                 Ok(other) => {
-                    let _ = self.merge_from(other);
+                    self = self
+                        .merge_from(other)
+                        .expect("IDs are globally unique: merge_from cannot fail");
                 }
                 Err(e) => errors.push((path.to_owned(), e)),
             }
         }
-        errors
+        (self, errors)
     }
 }
 
@@ -108,9 +113,12 @@ impl ObsDatasetBuilder {
                 .map_or(0, |ds| ds.observation_count() as u64);
             match crate::io::mpc_80_col::parse_mpc_80_col_file(path, start_id) {
                 Ok(other) => {
-                    if let Some(ref mut ds) = self.dataset {
+                    if let Some(ds) = self.dataset.take() {
                         // IDs are globally unique: merge_from cannot fail here.
-                        let _ = ds.merge_from(other);
+                        self.dataset = Some(
+                            ds.merge_from(other)
+                                .expect("IDs are globally unique: merge_from cannot fail"),
+                        );
                     } else {
                         self.dataset = Some(other);
                     }

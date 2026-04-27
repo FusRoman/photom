@@ -49,7 +49,7 @@ mod single_thread {
         for (expected, obs) in ds.iter_observations().enumerate() {
             assert_eq!(
                 obs.index(),
-                Some(expected),
+                expected,
                 "Observation at position {expected} must carry index {expected}"
             );
         }
@@ -105,7 +105,7 @@ mod single_thread {
             .iter_night_observations(&nid)
             .expect("night 3074 must be present")
         {
-            let idx = obs.index().unwrap();
+            let idx = obs.index();
             assert!(
                 idx < TOTAL_ROWS,
                 "Observation index {} is out of bounds for night 3074",
@@ -177,7 +177,7 @@ mod single_thread {
                 "iter_full_night returned unknown NightId {}",
                 nid.0
             );
-            let idx = obs.index().unwrap();
+            let idx = obs.index();
             assert!(
                 idx < TOTAL_ROWS,
                 "Observation index {} from iter_full_night is out of bounds",
@@ -334,7 +334,7 @@ mod single_thread {
             .iter_full_trajectory()
             .expect("iter_full_trajectory must be Some")
         {
-            let idx = obs.index().unwrap();
+            let idx = obs.index();
             assert!(
                 idx < TOTAL_ROWS,
                 "Observation index {} from iter_full_trajectory is out of bounds",
@@ -684,7 +684,7 @@ mod parallel {
         let out_of_bounds = ds
             .par_iter_full_trajectory()
             .expect("must be Some")
-            .filter(|(_, obs)| obs.index().unwrap() >= TOTAL_ROWS)
+            .filter(|(_, obs)| obs.index() >= TOTAL_ROWS)
             .count();
         assert_eq!(
             out_of_bounds, 0,

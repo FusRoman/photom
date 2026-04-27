@@ -91,7 +91,7 @@ fn int_file_iter_observations_order() {
     for (expected_idx, obs) in ds.iter_observations().enumerate() {
         assert_eq!(
             obs.index(),
-            Some(expected_idx),
+            expected_idx,
             "Observation at position {expected_idx} must have index == {expected_idx}"
         );
     }
@@ -168,9 +168,9 @@ fn night_index_iter_night_observations_consistent() {
 
     for o in &obs {
         assert!(
-            o.index().unwrap() < TOTAL_ROWS,
+            o.index() < TOTAL_ROWS,
             "Observation index {} is out of bounds (datafusion)",
-            o.index().unwrap()
+            o.index()
         );
     }
 }
@@ -373,12 +373,12 @@ fn get_obs_by_index_bounds() {
     let obs = ds
         .get_obs_by_index(0)
         .expect("Index 0 must be a valid position (datafusion)");
-    assert_eq!(obs.index(), Some(0));
+    assert_eq!(obs.index(), 0);
 
     let last = ds
         .get_obs_by_index(TOTAL_ROWS - 1)
         .expect("Last index must be valid (datafusion)");
-    assert_eq!(last.index(), Some(TOTAL_ROWS - 1));
+    assert_eq!(last.index(), TOTAL_ROWS - 1);
 
     assert!(ds.get_obs_by_index(TOTAL_ROWS).is_none());
 }
@@ -398,7 +398,7 @@ fn get_observation_consistent_with_get_obs_by_index() {
             .get_observation(id)
             .unwrap_or_else(|| panic!("get_observation must succeed for id {id} (datafusion)"));
 
-        assert_eq!(by_id.index(), Some(idx));
+        assert_eq!(by_id.index(), idx);
     }
 }
 
@@ -407,7 +407,7 @@ fn get_observation_consistent_with_get_obs_by_index() {
 /// Every sampled observation in the int fixture has a non-None observer.
 #[test]
 fn int_obs_all_have_observer() {
-    let mut ds = df_load_int();
+    let ds = df_load_int();
 
     for idx in (0..TOTAL_ROWS).step_by(50_000) {
         let obs_id = *ds
@@ -425,7 +425,7 @@ fn int_obs_all_have_observer() {
 /// Sampled observers all carry the expected geodetic longitude.
 #[test]
 fn int_obs_single_unique_observer_longitude() {
-    let mut ds = df_load_int();
+    let ds = df_load_int();
 
     for &idx in &[0usize, 100_000, 300_000, 560_000] {
         let obs_id = *ds
@@ -450,7 +450,7 @@ fn int_obs_single_unique_observer_longitude() {
 fn int_obs_parallax_constants_correct() {
     use photom::observer::geodetic_to_parallax;
 
-    let mut ds = df_load_int();
+    let ds = df_load_int();
     let first_id: u64 = 3_026_230_983_415_015_002;
     let observer = ds
         .get_observer(first_id)
@@ -475,7 +475,7 @@ fn int_obs_parallax_constants_correct() {
 /// same longitude, rho_cos_phi, and rho_sin_phi.
 #[test]
 fn int_obs_identical_sites_interned() {
-    let mut ds = df_load_int();
+    let ds = df_load_int();
 
     let first_id = *ds.get_obs_by_index(0).unwrap().id();
     let last_id = *ds.get_obs_by_index(TOTAL_ROWS - 1).unwrap().id();
@@ -500,7 +500,7 @@ fn int_obs_identical_sites_interned() {
 /// Sampled observers carry non-None and positive RA/Dec accuracy values.
 #[test]
 fn int_obs_accuracy_values_present_and_positive() {
-    let mut ds = df_load_int();
+    let ds = df_load_int();
 
     for idx in (0..TOTAL_ROWS).step_by(100_000) {
         let obs_id = *ds
@@ -533,7 +533,7 @@ fn int_obs_accuracy_values_present_and_positive() {
 /// Without an error model, MPC-coded observers resolve to `None`.
 #[test]
 fn str_obs_mpc_no_error_model_returns_none() {
-    let mut ds = df_load_str();
+    let ds = df_load_str();
     let _ = MPC_CODE; // document that the fixture uses MPC_CODE = b"I41"
     let first_id: u64 = 3_026_230_983_415_015_002;
 
@@ -549,7 +549,7 @@ fn str_obs_mpc_no_error_model_returns_none() {
 /// (no geodetic fallback when the observer is MPC-coded).
 #[test]
 fn str_obs_no_geodetic_fallback() {
-    let mut ds = df_load_str();
+    let ds = df_load_str();
 
     for idx in (0..TOTAL_ROWS).step_by(50_000) {
         let obs_id = {
@@ -586,7 +586,7 @@ fn night_obs_reachable_by_index() {
     let indices: Vec<usize> = ds
         .iter_night_observations(&nid)
         .expect("night 3248 must exist (datafusion)")
-        .map(|o| o.index().unwrap())
+        .map(|o| o.index())
         .collect();
 
     assert_eq!(indices.len(), 11_674);
@@ -601,14 +601,14 @@ fn night_obs_reachable_by_index() {
         let obs = ds
             .get_obs_by_index(i)
             .unwrap_or_else(|| panic!("Index {i} from night index must be reachable (datafusion)"));
-        assert_eq!(obs.index(), Some(i));
+        assert_eq!(obs.index(), i);
     }
 }
 
 /// `get_observer` never panics for one observation per night (geodetic fixture).
 #[test]
 fn int_obs_get_observer_never_panics_across_nights() {
-    let mut ds = df_load_int();
+    let ds = df_load_int();
 
     let night_obs_ids: Vec<u64> = NIGHT_EXPECTED
         .iter()
@@ -632,7 +632,7 @@ fn int_obs_get_observer_never_panics_across_nights() {
 /// Observers resolved through the trajectory index all share the expected longitude.
 #[test]
 fn int_obs_trajectory_observer_index_valid() {
-    let mut ds = df_load_int();
+    let ds = df_load_int();
 
     let sample: Vec<u64> = ds
         .iter_full_trajectory()

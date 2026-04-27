@@ -84,7 +84,7 @@ fn build_per_night_merged() -> ObsDataset {
 
     for &(raw_id, _) in nights {
         let night_ds = load_int_night(raw_id);
-        merged
+        merged = merged
             .merge_from(night_ds)
             .unwrap_or_else(|e| panic!("merge_from failed for night {raw_id}: {e}"));
     }
@@ -176,7 +176,8 @@ fn polars_merge_multi_night_datasets() {
 
     let mut ds = load_int_nights(&first_ids);
     let other = load_int_nights(&second_ids);
-    ds.merge_from(other)
+    ds = ds
+        .merge_from(other)
         .expect("merge_from must succeed for multi-night datasets");
 
     // Total count.

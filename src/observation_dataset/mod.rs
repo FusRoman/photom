@@ -56,7 +56,7 @@ use crate::{
     TrajId,
     observation_dataset::{
         index::{NightIndexMap, ObsDatasetIndex, ObsIndex, ObservationIndexMap, TrajIndexMap},
-        observation::Observation,
+        observation::{Observation, ObservationInput},
     },
     observer::{
         Observer,
@@ -93,11 +93,6 @@ pub enum ObsDatasetError {
     #[cfg(feature = "polars")]
     #[error(transparent)]
     PolarIoError(#[from] PolarsError),
-
-    /// An observation is missing its internal vector index, which is required for trajectory registration.
-    /// This appends if the observation has not been pushed within a dataset or if the index was not assigned during dataset construction.
-    #[error("Observation is missing its internal vector index")]
-    MissingIndex,
 
     /// One or more [`ObsId`] values from the dataset being merged already exist in `self`.
     ///
@@ -146,17 +141,21 @@ impl ObsDataset {
         Self::new(vec![], vec![], None, None, None)
     }
 
-    /// Add new observations to the dataset, returning their `ObsId` values.
-    /// The new observations are appended to the internal list, and their `ObsId` values are returned in a `Vec` in the same order.
+    /// Add new observations to the dataset, returning their `ObsIndex` values.
+    /// The new observations are appended to the internal list, and their `ObsIndex` values are returned in a `Vec` in the same order.
+    ///
+    /// Each [`ObservationInput`] is converted to an [`Observation`] with its
+    /// `index` field set atomically to its actual position in the storage
+    /// vector.  The caller does not need to — and cannot — pre-assign indices.
     ///
     /// # Arguments
-    /// - `new_obs` — a vector of `Observation` instances to add to the dataset.
+    /// - `new_obs` — a vector of [`ObservationInput`] instances to add to the dataset.
     ///
     /// # Returns
-    /// The `ObsId` of the newly added observation.
+    /// The `ObsIndex` of each newly added observation, in the same order as `new_obs`.
     pub fn push_observation(
         &mut self,
-        new_obs: Vec<Observation>,
+        new_obs: Vec<ObservationInput>,
     ) -> Result<Vec<ObsIndex>, ObsDatasetError> {
         let mut obs_index_result = Vec::with_capacity(new_obs.len());
 
@@ -186,14 +185,23 @@ impl ObsDataset {
             .observer_dataset
             .merge_custom_observers(new_observer_dataset);
 
-        // ── Add new observations in the index maps ───────────────────────────────────────────────
-        for (idx, obs) in new_obs.iter().enumerate() {
-            obs_index_result.push(idx + offset);
-            self.index.obs_index_by_id.insert(obs.id, idx + offset);
-        }
+        // ── Place inputs (assign indices) and update the id→index map ──────
+        let placed: Vec<Observation> = new_obs
+            .into_iter()
+            .enumerate()
+            .map(|(local_idx, mut input)| {
+                let abs_idx = offset + local_idx;
+                obs_index_result.push(abs_idx);
+                self.index.obs_index_by_id.insert(input.id, abs_idx);
+                // Shift any IntId observer reference by the custom offset.
+                if let Some(ObserverId::IntId(ref mut i)) = input.observer {
+                    *i += custom_offset;
+                }
+                Observation::place(input, abs_idx)
+            })
+            .collect();
 
-        // ── Shift internal positions and push observations ─────────────────
-        self.push_observations_from(new_obs, offset, custom_offset);
+        self.observations.extend(placed);
 
         Ok(obs_index_result)
     }
@@ -310,8 +318,8 @@ impl ObsDataset {
             traj_id,
             &(obs_indices
                 .iter()
-                .map(|obs| obs.index.ok_or(ObsDatasetError::MissingIndex))
-                .collect::<Result<Vec<ObsIndex>, ObsDatasetError>>()?),
+                .map(|obs| obs.index())
+                .collect::<Vec<ObsIndex>>()),
         );
         Ok(())
     }
@@ -355,7 +363,7 @@ impl ObsDataset {
     /// `Some(&Observer)` if the observation exists and has an observer that can be resolved;
     /// `None` if the observation does not exist, has no observer, or the MPC catalogue
     /// initialisation failed.
-    pub fn get_observer(&mut self, id: ObsId) -> Option<&Observer> {
+    pub fn get_observer(&self, id: ObsId) -> Option<&Observer> {
         // Copy the ObserverId out first to release the borrow on `self` held by
         // `get_observation` before we access `self.custom_observers` or
         // `self.mpc_observers()`.  ObserverId is Copy so no allocation occurs.
@@ -368,6 +376,9 @@ impl ObsDataset {
     /// This constructor is used internally by [`ObsDataset::from_polars`] and
     /// by test helpers.  The MPC observatory table is not fetched until the
     /// first call to [`ObsDataset::get_observer`] for an MPC-coded site.
+    ///
+    /// Each [`ObservationInput`] is converted to an [`Observation`] with its
+    /// `index` field set to its position in the `observations` slice.
     ///
     /// # Arguments
     ///
@@ -386,21 +397,26 @@ impl ObsDataset {
     /// A fully initialised `ObsDataset` with the observations indexed.
     #[cfg_attr(not(feature = "polars"), allow(dead_code))]
     pub(crate) fn new(
-        observations: Vec<Observation>,
+        observations: Vec<ObservationInput>,
         custom_observers: Vec<Observer>,
         error_model: Option<ObsErrorModel>,
         obs_index_by_night: Option<NightIndexMap>,
         obs_index_by_trajectory: Option<TrajIndexMap>,
     ) -> Self {
-        // Build the ObsId → index mapping for look-up by id.  Pre-allocating
-        // with the exact capacity avoids repeated rehashing as the map grows.
+        // Place each ObservationInput into an Observation, assigning its index
+        // atomically.  Build the ObsId → index mapping in the same pass.
         let mut obs_index_by_id = ObservationIndexMap::with_capacity(observations.len());
-        for (idx, obs) in observations.iter().enumerate() {
-            obs_index_by_id.insert(obs.id, idx);
-        }
+        let placed: Vec<Observation> = observations
+            .into_iter()
+            .enumerate()
+            .map(|(idx, input)| {
+                obs_index_by_id.insert(input.id, idx);
+                Observation::place(input, idx)
+            })
+            .collect();
 
         Self {
-            observations,
+            observations: placed,
             index: ObsDatasetIndex::new(
                 obs_index_by_id,
                 obs_index_by_night,
@@ -430,23 +446,28 @@ impl ObsDataset {
     ///   canonical [`TrajId`]); pass an empty map when no aliases were serialised.
     #[cfg(feature = "serde")]
     pub(crate) fn new_from_parts(
-        observations: Vec<Observation>,
+        observations: Vec<ObservationInput>,
         observer_dataset: ObserverDataset,
         obs_index_by_night: Option<NightIndexMap>,
         obs_index_by_trajectory: Option<TrajIndexMap>,
         traj_aliases: index::TrajAliasMap,
     ) -> Self {
         let mut obs_index_by_id = ObservationIndexMap::with_capacity(observations.len());
-        for (idx, obs) in observations.iter().enumerate() {
-            obs_index_by_id.insert(obs.id, idx);
-        }
+        let placed: Vec<Observation> = observations
+            .into_iter()
+            .enumerate()
+            .map(|(idx, input)| {
+                obs_index_by_id.insert(input.id, idx);
+                Observation::place(input, idx)
+            })
+            .collect();
 
         let mut dataset_index =
             ObsDatasetIndex::new(obs_index_by_id, obs_index_by_night, obs_index_by_trajectory);
         dataset_index.set_aliases(traj_aliases);
 
         Self {
-            observations,
+            observations: placed,
             index: dataset_index,
             observer_dataset,
         }
@@ -483,9 +504,19 @@ impl ObsDataset {
     ///
     /// Trajectory aliases from `other` are merged; keys from `other` overwrite
     /// same-key entries already present in `self`.
-    pub fn merge_from(&mut self, other: ObsDataset) -> Result<(), ObsDatasetError> {
+    pub fn merge_from(mut self, other: ObsDataset) -> Result<Self, ObsDatasetError> {
         // ── Phase 1: validate — no mutation of self until this passes ──────
-        let duplicates = self.find_duplicate_obs_ids(&other.observations);
+        let duplicates: Vec<ObsId> = other
+            .observations
+            .iter()
+            .filter_map(|obs| {
+                if self.index.get_by_id(&obs.id).is_some() {
+                    Some(obs.id)
+                } else {
+                    None
+                }
+            })
+            .collect();
         if !duplicates.is_empty() {
             return Err(ObsDatasetError::DuplicateObsIds(duplicates));
         }
@@ -498,17 +529,17 @@ impl ObsDataset {
             .merge_custom_observers(other.observer_dataset);
 
         // ── Shift internal positions and push observations ─────────────────
-        self.push_observations_from(other.observations, offset, custom_offset);
+        let mut merged = self.push_observations_from(other.observations, offset, custom_offset);
 
         // ── Merge index maps ───────────────────────────────────────────────
-        self.index.merge_from(other.index, offset);
-        Ok(())
+        merged.index.merge_from(other.index, offset);
+        Ok(merged)
     }
 
     /// Return the list of [`ObsId`] values in `other` that already exist in `self`.
     ///
     /// An empty `Vec` means no collision; the merge can proceed safely.
-    fn find_duplicate_obs_ids(&self, other: &[Observation]) -> Vec<ObsId> {
+    fn find_duplicate_obs_ids(&self, other: &[ObservationInput]) -> Vec<ObsId> {
         other
             .iter()
             .filter_map(|obs| {
@@ -523,25 +554,26 @@ impl ObsDataset {
 
     /// Shift internal positions inside each observation and push them into `self`.
     ///
-    /// - `obs.index` is incremented by `offset` (the pre-merge length of
-    ///   `self.observations`).
-    /// - Any `ObserverId::IntId(i)` is incremented by `custom_offset` (the
-    ///   shift returned by [`ObserverDataset::merge_custom_observers`]).
-    /// - `obs.id` is **not** modified.
+    /// Each `Observation` already has a valid `index` field (assigned when it
+    /// was first placed into its source dataset).  This method re-assigns
+    /// `index` to `offset + local_idx` using the loop counter so that the
+    /// position reflects the observation's new location in the merged vector.
+    /// Any `ObserverId::IntId(i)` is incremented by `custom_offset`.
+    /// `obs.id` is **not** modified.
     fn push_observations_from(
-        &mut self,
+        mut self,
         observations: Vec<Observation>,
         offset: usize,
         custom_offset: usize,
-    ) {
+    ) -> Self {
         self.observations.reserve(observations.len());
-        for mut obs in observations {
-            obs.index = obs.index.map(|i| i + offset);
+        for (local_idx, mut obs) in observations.into_iter().enumerate() {
             if let Some(ObserverId::IntId(ref mut i)) = obs.observer {
                 *i += custom_offset;
             }
-            self.observations.push(obs);
+            self.observations.push(obs.reindex(offset + local_idx));
         }
+        self
     }
 }
 
@@ -575,9 +607,8 @@ mod observation_tests {
         }
     }
 
-    fn make_observation(id: u64, observer: Option<ObserverId>) -> Observation {
-        Observation {
-            index: Some(0),
+    fn make_observation(id: u64, observer: Option<ObserverId>) -> ObservationInput {
+        ObservationInput {
             id,
             equ_coord: make_equ_coord(),
             photometry: make_photometry(),
@@ -594,7 +625,7 @@ mod observation_tests {
     }
 
     /// Build an ObsDataset
-    fn make_dataset(obs: Vec<Observation>, observers: Vec<Observer>) -> ObsDataset {
+    fn make_dataset(obs: Vec<ObservationInput>, observers: Vec<Observer>) -> ObsDataset {
         ObsDataset::new(obs, observers, Some(ObsErrorModel::FCCT14), None, None)
     }
 
@@ -831,7 +862,7 @@ mod observation_tests {
         /// Verifies that get_observer returns None for an observation id that does not exist.
         #[test]
         fn get_observer_returns_none_for_missing_obs_id() {
-            let mut ds = make_dataset(vec![], vec![]);
+            let ds = make_dataset(vec![], vec![]);
             assert!(ds.get_observer(9999).is_none());
         }
 
@@ -839,7 +870,7 @@ mod observation_tests {
         #[test]
         fn get_observer_returns_none_when_observer_is_none() {
             let obs = vec![make_observation(1, None)];
-            let mut ds = make_dataset(obs, vec![]);
+            let ds = make_dataset(obs, vec![]);
             assert!(ds.get_observer(1).is_none());
         }
 
@@ -849,7 +880,7 @@ mod observation_tests {
         fn get_observer_returns_some_for_int_id_zero() {
             let custom = make_custom_observer();
             let obs = vec![make_observation(1, Some(ObserverId::IntId(0)))];
-            let mut ds = make_dataset(obs, vec![custom]);
+            let ds = make_dataset(obs, vec![custom]);
             assert!(
                 ds.get_observer(1).is_some(),
                 "Expected Some(observer) for ObserverId::IntId(0)"
@@ -862,7 +893,7 @@ mod observation_tests {
             let custom = make_custom_observer();
             let expected_name = custom.name.clone();
             let obs = vec![make_observation(1, Some(ObserverId::IntId(0)))];
-            let mut ds = make_dataset(obs, vec![custom]);
+            let ds = make_dataset(obs, vec![custom]);
             let found = ds.get_observer(1).unwrap(); // safe: verified Some above
             assert_eq!(
                 found.name, expected_name,
@@ -876,7 +907,7 @@ mod observation_tests {
             // Index 5 does not exist in a one-element observer list.
             let obs = vec![make_observation(1, Some(ObserverId::IntId(5)))];
             let custom = make_custom_observer();
-            let mut ds = make_dataset(obs, vec![custom]);
+            let ds = make_dataset(obs, vec![custom]);
             assert!(
                 ds.get_observer(1).is_none(),
                 "Expected None for ObserverId::IntId out of bounds"
@@ -898,7 +929,7 @@ mod observation_tests {
                 make_observation(1, Some(ObserverId::IntId(0))),
                 make_observation(2, Some(ObserverId::IntId(1))),
             ];
-            let mut ds = make_dataset(obs, vec![obs1, obs2]);
+            let ds = make_dataset(obs, vec![obs1, obs2]);
 
             let name_for_obs1 = ds.get_observer(1).and_then(|o| o.name.clone());
             let name_for_obs2 = ds.get_observer(2).and_then(|o| o.name.clone());
@@ -999,19 +1030,19 @@ mod observation_tests {
         /// observation count equals the sum of both.
         #[test]
         fn merge_disjoint_datasets_succeeds() {
-            let mut ds1 = make_dataset(vec![make_observation(1, None)], vec![]);
+            let ds1 = make_dataset(vec![make_observation(1, None)], vec![]);
             let ds2 = make_dataset(vec![make_observation(2, None)], vec![]);
-            ds1.merge_from(ds2).unwrap();
-            assert_eq!(ds1.observation_count(), 2);
+            let merged = ds1.merge_from(ds2).unwrap();
+            assert_eq!(merged.observation_count(), 2);
         }
 
         /// Verifies that obs.id values are never modified during a merge.
         #[test]
         fn merge_does_not_modify_obs_id() {
-            let mut ds1 = make_dataset(vec![make_observation(10, None)], vec![]);
+            let ds1 = make_dataset(vec![make_observation(10, None)], vec![]);
             let ds2 = make_dataset(vec![make_observation(20, None)], vec![]);
-            ds1.merge_from(ds2).unwrap();
-            let ids: Vec<ObsId> = ds1.iter_observations().map(|o| o.id).collect();
+            let merged = ds1.merge_from(ds2).unwrap();
+            let ids: Vec<ObsId> = merged.iter_observations().map(|o| o.id).collect();
             assert!(
                 ids.contains(&10),
                 "id 10 must be present unchanged after merge"
@@ -1022,11 +1053,10 @@ mod observation_tests {
             );
         }
 
-        /// Verifies that a merge with a duplicate ObsId returns Err and leaves
-        /// self completely unchanged.
+        /// Verifies that a merge with a duplicate ObsId returns Err.
         #[test]
-        fn merge_with_duplicate_obs_id_returns_err_and_self_unchanged() {
-            let mut ds1 = make_dataset(
+        fn merge_with_duplicate_obs_id_returns_err() {
+            let ds1 = make_dataset(
                 vec![make_observation(1, None), make_observation(2, None)],
                 vec![],
             );
@@ -1044,18 +1074,12 @@ mod observation_tests {
                 }
                 other => panic!("unexpected error variant: {other:?}"),
             }
-            // self must be untouched.
-            assert_eq!(
-                ds1.observation_count(),
-                2,
-                "self must not be modified on Err"
-            );
         }
 
         /// Verifies that all colliding ids are reported when multiple duplicates exist.
         #[test]
         fn merge_reports_all_duplicate_obs_ids() {
-            let mut ds1 = make_dataset(
+            let ds1 = make_dataset(
                 vec![
                     make_observation(1, None),
                     make_observation(2, None),
@@ -1081,15 +1105,15 @@ mod observation_tests {
         /// datasets are reachable by get_observation.
         #[test]
         fn merge_all_observations_reachable_by_id() {
-            let mut ds1 = make_dataset(vec![make_observation(1, None)], vec![]);
+            let ds1 = make_dataset(vec![make_observation(1, None)], vec![]);
             let ds2 = make_dataset(
                 vec![make_observation(2, None), make_observation(3, None)],
                 vec![],
             );
-            ds1.merge_from(ds2).unwrap();
-            assert!(ds1.get_observation(1).is_some());
-            assert!(ds1.get_observation(2).is_some());
-            assert!(ds1.get_observation(3).is_some());
+            let merged = ds1.merge_from(ds2).unwrap();
+            assert!(merged.get_observation(1).is_some());
+            assert!(merged.get_observation(2).is_some());
+            assert!(merged.get_observation(3).is_some());
         }
 
         /// Verifies that custom observer IntId references are remapped correctly
@@ -1102,7 +1126,7 @@ mod observation_tests {
                 Observer::from_parallax(50.0, 0.7, 0.6, Some("Second".to_string()), None, None)
                     .unwrap();
 
-            let mut ds1 = make_dataset(
+            let ds1 = make_dataset(
                 vec![make_observation(1, Some(ObserverId::IntId(0)))],
                 vec![obs1],
             );
@@ -1110,9 +1134,9 @@ mod observation_tests {
                 vec![make_observation(2, Some(ObserverId::IntId(0)))],
                 vec![obs2],
             );
-            ds1.merge_from(ds2).unwrap();
+            let merged = ds1.merge_from(ds2).unwrap();
 
-            let name = ds1.get_observer(2).and_then(|o| o.name.clone());
+            let name = merged.get_observer(2).and_then(|o| o.name.clone());
             assert_eq!(
                 name.as_deref(),
                 Some("Second"),

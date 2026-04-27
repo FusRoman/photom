@@ -378,7 +378,7 @@ mod iter_tests {
         observation_dataset::{
             ObsDataset,
             index::{NightIndexMap, ObsMapIndex, TrajIndexMap},
-            observation::Observation,
+            observation::ObservationInput,
         },
         observer::error_model::ObsErrorModel,
         photometry::{Filter, Photometry},
@@ -388,9 +388,8 @@ mod iter_tests {
     // Helpers
     // ------------------------------------------------------------------
 
-    fn make_obs(id: u64, index: usize) -> Observation {
-        Observation {
-            index: Some(index),
+    fn make_obs(id: u64, _index: usize) -> ObservationInput {
+        ObservationInput {
             id,
             equ_coord: EquCoord::new(0.5, 1e-5, 0.2, 1e-5),
             photometry: Photometry {

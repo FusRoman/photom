@@ -123,7 +123,7 @@ use crate::{
     observation_dataset::{
         ObsDataset,
         index::{NightIndexMap, ObsMapIndex, TrajIndexMap},
-        observation::Observation,
+        observation::ObservationInput,
     },
     observer::{Observer, dataset::ObserverId, error_model::ObsErrorModel},
     photometry::Photometry,
@@ -778,7 +778,7 @@ fn load_observation_from_frame(
     let mut traj_tracker: ContiguousGroupTracker<TrajId, ObsMapIndex> =
         ContiguousGroupTracker::new(|start, end| ObsMapIndex::Contiguous { start, end });
 
-    let mut observations: Vec<Observation> = Vec::with_capacity(n);
+    let mut observations: Vec<ObservationInput> = Vec::with_capacity(n);
 
     // ── step 8: single-pass row assembly ─────────────────────────────────────
     for (
@@ -843,8 +843,7 @@ fn load_observation_from_frame(
         }
 
         // 8d. Append observation.
-        observations.push(Observation {
-            index: Some(row_idx),
+        observations.push(ObservationInput {
             id,
             equ_coord: EquCoord::new(ra, ra_err, dec, dec_err),
             photometry: Photometry {
@@ -884,6 +883,7 @@ fn load_observation_from_frame(
 #[cfg(test)]
 mod polars_reader_tests {
     use super::*;
+    use crate::observation_dataset::observation::Observation;
     use crate::photometry::Filter;
     use polars::frame::DataFrame;
 
@@ -1825,6 +1825,7 @@ mod polars_reader_tests {
 #[cfg(test)]
 mod polars_reader_prop_tests {
     use super::*;
+    use crate::observation_dataset::observation::Observation;
     use polars::frame::DataFrame;
     use proptest::prelude::*;
 
@@ -2192,6 +2193,7 @@ mod polars_reader_prop_tests {
 #[cfg(test)]
 mod lazy_frame_tests {
     use super::*;
+    use crate::observation_dataset::observation::Observation;
     use polars::{frame::DataFrame, lazy::frame::IntoLazy as _};
 
     /// Build a minimal single-row [`DataFrame`] with only the nine mandatory

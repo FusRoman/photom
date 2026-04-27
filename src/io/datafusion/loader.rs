@@ -133,7 +133,7 @@ use crate::{
     observation_dataset::{
         ObsDataset,
         index::{NightIndexMap, ObsMapIndex, TrajIndexMap},
-        observation::Observation,
+        observation::ObservationInput,
     },
     observer::error_model::ObsErrorModel,
     observer::{Observer, dataset::ObserverId, mpc::MpcCode},
@@ -619,7 +619,7 @@ fn build_obs_dataset_from_batches(
     batches: &[RecordBatch],
     args: LoadObsArgs,
 ) -> Result<ObsDataset, LoadObsError> {
-    let mut observations: Vec<Observation> = Vec::new();
+    let mut observations: Vec<ObservationInput> = Vec::new();
     let mut custom_observers: Vec<Observer> = Vec::with_capacity(16);
     let mut observer_lookup: AHashMap<Observer, usize> = AHashMap::with_capacity(16);
 
@@ -695,7 +695,7 @@ fn build_obs_dataset_from_batches(
 }
 
 /// Process a single Arrow [`RecordBatch`] and append the resulting
-/// [`Observation`]s to the shared accumulator vectors.
+/// [`ObservationInput`]s to the shared accumulator vectors.
 ///
 /// Extracts all mandatory and optional columns from the batch, then iterates
 /// over each row to:
@@ -711,7 +711,7 @@ fn build_obs_dataset_from_batches(
 /// # Arguments
 ///
 /// - `batch` — the Arrow [`RecordBatch`] to process.
-/// - `observations` — the accumulator vector to which new [`Observation`]s are
+/// - `observations` — the accumulator vector to which new [`ObservationInput`]s are
 ///   appended.
 /// - `custom_observers` — the list of interned custom (geodetic) observers;
 ///   grown lazily as new unique observers are encountered.
@@ -738,7 +738,7 @@ fn build_obs_dataset_from_batches(
 #[allow(clippy::too_many_arguments)]
 fn process_batch(
     batch: &RecordBatch,
-    observations: &mut Vec<Observation>,
+    observations: &mut Vec<ObservationInput>,
     custom_observers: &mut Vec<Observer>,
     observer_lookup: &mut AHashMap<Observer, usize>,
     night_map: &mut Option<NightIndexMap>,
@@ -844,9 +844,8 @@ fn process_batch(
             }
         }
 
-        // Build Observation.
-        observations.push(Observation {
-            index: Some(row_idx),
+        // Build ObservationInput.
+        observations.push(ObservationInput {
             id: ids.value(i),
             equ_coord: EquCoord::new(ra.value(i), ra_err.value(i), dec.value(i), dec_err.value(i)),
             photometry: Photometry {

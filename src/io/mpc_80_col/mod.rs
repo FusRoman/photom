@@ -26,7 +26,7 @@ use crate::{
     observation_dataset::{
         ObsDataset, ObsId,
         index::{ObsMapIndex, TrajIndexMap},
-        observation::Observation,
+        observation::ObservationInput,
     },
     observer::dataset::ObserverId,
     photometry::{Filter, Photometry},
@@ -119,7 +119,7 @@ pub(crate) fn parse_mpc_80_col_str(
         .unwrap_or(TrajId::Str(String::new()));
 
     // ── Pass 2: build observations and collect aliases ─────────────────────
-    let mut observations: Vec<Observation> = Vec::with_capacity(records.len());
+    let mut observations: Vec<ObservationInput> = Vec::with_capacity(records.len());
     let mut seen_aliases: AHashMap<String, ()> = AHashMap::new();
 
     for (traj_id, record) in records {
@@ -167,7 +167,7 @@ struct LineRecord {
 }
 
 impl LineRecord {
-    fn into_observation(self, idx: usize, start_id: ObsId) -> Observation {
+    fn into_observation(self, idx: usize, start_id: ObsId) -> ObservationInput {
         let ra_err_deg = self.ra_acc_arcsec * ARCSEC_TO_DEG;
         let dec_err_deg = self.dec_acc_arcsec * ARCSEC_TO_DEG;
         let equ_coord = EquCoord::from_degrees(self.ra_deg, ra_err_deg, self.dec_deg, dec_err_deg);
@@ -181,8 +181,7 @@ impl LineRecord {
                 .unwrap_or(Filter::String("unknown".to_string())),
         };
 
-        Observation {
-            index: Some(idx),
+        ObservationInput {
             id: start_id + idx as u64,
             equ_coord,
             photometry,

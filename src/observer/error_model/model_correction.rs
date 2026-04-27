@@ -224,7 +224,7 @@ mod test_batch_rms_correction {
     use super::*;
     use crate::{
         coordinates::equatorial::EquCoord,
-        observation_dataset::{ObsDataset, observation::Observation},
+        observation_dataset::{ObsDataset, observation::ObservationInput},
         observer::{dataset::ObserverId, error_model::ObsErrorModel},
         photometry::{Filter, Photometry},
     };
@@ -237,12 +237,11 @@ mod test_batch_rms_correction {
         }
     }
 
-    /// Build a minimal `Observation` with the given `id`, observer, and MJD.
+    /// Build a minimal `ObservationInput` with the given `id`, observer, and MJD.
     ///
     /// `id` must be unique across observations in the same dataset.
-    fn obs(id: u64, observer: Option<ObserverId>, time: f64) -> Observation {
-        Observation {
-            index: None,
+    fn obs(id: u64, observer: Option<ObserverId>, time: f64) -> ObservationInput {
+        ObservationInput {
             id,
             equ_coord: EquCoord::new(1.0, 1e-6, 0.5, 2e-6),
             photometry: make_photometry(),
@@ -251,8 +250,8 @@ mod test_batch_rms_correction {
         }
     }
 
-    /// Wrap a `Vec<Observation>` into an owned `ObsDataset` (no error model, no index).
-    fn dataset(observations: Vec<Observation>) -> ObsDataset {
+    /// Wrap a `Vec<ObservationInput>` into an owned `ObsDataset` (no error model, no index).
+    fn dataset(observations: Vec<ObservationInput>) -> ObsDataset {
         ObsDataset::new(observations, vec![], None, None, None)
     }
 
@@ -370,9 +369,8 @@ mod test_batch_rms_correction {
         ra_error: f64,
         dec: f64,
         dec_error: f64,
-    ) -> Observation {
-        Observation {
-            index: None,
+    ) -> ObservationInput {
+        ObservationInput {
             id,
             equ_coord: EquCoord::new(ra, ra_error, dec, dec_error),
             photometry: make_photometry(),
@@ -398,7 +396,7 @@ mod test_batch_rms_correction {
             let n = ra_errors.len().min(dec_errors.len());
             let observer = Some(ObserverId::MpcCode(*b"F01"));
             // Space observations 0.01 days apart — well within the 8h gap_max
-            let observations: Vec<Observation> = (0..n)
+            let observations: Vec<ObservationInput> = (0..n)
                 .map(|i| obs_with_errors(
                     i as u64,
                     observer,
@@ -492,7 +490,7 @@ mod test_batch_rms_correction {
         ) {
             let n = ra_errors.len().min(dec_errors.len());
             // Give every observation a unique MPC code derived from its index.
-            let observations: Vec<Observation> = (0..n)
+            let observations: Vec<ObservationInput> = (0..n)
                 .map(|i| {
                     // Build a 3-byte code that encodes the index uniquely.
                     let b0 = b'A' + (i / 26) as u8;

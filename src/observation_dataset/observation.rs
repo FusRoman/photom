@@ -1,14 +1,23 @@
 //! A single astrometric and photometric measurement.
 //!
-//! This module defines [`Observation`], the fundamental record type stored
-//! inside an [`ObsDataset`](crate::observation_dataset::ObsDataset).  Each
-//! value bundles a sky position, a photometric measurement, a detection epoch,
-//! and an optional reference to the observatory that recorded it.
+//! This module defines two related types:
+//!
+//! - [`ObservationInput`] — an observation that has not yet been placed in a
+//!   dataset.  It carries all measurement data but no vector position.  This
+//!   is the type accepted by [`crate::observation_dataset::ObsDataset::push_observation`] and produced by
+//!   all ingestion backends (ADES, MPC 80-column, Polars, DataFusion).
+//!
+//! - [`Observation`] — an observation that lives inside an
+//!   [`ObsDataset`](crate::observation_dataset::ObsDataset).  It is identical
+//!   to [`ObservationInput`] plus an [`ObsIndex`] that records its zero-based
+//!   position in the dataset's storage vector.  The index is always set and
+//!   correct: it is assigned atomically with insertion by `ObsDataset` and is
+//!   never modified afterwards.
 //!
 //! ## Field access
 //!
-//! All fields of [`Observation`] are `pub(crate)` to prevent external mutation.
-//! Read-only access is provided through dedicated getter methods:
+//! All fields of [`Observation`] are `pub(crate)` to prevent external
+//! mutation.  Read-only access is provided through dedicated getter methods:
 //! [`Observation::index`], [`Observation::id`], [`Observation::equ_coord`],
 //! [`Observation::photometry`], and [`Observation::mjd_tt`].  The `observer`
 //! field is accessed indirectly via
@@ -22,17 +31,108 @@ use crate::{
     photometry::Photometry,
 };
 
-/// A single astrometric and photometric measurement.
+// ---------------------------------------------------------------------------
+// ObservationInput
+// ---------------------------------------------------------------------------
+
+/// An observation that has not yet been placed in an [`ObsDataset`](crate::observation_dataset::ObsDataset).
+///
+/// `ObservationInput` carries all measurement data for a single
+/// astrometric/photometric detection but does not have a vector position yet.
+/// It is the type accepted by
+/// [`ObsDataset::push_observation`](crate::observation_dataset::ObsDataset::push_observation)
+/// and is produced by all ingestion backends (ADES, MPC 80-column, Polars,
+/// DataFusion).
+///
+/// Once inserted into a dataset, `ObservationInput` is converted to
+/// [`Observation`] with an immutable [`ObsIndex`] assigned by the dataset.
+#[derive(Debug, Clone)]
+pub struct ObservationInput {
+    /// Unique identifier for this observation within its dataset.
+    pub id: ObsId,
+
+    /// Equatorial sky coordinates (right ascension and declination) with
+    /// their associated measurement uncertainties, all in **radians**.
+    pub equ_coord: EquCoord,
+
+    /// Photometric measurement: apparent magnitude, its uncertainty, and the
+    /// filter through which the observation was taken.
+    pub photometry: Photometry,
+
+    /// Detection epoch (Modified Julian Date, Terrestrial Time, **days**).
+    pub mjd_tt: MJDTT,
+
+    /// Reference to the observatory that recorded this observation, or `None`
+    /// when the observer is unknown.
+    pub observer: Option<ObserverId>,
+}
+
+impl ObservationInput {
+    /// Create a new `ObservationInput` with the specified fields.
+    ///
+    /// The `observer` field is optional; pass `None` when the observer is
+    /// unknown.  Use
+    /// [`ObsDataset::get_observer`](crate::observation_dataset::ObsDataset::get_observer)
+    /// to resolve an [`ObserverId`] to a full [`crate::observer::Observer`] value
+    /// after insertion.
+    ///
+    /// # Parameters
+    ///
+    /// - `id` — unique identifier for this observation within its dataset
+    ///   (corresponds to the `id` column of the source `DataFrame`).
+    /// - `equ_coord` — equatorial sky coordinates (right ascension and
+    ///   declination) with their associated measurement uncertainties, all
+    ///   in **radians**.
+    /// - `photometry` — photometric measurement: apparent magnitude, its
+    ///   uncertainty, and the filter through which the observation was taken.
+    /// - `mjd_tt` — detection epoch as a Modified Julian Date in Terrestrial
+    ///   Time, expressed in **days**.
+    /// - `observer` — optional reference to the observatory that recorded
+    ///   this observation.
+    ///
+    /// # Returns
+    ///
+    /// A new `ObservationInput` ready to be inserted into an
+    /// [`ObsDataset`](crate::observation_dataset::ObsDataset).
+    pub fn new(
+        id: ObsId,
+        equ_coord: EquCoord,
+        photometry: Photometry,
+        mjd_tt: MJDTT,
+        observer: Option<ObserverId>,
+    ) -> Self {
+        Self {
+            id,
+            equ_coord,
+            photometry,
+            mjd_tt,
+            observer,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Observation
+// ---------------------------------------------------------------------------
+
+/// A single astrometric and photometric measurement placed inside an
+/// [`ObsDataset`](crate::observation_dataset::ObsDataset).
 ///
 /// Each `Observation` bundles the equatorial sky position, the photometric
-/// measurement, the detection epoch, and an optional reference to the
-/// observatory that recorded it.
+/// measurement, the detection epoch, an optional reference to the observatory
+/// that recorded it, and — crucially — the **zero-based index** of its
+/// position in the parent dataset's storage vector.
+///
+/// `Observation` values are created exclusively by `ObsDataset`; they cannot
+/// be constructed directly by external code.  This invariant guarantees that
+/// `index` is always consistent with the observation's actual position.
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Observation {
-    /// Zero-based index of this observation in the source dataset.
-    /// None by default and assigned during dataset construction.
-    pub(crate) index: Option<ObsIndex>,
+    /// Zero-based index of this observation in the parent dataset's storage
+    /// vector.  Assigned atomically by `ObsDataset` during insertion and
+    /// never modified afterwards.
+    index: ObsIndex,
 
     /// Unique identifier for this observation within its dataset.
     ///
@@ -84,53 +184,51 @@ impl PartialOrd for Observation {
 }
 
 impl Observation {
-    /// Create a new `Observation` with the specified fields.
+    /// Place an [`ObservationInput`] into a dataset by attaching its vector position.
     ///
-    /// The `index` field is set to `None` by default and will be assigned during dataset construction.
-    ///
-    /// The `observer` field is optional and can be set to `None` if the observer is unknown.
-    /// Use [`ObsDataset::get_observer`](crate::observation_dataset::ObsDataset::get_observer) to resolve the `ObserverId` to a full `Observer` value.
-    ///
-    /// # Parameters
-    /// - `id` — unique identifier for this observation within its dataset (corresponds to the `id` column of the source `DataFrame`).
-    /// - `equ_coord` — equatorial sky coordinates (right ascension and declination) with their associated measurement uncertainties, all in **radians**.
-    /// - `photometry` — photometric measurement: apparent magnitude, its uncertainty, and the filter through which the observation was taken.
-    /// - `mjd_tt` — detection epoch as a Modified Julian Date in Terrestrial Time, expressed in **days**.
-    /// - `observer` — optional reference to the observatory that recorded this observation. Use [`ObsDataset::get_observer`](crate::observation_dataset::ObsDataset::get_observer) to resolve this identifier to a full `Observer` value.
-    ///
-    /// # Returns
-    ///
-    /// A new `Observation` instance with the specified fields and `index` set to `None`.
-    pub fn new(
-        id: ObsId,
-        equ_coord: EquCoord,
-        photometry: Photometry,
-        mjd_tt: MJDTT,
-        observer: Option<ObserverId>,
-    ) -> Self {
+    /// This is the only constructor for `Observation`.  It is `pub(crate)` so
+    /// that only `ObsDataset` methods can create placed observations, preserving
+    /// the invariant that `index` always matches the observation's actual position.
+    pub(crate) fn place(input: ObservationInput, index: ObsIndex) -> Self {
         Self {
-            index: None, // index is assigned during dataset construction
-            id,
-            equ_coord,
-            photometry,
-            mjd_tt,
-            observer,
+            index,
+            id: input.id,
+            equ_coord: input.equ_coord,
+            photometry: input.photometry,
+            mjd_tt: input.mjd_tt,
+            observer: input.observer,
         }
     }
 
-    /// Return the zero-based position of this observation in its parent dataset's storage vector.
+    /// Re-assign the vector position of this observation, consuming `self` and
+    /// returning a new `Observation` with `index` set to `new_idx`.
+    ///
+    /// Used by [`crate::observation_dataset::ObsDataset`] when merging datasets:
+    /// observations that were valid in their source dataset are re-placed at
+    /// their new position in the merged vector.  All measurement fields are
+    /// preserved unchanged.
+    pub(crate) fn reindex(self, new_idx: ObsIndex) -> Self {
+        Self {
+            index: new_idx,
+            ..self
+        }
+    }
+
+    /// Return the zero-based position of this observation in its parent
+    /// dataset's storage vector.
     ///
     /// # Returns
     ///
-    /// The `ObsIndex` (a `usize`) assigned to this observation during dataset construction.
-    pub fn index(&self) -> Option<ObsIndex> {
+    /// The [`ObsIndex`] (a `usize`) that was assigned during insertion into
+    /// the dataset.
+    pub fn index(&self) -> ObsIndex {
         self.index
     }
 
     /// Return a reference to the unique identifier of this observation.
     ///
-    /// The identifier corresponds to the value in the `id` column of the source `DataFrame`
-    /// and is unique within a given `ObsDataset`.
+    /// The identifier corresponds to the value in the `id` column of the
+    /// source `DataFrame` and is unique within a given `ObsDataset`.
     ///
     /// # Returns
     ///
@@ -201,8 +299,8 @@ mod observation_tests {
         }
     }
 
-    fn make_obs(id: u64, mjd: f64) -> Observation {
-        Observation::new(
+    fn make_input(id: u64, mjd: f64) -> ObservationInput {
+        ObservationInput::new(
             id,
             EquCoord::new(0.5, 1e-5, 0.2, 1e-5),
             make_photometry(),
@@ -211,14 +309,19 @@ mod observation_tests {
         )
     }
 
+    fn make_obs(id: u64, mjd: f64) -> Observation {
+        Observation::place(make_input(id, mjd), 0)
+    }
+
     // ------------------------------------------------------------------
     // Constructor
     // ------------------------------------------------------------------
 
     #[test]
-    fn new_sets_index_to_none() {
-        let obs = make_obs(42, 60000.0);
-        assert!(obs.index().is_none());
+    fn place_sets_correct_index() {
+        let input = make_input(42, 60000.0);
+        let obs = Observation::place(input, 7);
+        assert_eq!(obs.index(), 7);
     }
 
     #[test]
@@ -232,13 +335,14 @@ mod observation_tests {
 
     #[test]
     fn observer_field_preserved() {
-        let obs = Observation::new(
+        let input = ObservationInput::new(
             1,
             EquCoord::new(0.0, 1e-5, 0.0, 1e-5),
             make_photometry(),
             60000.0,
             Some(ObserverId::MpcCode(*b"T05")),
         );
+        let obs = Observation::place(input, 0);
         // We can't directly inspect the observer field (pub(crate)), but we can
         // verify the observation was constructed without panic.
         assert_eq!(*obs.id(), 1);
@@ -293,14 +397,13 @@ mod observation_tests {
     }
 
     // ------------------------------------------------------------------
-    // Index assignment (pub(crate) field)
+    // Index is ObsIndex (non-optional)
     // ------------------------------------------------------------------
 
     #[test]
-    fn index_assignment() {
-        let mut obs = make_obs(1, 60000.0);
-        assert!(obs.index().is_none());
-        obs.index = Some(ObsIndex::from(3usize));
-        assert_eq!(obs.index(), Some(ObsIndex::from(3usize)));
+    fn index_is_set_by_place() {
+        let input = make_input(1, 60000.0);
+        let obs = Observation::place(input, ObsIndex::from(3usize));
+        assert_eq!(obs.index(), ObsIndex::from(3usize));
     }
 }

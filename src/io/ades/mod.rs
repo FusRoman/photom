@@ -15,7 +15,7 @@ use crate::{
     observation_dataset::{
         ObsDataset,
         index::{ObsMapIndex, TrajIndexMap},
-        observation::Observation,
+        observation::ObservationInput,
     },
     observer::dataset::ObserverId,
     photometry::{Filter, Photometry},
@@ -173,7 +173,7 @@ fn build_dataset(
     error_dec: Option<Arcseconds>,
     start_id: ObsId,
 ) -> Result<ObsDataset, AdesError> {
-    let mut observations: Vec<Observation> = Vec::with_capacity(records.len());
+    let mut observations: Vec<ObservationInput> = Vec::with_capacity(records.len());
     let mut traj_index: AHashMap<TrajId, Vec<usize>> =
         AHashMap::with_capacity(records.len() / 4 + 1);
 
@@ -210,8 +210,7 @@ fn build_dataset(
                 .unwrap_or(Filter::String("unknown".to_string())),
         };
 
-        observations.push(Observation {
-            index: Some(idx),
+        observations.push(ObservationInput {
             id: start_id + idx as u64,
             equ_coord,
             photometry,
