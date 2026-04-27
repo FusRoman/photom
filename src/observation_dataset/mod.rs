@@ -363,40 +363,6 @@ impl ObsDataset {
         self.observer_dataset.get(&observer_id)
     }
 
-    /// Set the astrometric error model used for MPC observatory initialisation.
-    /// This method allows changing the error model after the dataset has been constructed,
-    /// which will affect the accuracies assigned to MPC-coded observers when the MPC table is loaded.
-    ///
-    /// Note that if the MPC table has already been initialised,
-    /// changing the error model will not retroactively update the observer accuracies;
-    /// the new error model will only take effect on the first call to `mpc_observers()`
-    /// if the MPC table has not yet been loaded.
-    ///
-    /// # Arguments
-    ///
-    /// - `error_model` — the new [`ObsErrorModel`] to use for MPC observatory initialisation.
-    pub fn set_error_model(&mut self, error_model: ObsErrorModel) {
-        self.observer_dataset.mpc_error_model = Some(error_model);
-    }
-
-    /// Consume `self`, attach an astrometric error model, and return the updated dataset.
-    ///
-    /// This is the chainable counterpart of [`ObsDataset::set_error_model`]:
-    /// it allows the error model to be set in a builder-style pipeline without
-    /// requiring a separate `let mut` binding.
-    ///
-    /// # Arguments
-    ///
-    /// - `error_model` — the [`ObsErrorModel`] variant to store in the dataset.
-    ///
-    /// # Returns
-    ///
-    /// The same dataset with the error model set.
-    pub fn with_error_model(mut self, error_model: ObsErrorModel) -> Self {
-        self.observer_dataset.mpc_error_model = Some(error_model);
-        self
-    }
-
     /// Create a new dataset from pre-parsed data.
     ///
     /// This constructor is used internally by [`ObsDataset::from_polars`] and

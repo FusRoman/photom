@@ -30,7 +30,7 @@ fn test_batch_real_data() {
         .expect("Failed to load 2015AB.obs")
         .with_error_model(ObsErrorModel::FCCT14)
         .apply_model_errors()
-        .apply_batch_rms_correction(&ObsErrorModel::FCCT14, 8.0 / 24.0);
+        .apply_batch_rms_correction(8.0 / 24.0);
 
     let obs: Vec<_> = corrected.iter_observations().collect();
 

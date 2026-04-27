@@ -7,6 +7,52 @@ use crate::{
     },
 };
 
+impl ObsDataset {
+    /// Set the astrometric error model used for MPC observatory initialisation.
+    /// This method allows changing the error model after the dataset has been constructed,
+    /// which will affect the accuracies assigned to MPC-coded observers when the MPC table is loaded.
+    ///
+    /// Note that if the MPC table has already been initialised,
+    /// changing the error model will not retroactively update the observer accuracies;
+    /// the new error model will only take effect on the first call to `mpc_observers()`
+    /// if the MPC table has not yet been loaded.
+    ///
+    /// # Arguments
+    ///
+    /// - `error_model` — the new [`ObsErrorModel`] to use for MPC observatory initialisation.
+    pub fn set_error_model(&mut self, error_model: ObsErrorModel) {
+        self.observer_dataset.mpc_error_model = Some(error_model);
+    }
+
+    /// Consume `self`, attach an astrometric error model, and return the updated dataset.
+    ///
+    /// This is the chainable counterpart of [`ObsDataset::set_error_model`]:
+    /// it allows the error model to be set in a builder-style pipeline without
+    /// requiring a separate `let mut` binding.
+    ///
+    /// # Arguments
+    ///
+    /// - `error_model` — the [`ObsErrorModel`] variant to store in the dataset.
+    ///
+    /// # Returns
+    ///
+    /// The same dataset with the error model set.
+    pub fn with_error_model(mut self, error_model: ObsErrorModel) -> Self {
+        self.observer_dataset.mpc_error_model = Some(error_model);
+        self
+    }
+
+    /// Get a reference to the currently attached astrometric error model, if any.
+    ///
+    /// # Returns
+    ///
+    /// - `Some(&ObsErrorModel)` if an error model is attached to the dataset,
+    /// - `None` if no error model is attached.
+    pub fn get_error_model(&self) -> Option<&ObsErrorModel> {
+        self.observer_dataset.mpc_error_model.as_ref()
+    }
+}
+
 pub trait ModelCorrection {
     /// Apply the stored astrometric error model to each observation's uncertainties.
     ///
@@ -49,6 +95,11 @@ pub trait ModelCorrection {
     /// close in time (within 8 hours) and come from the same observer are grouped into batches, and a
     /// correction factor is applied to reflect statistical correlation or improvement due to redundancy.
     ///
+    /// # Warning
+    ///
+    /// If no error model is attached to the dataset, this method will return `self` unmodified without applying any correction.
+    /// Call `with_error_model` or `set_error_model` to attach an error model before invoking this method.
+    ///
     /// # Behavior
     ///
     /// - Observations are grouped by `observer` and sorted in time.
@@ -78,7 +129,7 @@ pub trait ModelCorrection {
     /// # Units
     /// ----------
     /// - Input and output uncertainties (`error_ra`, `error_dec`) are expressed in **radians**.
-    fn apply_batch_rms_correction(self, error_model: &ObsErrorModel, gap_max: f64) -> ObsDataset;
+    fn apply_batch_rms_correction(self, gap_max: f64) -> ObsDataset;
 }
 
 impl ModelCorrection for ObsDataset {
@@ -114,11 +165,12 @@ impl ModelCorrection for ObsDataset {
         self
     }
 
-    fn apply_batch_rms_correction(
-        mut self,
-        error_model: &ObsErrorModel,
-        gap_max: f64,
-    ) -> ObsDataset {
+    fn apply_batch_rms_correction(mut self, gap_max: f64) -> ObsDataset {
+        let error_model = match self.observer_dataset.mpc_error_model {
+            Some(ref em) => em,
+            None => return self,
+        };
+
         self.observations
             .sort_by(|a, b| a.mjd_tt.partial_cmp(&b.mjd_tt).unwrap());
 
@@ -216,7 +268,9 @@ mod test_batch_rms_correction {
             obs(4, observer, base_time + 0.04), // n = 5
         ]);
 
-        let corrected = ds.apply_batch_rms_correction(&ObsErrorModel::VFCC17, 8.0 / 24.0);
+        let corrected = ds
+            .with_error_model(ObsErrorModel::VFCC17)
+            .apply_batch_rms_correction(8.0 / 24.0);
 
         let factor = (5.0_f64 * 0.25_f64).sqrt();
         for ob in corrected.iter_observations() {
@@ -234,7 +288,9 @@ mod test_batch_rms_correction {
             obs(1, observer, base_time + 0.01), // n = 2
         ]);
 
-        let corrected = ds.apply_batch_rms_correction(&ObsErrorModel::FCCT14, 8.0 / 24.0);
+        let corrected = ds
+            .with_error_model(ObsErrorModel::FCCT14)
+            .apply_batch_rms_correction(8.0 / 24.0);
 
         let factor = (2.0f64).sqrt();
         for ob in corrected.iter_observations() {
@@ -253,7 +309,9 @@ mod test_batch_rms_correction {
             obs(2, observer, base_time + 1.0),  // isolated, batch 2 (n = 1)
         ]);
 
-        let corrected = ds.apply_batch_rms_correction(&ObsErrorModel::FCCT14, 8.0 / 24.0);
+        let corrected = ds
+            .with_error_model(ObsErrorModel::FCCT14)
+            .apply_batch_rms_correction(8.0 / 24.0);
 
         let factor1 = (2.0f64).sqrt();
         let factor2 = 1.0;
@@ -273,7 +331,9 @@ mod test_batch_rms_correction {
             obs(2, Some(ObserverId::MpcCode(*b"D03")), base_time + 0.02),
         ]);
 
-        let corrected = ds.apply_batch_rms_correction(&ObsErrorModel::FCCT14, 8.0 / 24.0);
+        let corrected = ds
+            .with_error_model(ObsErrorModel::FCCT14)
+            .apply_batch_rms_correction(8.0 / 24.0);
 
         for ob in corrected.iter_observations() {
             assert_ulps_eq!(ob.equ_coord().ra_error, 1e-6, max_ulps = 2);
@@ -289,7 +349,9 @@ mod test_batch_rms_correction {
             obs(1, observer, 59001.0), // > 8h => separate
         ]);
 
-        let corrected = ds.apply_batch_rms_correction(&ObsErrorModel::FCCT14, 8.0 / 24.0);
+        let corrected = ds
+            .with_error_model(ObsErrorModel::FCCT14)
+            .apply_batch_rms_correction(8.0 / 24.0);
 
         for ob in corrected.iter_observations() {
             assert_ulps_eq!(ob.equ_coord().ra_error, 1e-6, max_ulps = 2);
@@ -356,7 +418,8 @@ mod test_batch_rms_correction {
                 .collect();
 
             let corrected = dataset(observations)
-                .apply_batch_rms_correction(&ObsErrorModel::FCCT14, 8.0 / 24.0);
+                .with_error_model(ObsErrorModel::FCCT14)
+                .apply_batch_rms_correction(8.0 / 24.0);
 
             let corrected_obs: Vec<_> = corrected.iter_observations().collect();
             prop_assert_eq!(corrected_obs.len(), n);
@@ -396,7 +459,7 @@ mod test_batch_rms_correction {
             let observation = obs_with_errors(0, observer, time, ra, ra_error, dec, dec_error);
             let ds = dataset(vec![observation]);
 
-            let corrected = ds.apply_batch_rms_correction(&ObsErrorModel::FCCT14, 8.0 / 24.0);
+            let corrected = ds.with_error_model(ObsErrorModel::FCCT14).apply_batch_rms_correction(8.0 / 24.0);
 
             let obs: Vec<_> = corrected.iter_observations().collect();
             prop_assert_eq!(obs.len(), 1);
@@ -455,7 +518,8 @@ mod test_batch_rms_correction {
                 .collect();
 
             let corrected = dataset(observations)
-                .apply_batch_rms_correction(&ObsErrorModel::FCCT14, 8.0 / 24.0);
+                .with_error_model(ObsErrorModel::FCCT14)
+                .apply_batch_rms_correction(8.0 / 24.0);
 
             let corrected_obs: Vec<_> = corrected.iter_observations().collect();
             prop_assert_eq!(corrected_obs.len(), n);
@@ -508,9 +572,11 @@ mod test_batch_rms_correction {
             };
 
             let corrected_vfcc17 = dataset(make_obs())
-                .apply_batch_rms_correction(&ObsErrorModel::VFCC17, 8.0 / 24.0);
+                .with_error_model(ObsErrorModel::VFCC17)
+                .apply_batch_rms_correction(8.0 / 24.0);
             let corrected_fcct14 = dataset(make_obs())
-                .apply_batch_rms_correction(&ObsErrorModel::FCCT14, 8.0 / 24.0);
+                .with_error_model(ObsErrorModel::FCCT14)
+                .apply_batch_rms_correction(8.0 / 24.0);
 
             let vfcc17_obs: Vec<_> = corrected_vfcc17.iter_observations().collect();
             let fcct14_obs: Vec<_> = corrected_fcct14.iter_observations().collect();
