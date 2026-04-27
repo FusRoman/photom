@@ -136,3 +136,65 @@ impl ObsDatasetBuilder {
         self
     }
 }
+
+#[cfg(test)]
+mod mpc_80_col_index_consistency_tests {
+    use camino::Utf8Path;
+
+    use crate::observation_dataset::ObsDataset;
+
+    fn assert_index_consistency(dataset: &ObsDataset) {
+        for (idx, obs) in dataset.iter_observations().enumerate() {
+            assert_eq!(
+                idx,
+                obs.index(),
+                "index-consistency violated: enumeration position {idx} != obs.index() {}",
+                obs.index()
+            );
+        }
+    }
+
+    fn fixture(name: &str) -> String {
+        format!("{}/tests/data/{}", env!("CARGO_MANIFEST_DIR"), name)
+    }
+
+    /// Loading a single MPC 80-column file satisfies the index-consistency invariant.
+    #[test]
+    fn index_consistency_from_mpc_80_col() {
+        let path_str = fixture("8467.obs");
+        let path = Utf8Path::new(&path_str);
+        let ds = ObsDataset::from_mpc_80_col(path).expect("8467.obs must parse without error");
+        assert_index_consistency(&ds);
+    }
+
+    /// Loading multiple MPC 80-column files satisfies the index-consistency invariant.
+    #[test]
+    fn index_consistency_from_mpc_80_col_files() {
+        let path1_str = fixture("8467.obs");
+        let path2_str = fixture("33803.obs");
+        let path1 = Utf8Path::new(&path1_str);
+        let path2 = Utf8Path::new(&path2_str);
+        let (ds, errors) = ObsDataset::from_mpc_80_col_files(&[path1, path2]);
+        assert!(
+            errors.is_empty(),
+            "no parse errors expected loading mpc fixtures, got: {errors:?}"
+        );
+        assert_index_consistency(&ds);
+    }
+
+    /// Extending a dataset with MPC 80-column files satisfies the index-consistency invariant.
+    #[test]
+    fn index_consistency_extend_from_mpc_80_col() {
+        let path1_str = fixture("8467.obs");
+        let path2_str = fixture("33803.obs");
+        let path1 = Utf8Path::new(&path1_str);
+        let path2 = Utf8Path::new(&path2_str);
+        let base = ObsDataset::from_mpc_80_col(path1).expect("8467.obs must parse without error");
+        let (extended, errors) = base.extend_from_mpc_80_col(&[path2]);
+        assert!(
+            errors.is_empty(),
+            "no parse errors expected when extending with mpc fixture, got: {errors:?}"
+        );
+        assert_index_consistency(&extended);
+    }
+}

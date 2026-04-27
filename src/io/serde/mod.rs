@@ -830,4 +830,44 @@ mod obsdataset_serde_tests {
             "error must mention format_version, got: {msg}"
         );
     }
+
+    // ── Index-consistency after round-trip ───────────────────────────────────
+
+    fn assert_index_consistency(dataset: &ObsDataset) {
+        for (idx, obs) in dataset.iter_observations().enumerate() {
+            assert_eq!(
+                idx,
+                obs.index(),
+                "index-consistency violated: enumeration position {idx} != obs.index() {}",
+                obs.index()
+            );
+        }
+    }
+
+    /// After a JSON round-trip, the index-consistency invariant holds on the
+    /// deserialised dataset.
+    #[test]
+    fn index_consistency_after_serde_roundtrip() {
+        let ds = build_basic_dataset();
+        let restored = roundtrip(&ds);
+        assert_index_consistency(&restored);
+    }
+
+    /// After a JSON round-trip of a dataset with a night index, the
+    /// index-consistency invariant holds.
+    #[test]
+    fn index_consistency_after_serde_roundtrip_with_nights() {
+        let ds = build_dataset_with_nights();
+        let restored = roundtrip(&ds);
+        assert_index_consistency(&restored);
+    }
+
+    /// After a JSON round-trip of a dataset with a trajectory index, the
+    /// index-consistency invariant holds.
+    #[test]
+    fn index_consistency_after_serde_roundtrip_with_trajs() {
+        let ds = build_dataset_with_trajs();
+        let restored = roundtrip(&ds);
+        assert_index_consistency(&restored);
+    }
 }

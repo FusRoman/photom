@@ -1145,6 +1145,171 @@ mod observation_tests {
         }
     }
 
+    // -----------------------------------------------------------------------
+    // Index-consistency invariant: idx == obs.index() for all observations
+    // -----------------------------------------------------------------------
+
+    mod index_consistency {
+        use super::*;
+
+        /// Assert that for every observation yielded by `iter_observations`,
+        /// its `index()` equals the enumeration position.
+        fn assert_index_consistency(dataset: &ObsDataset) {
+            for (idx, obs) in dataset.iter_observations().enumerate() {
+                assert_eq!(
+                    idx,
+                    obs.index(),
+                    "index-consistency violated: enumeration position {idx} != obs.index() {}",
+                    obs.index()
+                );
+            }
+        }
+
+        /// An empty dataset trivially satisfies the invariant.
+        #[test]
+        fn index_consistency_empty_dataset() {
+            let ds = make_dataset(vec![], vec![]);
+            assert_index_consistency(&ds);
+        }
+
+        /// A dataset with a single observation satisfies the invariant.
+        #[test]
+        fn index_consistency_single_observation() {
+            let ds = make_dataset(vec![make_observation(0, None)], vec![]);
+            assert_index_consistency(&ds);
+        }
+
+        /// A dataset built with 5 observations satisfies the invariant.
+        #[test]
+        fn index_consistency_five_observations() {
+            let obs = (0u64..5).map(|i| make_observation(i, None)).collect();
+            let ds = make_dataset(obs, vec![]);
+            assert_index_consistency(&ds);
+        }
+
+        /// A dataset built with 50 observations satisfies the invariant.
+        #[test]
+        fn index_consistency_fifty_observations() {
+            let obs = (0u64..50).map(|i| make_observation(i, None)).collect();
+            let ds = make_dataset(obs, vec![]);
+            assert_index_consistency(&ds);
+        }
+
+        /// Pushing to an initially-empty dataset satisfies the invariant.
+        #[test]
+        fn index_consistency_push_to_empty_dataset() {
+            let mut ds = make_dataset(vec![], vec![]);
+            ds.push_observation(vec![make_observation(0, None)])
+                .expect("push_observation must succeed for unique ids");
+            assert_index_consistency(&ds);
+        }
+
+        /// Pushing multiple observations to an initially-empty dataset satisfies
+        /// the invariant for all resulting observations.
+        #[test]
+        fn index_consistency_push_multiple_to_empty_dataset() {
+            let mut ds = make_dataset(vec![], vec![]);
+            let new_obs: Vec<ObservationInput> =
+                (0u64..5).map(|i| make_observation(i, None)).collect();
+            ds.push_observation(new_obs)
+                .expect("push_observation must succeed for unique ids");
+            assert_index_consistency(&ds);
+        }
+
+        /// Pushing to a non-empty dataset satisfies the invariant for both
+        /// pre-existing and newly added observations.
+        #[test]
+        fn index_consistency_push_to_non_empty_dataset() {
+            let initial: Vec<ObservationInput> =
+                (0u64..3).map(|i| make_observation(i, None)).collect();
+            let mut ds = make_dataset(initial, vec![]);
+            let extra: Vec<ObservationInput> =
+                (3u64..7).map(|i| make_observation(i, None)).collect();
+            ds.push_observation(extra)
+                .expect("push_observation must succeed for unique ids");
+            assert_index_consistency(&ds);
+        }
+
+        /// Merging two disjoint datasets satisfies the invariant on the result.
+        #[test]
+        fn index_consistency_merge_from_disjoint_datasets() {
+            let obs_a: Vec<ObservationInput> =
+                (0u64..4).map(|i| make_observation(i, None)).collect();
+            let obs_b: Vec<ObservationInput> =
+                (4u64..9).map(|i| make_observation(i, None)).collect();
+            let ds_a = make_dataset(obs_a, vec![]);
+            let ds_b = make_dataset(obs_b, vec![]);
+            let merged = ds_a
+                .merge_from(ds_b)
+                .expect("disjoint datasets must merge without error");
+            assert_index_consistency(&merged);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Index-consistency — property-based tests
+    // -----------------------------------------------------------------------
+
+    mod index_consistency_proptest {
+        use super::*;
+        use proptest::prelude::*;
+
+        /// Assert that for every observation yielded by `iter_observations`,
+        /// its `index()` equals the enumeration position.
+        fn assert_index_consistency(dataset: &ObsDataset) {
+            for (idx, obs) in dataset.iter_observations().enumerate() {
+                assert_eq!(
+                    idx,
+                    obs.index(),
+                    "index-consistency violated: enumeration position {idx} != obs.index() {}",
+                    obs.index()
+                );
+            }
+        }
+
+        proptest! {
+            /// For any n in 0..=200, a dataset with n observations (sequential ids)
+            /// satisfies the index-consistency invariant.
+            #[test]
+            fn prop_index_consistency_n_observations(n in 0usize..=200) {
+                let obs: Vec<ObservationInput> =
+                    (0u64..n as u64).map(|i| make_observation(i, None)).collect();
+                let ds = make_dataset(obs, vec![]);
+                assert_index_consistency(&ds);
+            }
+
+            /// For any sizes a and b (each 0..=100), building two disjoint datasets
+            /// and merging them preserves the index-consistency invariant.
+            #[test]
+            fn prop_index_consistency_merge_from(a in 0usize..=100, b in 0usize..=100) {
+                let obs_a: Vec<ObservationInput> =
+                    (0u64..a as u64).map(|i| make_observation(i, None)).collect();
+                let obs_b: Vec<ObservationInput> =
+                    (a as u64..(a + b) as u64).map(|i| make_observation(i, None)).collect();
+                let ds_a = make_dataset(obs_a, vec![]);
+                let ds_b = make_dataset(obs_b, vec![]);
+                let merged = ds_a
+                    .merge_from(ds_b)
+                    .expect("disjoint datasets must merge without error");
+                assert_index_consistency(&merged);
+            }
+
+            /// For any n initial observations and m additional observations pushed
+            /// via push_observation, the invariant holds after the push.
+            #[test]
+            fn prop_index_consistency_push_observation(n in 0usize..=100, m in 0usize..=100) {
+                let initial: Vec<ObservationInput> =
+                    (0u64..n as u64).map(|i| make_observation(i, None)).collect();
+                let mut ds = make_dataset(initial, vec![]);
+                let extra: Vec<ObservationInput> =
+                    (n as u64..(n + m) as u64).map(|i| make_observation(i, None)).collect();
+                ds.push_observation(extra)
+                    .expect("push_observation must succeed for unique ids");
+                assert_index_consistency(&ds);
+            }
+        }
+    }
+
     mod error_model_parse_error_variants {
         use crate::observer::error_model::ErrorModelParseError;
 

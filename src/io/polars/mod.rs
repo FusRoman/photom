@@ -1818,6 +1818,65 @@ mod polars_reader_tests {
             ObsMapIndex::Split(_) => panic!("expected Contiguous for single night"),
         }
     }
+
+    // ── index-consistency invariant tests ─────────────────────────────────────
+
+    fn assert_index_consistency(dataset: &ObsDataset) {
+        for (idx, obs) in dataset.iter_observations().enumerate() {
+            assert_eq!(
+                idx,
+                obs.index(),
+                "index-consistency violated: enumeration position {idx} != obs.index() {}",
+                obs.index()
+            );
+        }
+    }
+
+    /// Loading a Parquet fixture (integer traj_id) satisfies the
+    /// index-consistency invariant.
+    #[test]
+    fn index_consistency_from_parquet_traj_int() {
+        use polars::prelude::{LazyFrame, ScanArgsParquet};
+
+        let path = format!(
+            "{}/tests/data/test_data_traj_int.parquet",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let lf = LazyFrame::scan_parquet(path.as_str().into(), ScanArgsParquet::default())
+            .expect("scan_parquet must succeed for valid fixture");
+        let ds = ObsDataset::from_lazy(
+            lf,
+            FromPolarsArgs {
+                error_model: Some(ObsErrorModel::FCCT14),
+                ..Default::default()
+            },
+        )
+        .expect("from_lazy must succeed for valid parquet fixture");
+        assert_index_consistency(&ds);
+    }
+
+    /// Loading a Parquet fixture (string traj_id) satisfies the
+    /// index-consistency invariant.
+    #[test]
+    fn index_consistency_from_parquet_traj_str() {
+        use polars::prelude::{LazyFrame, ScanArgsParquet};
+
+        let path = format!(
+            "{}/tests/data/test_data_traj_str.parquet",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let lf = LazyFrame::scan_parquet(path.as_str().into(), ScanArgsParquet::default())
+            .expect("scan_parquet must succeed for valid fixture");
+        let ds = ObsDataset::from_lazy(
+            lf,
+            FromPolarsArgs {
+                error_model: Some(ObsErrorModel::FCCT14),
+                ..Default::default()
+            },
+        )
+        .expect("from_lazy must succeed for valid parquet fixture");
+        assert_index_consistency(&ds);
+    }
 }
 
 // ── property-based tests ──────────────────────────────────────────────────────
