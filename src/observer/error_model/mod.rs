@@ -35,7 +35,9 @@
 //! - Farnocchia, D., Chesley, S. R., Chamberlin, A. B., & Tholen, D. J. (2014)
 //! - Chesley, S. R., Baer, J., & Monet, D. G. (2010)
 //! - Vereš, P., Farnocchia, D., Chesley, S. R., & Chamberlin, A. B. (2017)
+pub mod model_correction;
 mod vfcc17;
+pub use model_correction::ModelCorrection;
 
 use std::{collections::HashMap, str::FromStr};
 

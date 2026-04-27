@@ -379,6 +379,24 @@ impl ObsDataset {
         self.observer_dataset.mpc_error_model = Some(error_model);
     }
 
+    /// Consume `self`, attach an astrometric error model, and return the updated dataset.
+    ///
+    /// This is the chainable counterpart of [`ObsDataset::set_error_model`]:
+    /// it allows the error model to be set in a builder-style pipeline without
+    /// requiring a separate `let mut` binding.
+    ///
+    /// # Arguments
+    ///
+    /// - `error_model` — the [`ObsErrorModel`] variant to store in the dataset.
+    ///
+    /// # Returns
+    ///
+    /// The same dataset with the error model set.
+    pub fn with_error_model(mut self, error_model: ObsErrorModel) -> Self {
+        self.observer_dataset.mpc_error_model = Some(error_model);
+        self
+    }
+
     /// Create a new dataset from pre-parsed data.
     ///
     /// This constructor is used internally by [`ObsDataset::from_polars`] and

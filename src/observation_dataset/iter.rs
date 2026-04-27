@@ -17,7 +17,10 @@ use itertools::Either;
 
 use crate::{
     NightId, TrajId,
-    observation_dataset::{ObsDataset, index::ObsMapIndex, observation::Observation},
+    observation_dataset::{
+        ObsDataset, ObsDatasetError, index::ObsMapIndex, observation::Observation,
+    },
+    observer::{Observer, dataset::ObserverId},
 };
 
 // Observation iterator implementation for ObsDataset.
@@ -32,6 +35,33 @@ impl ObsDataset {
     /// An iterator yielding `&Observation` for each observation in insertion order.
     pub fn iter_observations(&self) -> impl Iterator<Item = &Observation> {
         self.observations.iter()
+    }
+
+    /// Return an iterator over all observers in the dataset, including both custom geodetic observers and MPC-coded observers.
+    /// The order of the yielded observers is unspecified.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(iterator)` where `iterator` yields `(ObserverId, &Observer)` pairs for each observer in the dataset, if the MPC observatory catalogue was successfully loaded;
+    /// `Err(ObsDatasetError::MpcCatalogueLoadError)` if the MPC observatory catalogue could not be loaded, which prevents access to MPC-coded observers.
+    pub fn iter_observer(
+        &self,
+    ) -> Result<impl Iterator<Item = (ObserverId, &Observer)>, &ObsDatasetError> {
+        // MPC-coded observer iterator
+        let mpc_iter = self
+            .observer_dataset
+            .mpc_observers()?
+            .iter()
+            .map(|(code, obs)| (ObserverId::MpcCode(*code), obs));
+
+        let custom_observer_iter = self
+            .observer_dataset
+            .custom_observers
+            .iter()
+            .enumerate()
+            .map(|(idx, obs)| (ObserverId::IntId(idx), obs));
+
+        Ok(mpc_iter.chain(custom_observer_iter))
     }
 }
 
