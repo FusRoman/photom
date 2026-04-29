@@ -29,8 +29,8 @@ impl ObsDataset {
     /// Returns a [`LoadObsError`] if the URI is invalid, the resource is not
     /// found, DataFusion fails to read the file, or a required column is
     /// absent or has an incorrect type.
-    pub fn from_parquet_uri(uri: &str, args: LoadObsArgs) -> Result<Self, LoadObsError> {
-        let input = InputUri(uri.to_owned());
+    pub fn from_parquet_uri(uri: impl AsRef<str>, args: LoadObsArgs) -> Result<Self, LoadObsError> {
+        let input = InputUri(uri.as_ref().to_owned());
         load_obs_sync(&input, args)
     }
 }

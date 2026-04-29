@@ -28,8 +28,8 @@ impl ObsDataset {
     ///
     /// Returns [`Mpc80ColError::Io`] if the file cannot be read, or
     /// [`Mpc80ColError::InvalidLine`] if a line cannot be parsed.
-    pub fn from_mpc_80_col(path: &Utf8Path) -> Result<ObsDataset, Mpc80ColError> {
-        parse_mpc_80_col_file(path, 0)
+    pub fn from_mpc_80_col(path: impl AsRef<Utf8Path>) -> Result<ObsDataset, Mpc80ColError> {
+        parse_mpc_80_col_file(path.as_ref(), 0)
     }
 
     /// Build an [`ObsDataset`] from **multiple** MPC 80-column files.
@@ -40,15 +40,17 @@ impl ObsDataset {
     /// # Arguments
     ///
     /// - `paths` — slice of paths to MPC 80-column files to load.
-    pub fn from_mpc_80_col_files(paths: &[&Utf8Path]) -> (Self, Vec<(Utf8PathBuf, Mpc80ColError)>) {
+    pub fn from_mpc_80_col_files<P: AsRef<Utf8Path>>(
+        paths: &[P],
+    ) -> (Self, Vec<(Utf8PathBuf, Mpc80ColError)>) {
         let mut dataset: Option<ObsDataset> = None;
         let mut errors: Vec<(Utf8PathBuf, Mpc80ColError)> = Vec::new();
 
-        for &path in paths {
+        for path in paths {
             let start_id = dataset
                 .as_ref()
                 .map_or(0, |ds| ds.observation_count() as u64);
-            match parse_mpc_80_col_file(path, start_id) {
+            match parse_mpc_80_col_file(path.as_ref(), start_id) {
                 Ok(other) => {
                     if let Some(ds) = dataset.take() {
                         // IDs are globally unique: merge_from cannot fail here.
@@ -60,7 +62,7 @@ impl ObsDataset {
                         dataset = Some(other);
                     }
                 }
-                Err(e) => errors.push((path.to_owned(), e)),
+                Err(e) => errors.push((path.as_ref().to_owned(), e)),
             }
         }
 
@@ -75,21 +77,21 @@ impl ObsDataset {
     /// # Arguments
     ///
     /// - `paths` — slice of paths to MPC 80-column files.
-    pub fn extend_from_mpc_80_col(
+    pub fn extend_from_mpc_80_col<P: AsRef<Utf8Path>>(
         mut self,
-        paths: &[&Utf8Path],
+        paths: &[P],
     ) -> (Self, Vec<(Utf8PathBuf, Mpc80ColError)>) {
         let mut errors: Vec<(Utf8PathBuf, Mpc80ColError)> = Vec::new();
-        for &path in paths {
+        for path in paths {
             let start_id = self.observation_count() as u64;
-            match parse_mpc_80_col_file(path, start_id) {
+            match parse_mpc_80_col_file(path.as_ref(), start_id) {
                 // IDs are globally unique: merge_from cannot fail here.
                 Ok(other) => {
                     self = self
                         .merge_from(other)
                         .expect("IDs are globally unique: merge_from cannot fail");
                 }
-                Err(e) => errors.push((path.to_owned(), e)),
+                Err(e) => errors.push((path.as_ref().to_owned(), e)),
             }
         }
         (self, errors)
@@ -105,13 +107,13 @@ impl ObsDatasetBuilder {
     /// # Arguments
     ///
     /// - `paths` — slice of paths to MPC 80-column observation files to load.
-    pub fn add_mpc_80_col(mut self, paths: &[&Utf8Path]) -> Self {
-        for &path in paths {
+    pub fn add_mpc_80_col<P: AsRef<Utf8Path>>(mut self, paths: &[P]) -> Self {
+        for path in paths {
             let start_id = self
                 .dataset
                 .as_ref()
                 .map_or(0, |ds| ds.observation_count() as u64);
-            match crate::io::mpc_80_col::parse_mpc_80_col_file(path, start_id) {
+            match crate::io::mpc_80_col::parse_mpc_80_col_file(path.as_ref(), start_id) {
                 Ok(other) => {
                     if let Some(ds) = self.dataset.take() {
                         // IDs are globally unique: merge_from cannot fail here.
@@ -127,7 +129,7 @@ impl ObsDatasetBuilder {
                     use crate::LoadWarning;
 
                     self.warnings.push(LoadWarning::MpcFile {
-                        path: path.to_owned(),
+                        path: path.as_ref().to_owned(),
                         error,
                     });
                 }
@@ -139,8 +141,6 @@ impl ObsDatasetBuilder {
 
 #[cfg(test)]
 mod mpc_80_col_index_consistency_tests {
-    use camino::Utf8Path;
-
     use crate::observation_dataset::ObsDataset;
 
     fn assert_index_consistency(dataset: &ObsDataset) {
@@ -162,8 +162,7 @@ mod mpc_80_col_index_consistency_tests {
     #[test]
     fn index_consistency_from_mpc_80_col() {
         let path_str = fixture("8467.obs");
-        let path = Utf8Path::new(&path_str);
-        let ds = ObsDataset::from_mpc_80_col(path).expect("8467.obs must parse without error");
+        let ds = ObsDataset::from_mpc_80_col(path_str).expect("8467.obs must parse without error");
         assert_index_consistency(&ds);
     }
 
@@ -172,9 +171,7 @@ mod mpc_80_col_index_consistency_tests {
     fn index_consistency_from_mpc_80_col_files() {
         let path1_str = fixture("8467.obs");
         let path2_str = fixture("33803.obs");
-        let path1 = Utf8Path::new(&path1_str);
-        let path2 = Utf8Path::new(&path2_str);
-        let (ds, errors) = ObsDataset::from_mpc_80_col_files(&[path1, path2]);
+        let (ds, errors) = ObsDataset::from_mpc_80_col_files(&[path1_str, path2_str]);
         assert!(
             errors.is_empty(),
             "no parse errors expected loading mpc fixtures, got: {errors:?}"
@@ -187,10 +184,9 @@ mod mpc_80_col_index_consistency_tests {
     fn index_consistency_extend_from_mpc_80_col() {
         let path1_str = fixture("8467.obs");
         let path2_str = fixture("33803.obs");
-        let path1 = Utf8Path::new(&path1_str);
-        let path2 = Utf8Path::new(&path2_str);
-        let base = ObsDataset::from_mpc_80_col(path1).expect("8467.obs must parse without error");
-        let (extended, errors) = base.extend_from_mpc_80_col(&[path2]);
+        let base =
+            ObsDataset::from_mpc_80_col(path1_str).expect("8467.obs must parse without error");
+        let (extended, errors) = base.extend_from_mpc_80_col(&[path2_str]);
         assert!(
             errors.is_empty(),
             "no parse errors expected when extending with mpc fixture, got: {errors:?}"

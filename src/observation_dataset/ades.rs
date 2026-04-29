@@ -24,11 +24,11 @@ impl ObsDataset {
     /// [`AdesError::MissingTrajId`] / [`AdesError::MissingRaError`] /
     /// [`AdesError::MissingDecError`] if a required field is absent.
     pub fn from_ades(
-        ades_path: &Utf8Path,
+        ades_path: impl AsRef<Utf8Path>,
         error_ra: Option<Arcseconds>,
         error_dec: Option<Arcseconds>,
     ) -> Result<Self, AdesError> {
-        parse_ades_file(ades_path, error_ra, error_dec, 0)
+        parse_ades_file(ades_path.as_ref(), error_ra, error_dec, 0)
     }
 
     /// Build an [`ObsDataset`] from **multiple** ADES XML files.
@@ -41,19 +41,19 @@ impl ObsDataset {
     /// - `paths`     — slice of paths to ADES XML files to load.
     /// - `error_ra`  — optional fallback RA uncertainty (arcseconds).
     /// - `error_dec` — optional fallback Dec uncertainty (arcseconds).
-    pub fn from_ades_files(
-        paths: &[&Utf8Path],
+    pub fn from_ades_files<P: AsRef<Utf8Path>>(
+        paths: &[P],
         error_ra: Option<Arcseconds>,
         error_dec: Option<Arcseconds>,
     ) -> (Self, Vec<(Utf8PathBuf, AdesError)>) {
         let mut dataset: Option<ObsDataset> = None;
         let mut errors: Vec<(Utf8PathBuf, AdesError)> = Vec::new();
 
-        for &path in paths {
+        for path in paths {
             let start_id = dataset
                 .as_ref()
                 .map_or(0, |ds| ds.observation_count() as u64);
-            match parse_ades_file(path, error_ra, error_dec, start_id) {
+            match parse_ades_file(path.as_ref(), error_ra, error_dec, start_id) {
                 Ok(other) => {
                     if let Some(ds) = dataset.take() {
                         // IDs are globally unique: merge_from cannot fail here.
@@ -65,7 +65,7 @@ impl ObsDataset {
                         dataset = Some(other);
                     }
                 }
-                Err(e) => errors.push((path.to_owned(), e)),
+                Err(e) => errors.push((path.as_ref().to_owned(), e)),
             }
         }
 
@@ -82,23 +82,23 @@ impl ObsDataset {
     /// - `paths`     — slice of paths to ADES XML files.
     /// - `error_ra`  — optional fallback RA uncertainty (arcseconds).
     /// - `error_dec` — optional fallback Dec uncertainty (arcseconds).
-    pub fn extend_from_ades(
+    pub fn extend_from_ades<P: AsRef<Utf8Path>>(
         mut self,
-        paths: &[&Utf8Path],
+        paths: &[P],
         error_ra: Option<Arcseconds>,
         error_dec: Option<Arcseconds>,
     ) -> (Self, Vec<(Utf8PathBuf, AdesError)>) {
         let mut errors: Vec<(Utf8PathBuf, AdesError)> = Vec::new();
-        for &path in paths {
+        for path in paths {
             let start_id = self.observation_count() as u64;
-            match parse_ades_file(path, error_ra, error_dec, start_id) {
+            match parse_ades_file(path.as_ref(), error_ra, error_dec, start_id) {
                 // IDs are globally unique: merge_from cannot fail here.
                 Ok(other) => {
                     self = self
                         .merge_from(other)
                         .expect("IDs are globally unique: merge_from cannot fail");
                 }
-                Err(e) => errors.push((path.to_owned(), e)),
+                Err(e) => errors.push((path.as_ref().to_owned(), e)),
             }
         }
         (self, errors)
@@ -116,18 +116,18 @@ impl ObsDatasetBuilder {
     /// - `paths`     — slice of paths to ADES XML files to load.
     /// - `error_ra`  — optional fallback RA uncertainty (arcseconds).
     /// - `error_dec` — optional fallback Dec uncertainty (arcseconds).
-    pub fn add_ades(
+    pub fn add_ades<P: AsRef<Utf8Path>>(
         mut self,
-        paths: &[&Utf8Path],
+        paths: &[P],
         error_ra: Option<crate::Arcseconds>,
         error_dec: Option<crate::Arcseconds>,
     ) -> Self {
-        for &path in paths {
+        for path in paths {
             let start_id = self
                 .dataset
                 .as_ref()
                 .map_or(0, |ds| ds.observation_count() as u64);
-            match crate::io::ades::parse_ades_file(path, error_ra, error_dec, start_id) {
+            match crate::io::ades::parse_ades_file(path.as_ref(), error_ra, error_dec, start_id) {
                 Ok(other) => {
                     if let Some(ds) = self.dataset.take() {
                         // IDs are globally unique: merge_from cannot fail here.
@@ -143,7 +143,7 @@ impl ObsDatasetBuilder {
                     use crate::LoadWarning;
 
                     self.warnings.push(LoadWarning::AdesFile {
-                        path: path.to_owned(),
+                        path: path.as_ref().to_owned(),
                         error,
                     });
                 }
@@ -155,8 +155,6 @@ impl ObsDatasetBuilder {
 
 #[cfg(test)]
 mod ades_index_consistency_tests {
-    use camino::Utf8Path;
-
     use crate::observation_dataset::ObsDataset;
 
     fn assert_index_consistency(dataset: &ObsDataset) {
@@ -178,8 +176,7 @@ mod ades_index_consistency_tests {
     #[test]
     fn index_consistency_from_ades() {
         let path_str = fixture("example_ades.xml");
-        let path = Utf8Path::new(&path_str);
-        let ds = ObsDataset::from_ades(path, None, None)
+        let ds = ObsDataset::from_ades(path_str, None, None)
             .expect("example_ades.xml must parse without error");
         assert_index_consistency(&ds);
     }
@@ -189,9 +186,7 @@ mod ades_index_consistency_tests {
     fn index_consistency_from_ades_files() {
         let path1_str = fixture("example_ades.xml");
         let path2_str = fixture("example_ades2.xml");
-        let path1 = Utf8Path::new(&path1_str);
-        let path2 = Utf8Path::new(&path2_str);
-        let (ds, errors) = ObsDataset::from_ades_files(&[path1, path2], None, None);
+        let (ds, errors) = ObsDataset::from_ades_files(&[path1_str, path2_str], None, None);
         assert!(
             errors.is_empty(),
             "no parse errors expected loading both ades fixtures, got: {errors:?}"
@@ -204,11 +199,9 @@ mod ades_index_consistency_tests {
     fn index_consistency_extend_from_ades() {
         let path1_str = fixture("example_ades.xml");
         let path2_str = fixture("example_ades2.xml");
-        let path1 = Utf8Path::new(&path1_str);
-        let path2 = Utf8Path::new(&path2_str);
-        let base = ObsDataset::from_ades(path1, None, None)
+        let base = ObsDataset::from_ades(path1_str, None, None)
             .expect("example_ades.xml must parse without error");
-        let (extended, errors) = base.extend_from_ades(&[path2], None, None);
+        let (extended, errors) = base.extend_from_ades(&[path2_str], None, None);
         assert!(
             errors.is_empty(),
             "no parse errors expected when extending with ades fixture, got: {errors:?}"
