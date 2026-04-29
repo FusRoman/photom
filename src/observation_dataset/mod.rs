@@ -310,18 +310,19 @@ impl ObsDataset {
     /// - `obs_indices` — slice of [`Observation`] values whose internal vector
     ///   positions will be recorded under `traj_id`.
     pub fn push_new_trajectory(
-        &mut self,
+        mut self,
         traj_id: TrajId,
         obs_indices: &[Observation],
-    ) -> Result<(), ObsDatasetError> {
-        self.index.push_trajectory(
+    ) -> Result<Self, ObsDatasetError> {
+        let index_with_new_traj = self.index.push_trajectory(
             traj_id,
             &(obs_indices
                 .iter()
                 .map(|obs| obs.index())
                 .collect::<Vec<ObsIndex>>()),
         );
-        Ok(())
+        self.index = index_with_new_traj;
+        Ok(self)
     }
 
     /// Register a new trajectory in the trajectory index using raw vector positions.
@@ -337,8 +338,14 @@ impl ObsDataset {
     /// - `traj_id`     — the identifier of the trajectory to register.
     /// - `obs_indices` — slice of zero-based vector positions in the internal
     ///   observations vector that belong to this trajectory.
-    pub fn push_new_trajectory_by_index(&mut self, traj_id: TrajId, obs_indices: &[ObsIndex]) {
-        self.index.push_trajectory(traj_id, obs_indices);
+    pub fn push_new_trajectory_by_index(
+        mut self,
+        traj_id: TrajId,
+        obs_indices: &[ObsIndex],
+    ) -> Self {
+        let index_with_new_traj = self.index.push_trajectory(traj_id, obs_indices);
+        self.index = index_with_new_traj;
+        self
     }
 
     /// Look up the [`Observer`] associated with a given observation.

@@ -520,10 +520,11 @@ impl ObsDatasetIndex {
     ///
     /// - `traj_id` — the trajectory identifier to insert or replace.
     /// - `obs_index` — slice of vector positions for the observations belonging to this trajectory.
-    pub(crate) fn push_trajectory(&mut self, traj_id: TrajId, obs_index: &[ObsIndex]) {
+    pub(crate) fn push_trajectory(mut self, traj_id: TrajId, obs_index: &[ObsIndex]) -> Self {
         if let Some(traj_map) = self.obs_index_by_trajectory.as_mut() {
             traj_map.insert(traj_id, ObsMapIndex::Split(obs_index.to_vec()));
         }
+        self
     }
 }
 
@@ -690,12 +691,12 @@ mod obs_map_index_unit_tests {
         // Pre-seed a Split entry that push_trajectory will overwrite.
         traj_map.insert(TrajId::Int(10), ObsMapIndex::Split(vec![99]));
 
-        let mut idx = ObsDatasetIndex::new(ObservationIndexMap::new(), None, Some(traj_map));
+        let idx = ObsDatasetIndex::new(ObservationIndexMap::new(), None, Some(traj_map));
 
         // Replace the entry with new indices.
-        idx.push_trajectory(TrajId::Int(10), &[0, 2, 4]);
+        let idx_with_new_traj = idx.push_trajectory(TrajId::Int(10), &[0, 2, 4]);
 
-        let entry = idx
+        let entry = idx_with_new_traj
             .get_by_trajectory(&TrajId::Int(10))
             .expect("traj 10 must exist after push");
         match entry {
@@ -710,11 +711,13 @@ mod obs_map_index_unit_tests {
     /// index (`obs_index_by_trajectory` is `None`).
     #[test]
     fn push_trajectory_noop_when_no_traj_index() {
-        let mut idx = ObsDatasetIndex::new(ObservationIndexMap::new(), None, None);
+        let idx = ObsDatasetIndex::new(ObservationIndexMap::new(), None, None);
         // Should not panic; the call is silently ignored.
-        idx.push_trajectory(TrajId::Int(42), &[0, 1, 2]);
+        let idx_with_new_traj = idx.push_trajectory(TrajId::Int(42), &[0, 1, 2]);
         assert!(
-            idx.get_by_trajectory(&TrajId::Int(42)).is_none(),
+            idx_with_new_traj
+                .get_by_trajectory(&TrajId::Int(42))
+                .is_none(),
             "no traj index → get_by_trajectory must return None"
         );
     }

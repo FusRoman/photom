@@ -590,6 +590,7 @@ pub use io::ades::AdesError;
 pub use io::serde::{IndexLayout, ObsDatasetSeed};
 
 pub use observation_dataset::builder::{LoadWarning, ObsDatasetBuilder};
+use ordered_float::{FloatIsNan, NotNan};
 
 /// Arcseconds.
 pub type Arcseconds = f64;
@@ -814,3 +815,45 @@ impl std::str::FromStr for TrajId {
 }
 
 pub use crate::observation_dataset::index::ObsIndex;
+
+/// Lift an `Option<f64>` into an `Option<NotNan<f64>>`, propagating `NaN` as an error.
+///
+/// - `None` passes through as `Ok(None)`.
+/// - `Some(x)` where `x` is finite becomes `Ok(Some(NotNan::new(x)))`.
+/// - `Some(NaN)` returns `Err(FloatIsNan)`.
+///
+/// # Arguments
+///
+/// - `x` — the optional floating-point value to wrap.
+///
+/// # Returns
+///
+/// `Ok(Some(NotNan<f64>))` when `x` is `Some` and finite, `Ok(None)` when
+/// `x` is `None`, or `Err(FloatIsNan)` when `x` is `Some(NaN)`.
+///
+/// # Errors
+///
+/// Returns [`ordered_float::FloatIsNan`] if `x` is `Some(NaN)`.
+#[inline]
+fn to_opt_notnan(x: Option<f64>) -> Result<Option<NotNan<f64>>, ordered_float::FloatIsNan> {
+    x.map(NotNan::new).transpose()
+}
+
+pub trait ToNotNan {
+    type Output;
+    fn to_notnan(self) -> Result<Self::Output, FloatIsNan>;
+}
+
+impl ToNotNan for f64 {
+    type Output = NotNan<f64>;
+    fn to_notnan(self) -> Result<Self::Output, FloatIsNan> {
+        NotNan::new(self)
+    }
+}
+
+impl ToNotNan for Option<f64> {
+    type Output = Option<NotNan<f64>>;
+    fn to_notnan(self) -> Result<Self::Output, FloatIsNan> {
+        to_opt_notnan(self)
+    }
+}

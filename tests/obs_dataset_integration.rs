@@ -594,7 +594,7 @@ fn int_night_and_traj_totals_consistent() {
 /// via `len_trajectory` and `iter_trajectory_observations`.
 #[test]
 fn push_new_trajectory_int_file() {
-    let mut ds = load_int();
+    let ds = load_int();
 
     // Pick two existing observations to form a synthetic trajectory.
     let obs0 = ds.get_obs_by_index(0).unwrap().clone();
@@ -606,7 +606,8 @@ fn push_new_trajectory_int_file() {
         "The synthetic trajectory must not exist before insertion"
     );
 
-    ds.push_new_trajectory(new_tid.clone(), &[obs0, obs1])
+    let ds = ds
+        .push_new_trajectory(new_tid.clone(), &[obs0, obs1])
         .unwrap();
 
     assert_eq!(
