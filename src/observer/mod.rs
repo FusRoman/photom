@@ -19,7 +19,6 @@
 //! |------|------|-------------|
 //! | [`Observer`] | struct | Ground-based observatory site with parallax constants |
 //! | [`ObserverError`] | enum | Errors arising during observer construction |
-//! | [`to_opt_notnan`] | fn | Lift `Option<f64>` into `Option<NotNan<f64>>` |
 //! | [`geodetic_to_parallax`] | fn | Geodetic-to-geocentric parallax conversion (radians) |
 
 pub mod dataset;
