@@ -209,7 +209,7 @@ fn parse_full_line(input: &str) -> ParseResult<'_> {
 // ---------------------------------------------------------------------------
 
 /// Errors that can arise when parsing an astrometric error model file.
-#[derive(Debug, Error)]
+#[derive(Debug, Error, Clone)]
 pub enum ErrorModelParseError {
     /// A `nom` parser failed on the given line content.
     #[error("Nom parsing error on: {0}")]

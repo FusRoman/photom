@@ -15,7 +15,7 @@
 //! | [`MPCError`] | enum | Errors arising from the MPC network request |
 //! | `init_observatories` | fn | Fetch and parse the MPC observatory list |
 
-use std::path::PathBuf;
+use std::{path::PathBuf, time::Duration};
 
 use ahash::AHashMap;
 use thiserror::Error;
@@ -169,8 +169,6 @@ fn cache_file_path(cache_dir_override: Option<&std::path::Path>) -> Result<PathB
 ///
 /// # Arguments
 ///
-/// - `ureq_agent` — a configured [`ureq::Agent`] (e.g. with a global timeout)
-///   used to perform the HTTP request when the cache is cold.
 /// - `error_model` — pre-loaded [`ErrorModelData`] table used to assign
 ///   astrometric uncertainties to each observatory.
 ///
@@ -184,11 +182,14 @@ fn cache_file_path(cache_dir_override: Option<&std::path::Path>) -> Result<PathB
 /// |---------|-------|
 /// | [`MPCError::UreqError`] | HTTP request failed or body unreadable |
 /// | [`MPCError::CacheDirUnavailable`] | platform cache dir cannot be determined |
-pub fn init_observatories(
-    ureq_agent: Agent,
-    error_model: &ErrorModelData,
-) -> Result<MpcCodeObs, MPCError> {
-    init_observatories_impl(ureq_agent, error_model, None)
+pub fn init_observatories(error_model: &ErrorModelData) -> Result<MpcCodeObs, MPCError> {
+    // configure a ureq Agent with a global timeout to avoid hanging indefinitely on network issues
+    let config = Agent::config_builder()
+        .timeout_global(Some(Duration::from_secs(10)))
+        .build();
+    let agent: Agent = config.into();
+
+    init_observatories_impl(agent, error_model, None)
 }
 
 /// Internal implementation; `cache_dir_override` is used by tests to avoid

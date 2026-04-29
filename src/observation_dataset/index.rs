@@ -38,7 +38,7 @@ pub type ObservationIndexMap = AHashMap<ObsId, ObsIndex>;
 /// - `Contiguous` for nights whose observations occupy a single contiguous block of positions in the main vector,
 ///   storing only the start and end positions of that block.
 /// - `Split` for nights whose observations are scattered across multiple non-contiguous positions.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum ObsMapIndex {
     /// Observations for this night occupy a single contiguous block of positions in the main vector, from `start` (inclusive) to `end` (exclusive).
     // Constructed only by the `polars` ingestion path; matched everywhere.
@@ -173,7 +173,7 @@ fn merge_optional_obs_map<K>(
 ///   no `traj_id` column.
 /// - An alias map from alternate designation strings to their canonical
 ///   `TrajId`; empty when no aliases have been registered.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ObsDatasetIndex {
     /// Mapping from `ObsId` to the index in the `observations` vector, used for look-up by observation identifier.
     pub(crate) obs_index_by_id: ObservationIndexMap,
@@ -253,10 +253,11 @@ impl ObsDatasetIndex {
     ///
     /// `Some(count)` if the trajectory index exists and the trajectory is present in it;
     /// `None` if no trajectory index was built or the trajectory identifier is unknown.
-    pub(crate) fn len_trajectory(&self, traj_id: &TrajId) -> Option<usize> {
+    pub(crate) fn len_trajectory(&self, traj_id: impl Into<TrajId>) -> Option<usize> {
+        let traj_id = traj_id.into();
         self.obs_index_by_trajectory
             .as_ref()?
-            .get(traj_id)
+            .get(&traj_id)
             .map(|indices| match indices {
                 ObsMapIndex::Contiguous { start, end } => end - start,
                 ObsMapIndex::Split(vec) => vec.len(),
@@ -369,8 +370,9 @@ impl ObsDatasetIndex {
     ///
     /// `Some(&ObsMapIndex)` if a trajectory index exists and the trajectory is present in it;
     /// `None` otherwise.
-    pub(crate) fn get_by_trajectory(&self, traj_id: &TrajId) -> Option<&ObsMapIndex> {
-        self.obs_index_by_trajectory.as_ref()?.get(traj_id)
+    pub(crate) fn get_by_trajectory(&self, traj_id: impl Into<TrajId>) -> Option<&ObsMapIndex> {
+        let traj_id = traj_id.into();
+        self.obs_index_by_trajectory.as_ref()?.get(&traj_id)
     }
 
     /// Return an iterator over the vector positions of all observations in a given trajectory.
@@ -385,7 +387,7 @@ impl ObsDatasetIndex {
     /// exists and the trajectory is present; `None` otherwise.
     pub(crate) fn iter_traj_obs_index(
         &self,
-        traj_id: &TrajId,
+        traj_id: impl Into<TrajId>,
     ) -> Option<impl Iterator<Item = ObsIndex> + '_> {
         self.get_by_trajectory(traj_id)
             .map(|indices| match indices {
@@ -609,17 +611,17 @@ mod obs_map_index_unit_tests {
         let idx = ObsDatasetIndex::new(ObservationIndexMap::new(), None, Some(traj_map));
 
         assert_eq!(
-            idx.len_trajectory(&TrajId::Int(10)),
+            idx.len_trajectory(TrajId::Int(10)),
             Some(4),
             "Contiguous(0..4) must report len 4"
         );
         assert_eq!(
-            idx.len_trajectory(&TrajId::Int(20)),
+            idx.len_trajectory(TrajId::Int(20)),
             Some(3),
             "Split([0,2,4]) must report len 3"
         );
         assert_eq!(
-            idx.len_trajectory(&TrajId::Int(99)),
+            idx.len_trajectory(TrajId::Int(99)),
             None,
             "unknown traj must return None"
         );
@@ -697,7 +699,7 @@ mod obs_map_index_unit_tests {
         let idx_with_new_traj = idx.push_trajectory(TrajId::Int(10), &[0, 2, 4]);
 
         let entry = idx_with_new_traj
-            .get_by_trajectory(&TrajId::Int(10))
+            .get_by_trajectory(TrajId::Int(10))
             .expect("traj 10 must exist after push");
         match entry {
             ObsMapIndex::Split(v) => assert_eq!(v, &[0, 2, 4]),
@@ -716,7 +718,7 @@ mod obs_map_index_unit_tests {
         let idx_with_new_traj = idx.push_trajectory(TrajId::Int(42), &[0, 1, 2]);
         assert!(
             idx_with_new_traj
-                .get_by_trajectory(&TrajId::Int(42))
+                .get_by_trajectory(TrajId::Int(42))
                 .is_none(),
             "no traj index → get_by_trajectory must return None"
         );
@@ -761,7 +763,7 @@ mod obs_map_index_unit_tests {
         // self has no traj index → will adopt other's.
         self_idx.merge_from(other_idx, 5);
 
-        match self_idx.get_by_trajectory(&TrajId::Int(1)).unwrap() {
+        match self_idx.get_by_trajectory(TrajId::Int(1)).unwrap() {
             ObsMapIndex::Contiguous { start, end } => {
                 assert_eq!(*start, 5, "start must be shifted by offset");
                 assert_eq!(*end, 8, "end must be shifted by offset");
@@ -784,7 +786,7 @@ mod obs_map_index_unit_tests {
 
         self_idx.merge_from(other_idx, 4);
 
-        match self_idx.get_by_trajectory(&TrajId::Int(1)).unwrap() {
+        match self_idx.get_by_trajectory(TrajId::Int(1)).unwrap() {
             ObsMapIndex::Contiguous { start, end } => {
                 assert_eq!(*start, 4);
                 assert_eq!(*end, 6);
@@ -813,7 +815,7 @@ mod obs_map_index_unit_tests {
 
         self_idx.merge_from(other_idx, 2);
 
-        match self_idx.get_by_trajectory(&TrajId::Int(1)).unwrap() {
+        match self_idx.get_by_trajectory(TrajId::Int(1)).unwrap() {
             ObsMapIndex::Split(v) => assert_eq!(v, &[0, 1, 2, 3]),
             ObsMapIndex::Contiguous { .. } => panic!("expected Split after collision"),
         }

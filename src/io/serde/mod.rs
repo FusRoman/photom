@@ -670,17 +670,16 @@ mod obsdataset_serde_tests {
         let restored = roundtrip(&ds);
 
         assert_eq!(
-            ds.index
-                .len_trajectory(&TrajId::Str("2020 AV2".to_string())),
+            ds.index.len_trajectory(TrajId::Str("2020 AV2".to_string())),
             restored
                 .index
-                .len_trajectory(&TrajId::Str("2020 AV2".to_string())),
+                .len_trajectory(TrajId::Str("2020 AV2".to_string())),
         );
         assert_eq!(
-            ds.index.len_trajectory(&TrajId::Str("Ceres".to_string())),
+            ds.index.len_trajectory(TrajId::Str("Ceres".to_string())),
             restored
                 .index
-                .len_trajectory(&TrajId::Str("Ceres".to_string())),
+                .len_trajectory(TrajId::Str("Ceres".to_string())),
         );
     }
 
@@ -715,12 +714,12 @@ mod obsdataset_serde_tests {
         // obs at index 1 must appear in both TrajId::Int(1) and TrajId::Int(2).
         let traj1_indices: Vec<ObsIndex> = restored
             .index
-            .iter_traj_obs_index(&TrajId::Int(1))
+            .iter_traj_obs_index(TrajId::Int(1))
             .expect("traj 1 must exist")
             .collect();
         let traj2_indices: Vec<ObsIndex> = restored
             .index
-            .iter_traj_obs_index(&TrajId::Int(2))
+            .iter_traj_obs_index(TrajId::Int(2))
             .expect("traj 2 must exist")
             .collect();
 

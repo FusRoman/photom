@@ -677,6 +677,13 @@ impl Display for TrajId {
 
 // --- Infallible conversions (enable `.into()` directly) ----------------------
 
+impl From<&TrajId> for TrajId {
+    #[inline]
+    fn from(id: &TrajId) -> Self {
+        id.clone()
+    }
+}
+
 impl From<u32> for TrajId {
     #[inline]
     fn from(n: u32) -> Self {

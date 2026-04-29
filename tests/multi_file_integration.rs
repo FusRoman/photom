@@ -41,8 +41,8 @@ mod mpc_multi_file {
         let p1 = data("8467.obs");
         let p2 = data("33803.obs");
         let (ds, _) = ObsDataset::from_mpc_80_col_files(&[p1.as_path(), p2.as_path()]);
-        assert!(ds.len_trajectory(&TrajId::Int(8467)).is_some());
-        assert!(ds.len_trajectory(&TrajId::Int(33803)).is_some());
+        assert!(ds.len_trajectory(TrajId::Int(8467)).is_some());
+        assert!(ds.len_trajectory(TrajId::Int(33803)).is_some());
     }
 
     /// Passing the same file twice doubles the observation count and merges
@@ -59,7 +59,7 @@ mod mpc_multi_file {
         assert_eq!(ds.observation_count(), single_count * 2);
         // Both halves are merged under TrajId::Int(8467).
         assert_eq!(
-            ds.len_trajectory(&TrajId::Int(8467)).unwrap_or(0),
+            ds.len_trajectory(TrajId::Int(8467)).unwrap_or(0),
             single_count * 2
         );
     }
@@ -121,7 +121,7 @@ mod mpc_multi_file {
         let p = data("8467.obs");
         let ds = ObsDataset::from_mpc_80_col(p.as_path()).unwrap();
         assert_eq!(
-            ds.is_traj_contiguous(&TrajId::Int(8467)),
+            ds.is_traj_contiguous(TrajId::Int(8467)),
             Some(false),
             "MPC single-file trajectory index should be Split"
         );
@@ -139,7 +139,7 @@ mod mpc_multi_file {
 
         let (ds, _) = ObsDataset::from_mpc_80_col_files(&[p1.as_path(), p2.as_path()]);
         assert_eq!(
-            ds.len_trajectory(&TrajId::Int(33803)),
+            ds.len_trajectory(TrajId::Int(33803)),
             Some(single_count_2),
             "count for TrajId from second file must equal that file's observation count"
         );
@@ -155,14 +155,11 @@ mod mpc_multi_file {
 
         let (ds, _) = ObsDataset::from_mpc_80_col_files(&[p.as_path(), p.as_path()]);
         assert_eq!(
-            ds.is_traj_contiguous(&TrajId::Int(8467)),
+            ds.is_traj_contiguous(TrajId::Int(8467)),
             Some(false),
             "colliding TrajId must produce a Split index entry"
         );
-        assert_eq!(
-            ds.len_trajectory(&TrajId::Int(8467)),
-            Some(single_count * 2),
-        );
+        assert_eq!(ds.len_trajectory(TrajId::Int(8467)), Some(single_count * 2),);
     }
 }
 
@@ -240,7 +237,7 @@ mod ades_multi_file {
         let ds = ObsDataset::from_ades(p.as_path(), None, None).unwrap();
         // example_ades.xml uses permID values that parse as integers.
         assert_eq!(
-            ds.is_traj_contiguous(&TrajId::Int(1234456)),
+            ds.is_traj_contiguous(TrajId::Int(1234456)),
             Some(false),
             "ADES single-file trajectory index should be Split"
         );
@@ -256,12 +253,12 @@ mod ades_multi_file {
         // example_ades2.xml uses trkSub "P10kefK" as its first trajectory key.
         let single_count_2 = ObsDataset::from_ades(p2.as_path(), None, None)
             .unwrap()
-            .len_trajectory(&TrajId::Str("P10kefK".to_string()))
+            .len_trajectory(TrajId::Str("P10kefK".to_string()))
             .expect("P10kefK must be present in example_ades2.xml");
 
         let (ds, _) = ObsDataset::from_ades_files(&[p1.as_path(), p2.as_path()], None, None);
         assert_eq!(
-            ds.len_trajectory(&TrajId::Str("P10kefK".to_string())),
+            ds.len_trajectory(TrajId::Str("P10kefK".to_string())),
             Some(single_count_2),
             "count for non-colliding TrajId must equal the second file's single-load count"
         );

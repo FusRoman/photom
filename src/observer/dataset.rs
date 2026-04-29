@@ -22,9 +22,7 @@
 //! The `ObserverDataset` struct itself is `pub(crate)` and is not part of
 //! the public API.
 
-use std::{sync::OnceLock, time::Duration};
-
-use ureq::Agent;
+use std::sync::OnceLock;
 
 use crate::{
     observation_dataset::ObsDatasetError,
@@ -67,7 +65,7 @@ pub enum ObserverId {
 /// The lazy fetch is protected by a [`OnceLock`]: once the result — whether
 /// success or failure — is stored, no further network I/O is performed.
 #[derive(Debug)]
-pub(crate) struct ObserverDataset {
+pub struct ObserverDataset {
     /// Geodetic observers supplied by the input data, stored once and
     /// referenced by index to avoid duplication.
     pub(crate) custom_observers: Vec<Observer>,
@@ -82,6 +80,16 @@ pub(crate) struct ObserverDataset {
     /// Astrometric error model used to assign measurement accuracies to
     /// MPC-coded observers during MPC table initialisation.
     pub(crate) mpc_error_model: Option<ObsErrorModel>,
+}
+
+impl Clone for ObserverDataset {
+    fn clone(&self) -> Self {
+        Self {
+            custom_observers: self.custom_observers.clone(),
+            mpc_observers: OnceLock::new(), // reset: will re-fetch on next call
+            mpc_error_model: self.mpc_error_model,
+        }
+    }
 }
 
 impl ObserverDataset {
@@ -112,6 +120,29 @@ impl ObserverDataset {
             custom_observers,
             mpc_observers: OnceLock::new(),
             mpc_error_model,
+        }
+    }
+
+    /// Create an empty [`ObserverDataset`] with no custom observers and an optional
+    /// astrometric error model for MPC site lookup.
+    ///
+    /// The MPC observatory table is **not** fetched at this point; it is
+    /// initialised lazily on the first call to [`get`](ObserverDataset::get).
+    ///
+    /// # Arguments
+    ///
+    /// - `error_model` — the astrometric error model variant used to populate
+    ///   per-site measurement accuracies when the MPC table is loaded.
+    ///
+    /// # Returns
+    ///
+    /// A freshly constructed [`ObserverDataset`] with an uninitialised MPC
+    /// lookup table and an empty custom observer list.
+    pub fn empty(error_model: Option<ObsErrorModel>) -> Self {
+        Self {
+            custom_observers: Vec::new(),
+            mpc_observers: OnceLock::new(),
+            mpc_error_model: error_model,
         }
     }
 
@@ -172,17 +203,12 @@ impl ObserverDataset {
     pub(crate) fn mpc_observers(&self) -> Result<&MpcCodeObs, &ObsDatasetError> {
         self.mpc_observers
             .get_or_init(|| {
-                let config = Agent::config_builder()
-                    .timeout_global(Some(Duration::from_secs(10)))
-                    .build();
-                let agent: Agent = config.into();
-
                 let error_model_data = self
                     .mpc_error_model
                     .as_ref()
                     .ok_or(ObsDatasetError::ErrorModelNotFound)?
                     .read_error_model_file()?;
-                let obs = init_observatories(agent, &error_model_data)?;
+                let obs = init_observatories(&error_model_data)?;
                 Ok(obs)
             })
             .as_ref()

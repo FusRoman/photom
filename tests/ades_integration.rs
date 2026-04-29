@@ -101,7 +101,7 @@ fn ades_example2_p10kefk_observation_count() {
     let path = fixture("example_ades2.xml");
     let ds = ObsDataset::from_ades(&path, None, None).unwrap();
     let count = ds
-        .len_trajectory(&TrajId::Str("P10kefK".to_string()))
+        .len_trajectory(TrajId::Str("P10kefK".to_string()))
         .unwrap_or(0);
     assert_eq!(count, 3, "P10kefK has 3 observations");
 }
@@ -111,7 +111,7 @@ fn ades_example2_rd34_observation_count() {
     let path = fixture("example_ades2.xml");
     let ds = ObsDataset::from_ades(&path, None, None).unwrap();
     let count = ds
-        .len_trajectory(&TrajId::Str("2016 RD34".to_string()))
+        .len_trajectory(TrajId::Str("2016 RD34".to_string()))
         .unwrap_or(0);
     assert_eq!(count, 2, "2016 RD34 has 2 observations");
 }
@@ -121,7 +121,7 @@ fn ades_example2_jb29_observation_count() {
     let path = fixture("example_ades2.xml");
     let ds = ObsDataset::from_ades(&path, None, None).unwrap();
     let count = ds
-        .len_trajectory(&TrajId::Str("2016 JB29".to_string()))
+        .len_trajectory(TrajId::Str("2016 JB29".to_string()))
         .unwrap_or(0);
     assert_eq!(count, 4, "2016 JB29 has 4 observations");
 }

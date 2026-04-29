@@ -6,7 +6,7 @@ use thiserror::Error;
 ///
 /// Every variant carries enough context to identify the offending row or
 /// column so that callers can produce actionable diagnostics.
-#[derive(Debug, Error)]
+#[derive(Debug, Error, Clone)]
 pub enum PolarsError {
     /// The `DataFrame` did not satisfy the required schema.
     ///

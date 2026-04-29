@@ -112,7 +112,7 @@ pub enum ObsDatasetError {
 /// - A **lazily-initialised MPC lookup table** that maps three-byte MPC codes
 ///   to [`Observer`] metadata.  The table is fetched from the MPC website
 ///   on the first access and cached for the lifetime of the dataset.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ObsDataset {
     /// Full list of observations in insertion order.
     pub(crate) observations: Vec<Observation>,
@@ -154,9 +154,9 @@ impl ObsDataset {
     /// # Returns
     /// The `ObsIndex` of each newly added observation, in the same order as `new_obs`.
     pub fn push_observation(
-        &mut self,
+        mut self,
         new_obs: Vec<ObservationInput>,
-    ) -> Result<Vec<ObsIndex>, ObsDatasetError> {
+    ) -> Result<(Self, Vec<ObsIndex>), ObsDatasetError> {
         let mut obs_index_result = Vec::with_capacity(new_obs.len());
 
         // ── Phase 1: validate — no mutation of self until this passes ──────
@@ -203,7 +203,7 @@ impl ObsDataset {
 
         self.observations.extend(placed);
 
-        Ok(obs_index_result)
+        Ok((self, obs_index_result))
     }
 
     /// Add a new observer to the dataset, returning its `ObserverId::IntId` index.
@@ -215,10 +215,10 @@ impl ObsDataset {
     ///
     /// # Returns
     /// The `ObserverId::IntId` index of the newly added observer.
-    pub fn push_observer(&mut self, observer: Observer) -> ObserverId {
+    pub fn push_observer(mut self, observer: Observer) -> (Self, ObserverId) {
         let offset = self.observer_dataset.custom_observers.len();
         self.observer_dataset.custom_observers.push(observer);
-        ObserverId::IntId(offset)
+        (self, ObserverId::IntId(offset))
     }
 
     /// Look up a single observation by its [`ObsId`].
@@ -1205,8 +1205,9 @@ mod observation_tests {
         /// Pushing to an initially-empty dataset satisfies the invariant.
         #[test]
         fn index_consistency_push_to_empty_dataset() {
-            let mut ds = make_dataset(vec![], vec![]);
-            ds.push_observation(vec![make_observation(0, None)])
+            let ds = make_dataset(vec![], vec![]);
+            let (ds, _) = ds
+                .push_observation(vec![make_observation(0, None)])
                 .expect("push_observation must succeed for unique ids");
             assert_index_consistency(&ds);
         }
@@ -1215,10 +1216,11 @@ mod observation_tests {
         /// the invariant for all resulting observations.
         #[test]
         fn index_consistency_push_multiple_to_empty_dataset() {
-            let mut ds = make_dataset(vec![], vec![]);
+            let ds = make_dataset(vec![], vec![]);
             let new_obs: Vec<ObservationInput> =
                 (0u64..5).map(|i| make_observation(i, None)).collect();
-            ds.push_observation(new_obs)
+            let (ds, _) = ds
+                .push_observation(new_obs)
                 .expect("push_observation must succeed for unique ids");
             assert_index_consistency(&ds);
         }
@@ -1229,10 +1231,11 @@ mod observation_tests {
         fn index_consistency_push_to_non_empty_dataset() {
             let initial: Vec<ObservationInput> =
                 (0u64..3).map(|i| make_observation(i, None)).collect();
-            let mut ds = make_dataset(initial, vec![]);
+            let ds = make_dataset(initial, vec![]);
             let extra: Vec<ObservationInput> =
                 (3u64..7).map(|i| make_observation(i, None)).collect();
-            ds.push_observation(extra)
+            let (ds, _) = ds
+                .push_observation(extra)
                 .expect("push_observation must succeed for unique ids");
             assert_index_consistency(&ds);
         }
@@ -1307,10 +1310,10 @@ mod observation_tests {
             fn prop_index_consistency_push_observation(n in 0usize..=100, m in 0usize..=100) {
                 let initial: Vec<ObservationInput> =
                     (0u64..n as u64).map(|i| make_observation(i, None)).collect();
-                let mut ds = make_dataset(initial, vec![]);
+                let ds = make_dataset(initial, vec![]);
                 let extra: Vec<ObservationInput> =
                     (n as u64..(n + m) as u64).map(|i| make_observation(i, None)).collect();
-                ds.push_observation(extra)
+                let (ds, _) = ds.push_observation(extra)
                     .expect("push_observation must succeed for unique ids");
                 assert_index_consistency(&ds);
             }

@@ -215,7 +215,7 @@ mod single_thread {
     fn iter_trajectory_observations_none_for_missing_traj() {
         let ds = load_int();
         assert!(
-            ds.iter_trajectory_observations(&TrajId::Int(u32::MAX))
+            ds.iter_trajectory_observations(TrajId::Int(u32::MAX))
                 .is_none(),
             "iter_trajectory_observations must return None for an absent trajectory"
         );
@@ -307,7 +307,7 @@ mod single_thread {
     fn materialize_trajectory_none_for_missing_traj() {
         let ds = load_int();
         assert!(
-            ds.materialize_trajectory(&TrajId::Int(u32::MAX)).is_none(),
+            ds.materialize_trajectory(TrajId::Int(u32::MAX)).is_none(),
             "materialize_trajectory must return None for an absent trajectory"
         );
     }
@@ -725,7 +725,7 @@ mod parallel {
     fn materialize_trajectory_par_none_for_missing_traj() {
         let ds = load_int();
         assert!(
-            ds.materialize_trajectory_par(&TrajId::Int(u32::MAX))
+            ds.materialize_trajectory_par(TrajId::Int(u32::MAX))
                 .is_none(),
             "materialize_trajectory_par must return None for an absent trajectory"
         );

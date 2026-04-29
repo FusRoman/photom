@@ -124,6 +124,17 @@ impl<'a> MemLayoutObservations<'a> {
             MemLayoutObservations::Split(vec) => Either::Right(vec.iter().copied()),
         }
     }
+
+    /// Eagerly collect the contained observation references into a `Vec`.
+    /// This is a convenience method that simply collects the results of [`MemLayoutObservations::iter`] into a `Vec`.
+    ///
+    /// # Returns
+    ///
+    /// A `Vec` containing shared references to all observations in this collection,
+    /// in the same order as [`MemLayoutObservations::iter`] would yield them.
+    pub fn collect_into_vec(&self) -> Vec<&'a Observation> {
+        self.iter().collect()
+    }
 }
 
 impl<'a> IntoIterator for MemLayoutObservations<'a> {
@@ -279,7 +290,7 @@ impl ObsDataset {
     ///  `None` otherwise.
     pub fn iter_trajectory_observations(
         &self,
-        traj_id: &TrajId,
+        traj_id: impl Into<TrajId>,
     ) -> Option<impl Iterator<Item = &Observation>> {
         self.index
             .iter_traj_obs_index(traj_id)
@@ -314,8 +325,12 @@ impl ObsDataset {
     ///
     /// `Some(MemLayoutObservations)` in insertion order if the trajectory index exists and the
     /// given `traj_id` is present; `None` otherwise.
-    pub fn materialize_trajectory(&self, traj_id: &TrajId) -> Option<MemLayoutObservations<'_>> {
-        let traj_index = self.index.obs_index_by_trajectory.as_ref()?.get(traj_id)?;
+    pub fn materialize_trajectory(
+        &self,
+        traj_id: impl Into<TrajId>,
+    ) -> Option<MemLayoutObservations<'_>> {
+        let traj_id = traj_id.into();
+        let traj_index = self.index.obs_index_by_trajectory.as_ref()?.get(&traj_id)?;
         match traj_index {
             ObsMapIndex::Split(indices) => Some(MemLayoutObservations::Split(
                 indices.iter().map(|idx| &self.observations[*idx]).collect(),
@@ -346,7 +361,7 @@ impl ObsDataset {
     ///
     /// `Some(count)` if the trajectory index exists and the given `traj_id` is present;
     /// `None` otherwise.
-    pub fn len_trajectory(&self, traj_id: &TrajId) -> Option<usize> {
+    pub fn len_trajectory(&self, traj_id: impl Into<TrajId>) -> Option<usize> {
         self.index.len_trajectory(traj_id)
     }
 
@@ -362,8 +377,9 @@ impl ObsDataset {
     /// and its entry is `Contiguous`; `Some(false)` if the
     /// entry is `Split`; `None` if the trajectory index is
     /// absent or the given `traj_id` is not found.
-    pub fn is_traj_contiguous(&self, traj_id: &TrajId) -> Option<bool> {
-        let entry = self.index.obs_index_by_trajectory.as_ref()?.get(traj_id)?;
+    pub fn is_traj_contiguous(&self, traj_id: impl Into<TrajId>) -> Option<bool> {
+        let traj_id = traj_id.into();
+        let entry = self.index.obs_index_by_trajectory.as_ref()?.get(&traj_id)?;
         Some(matches!(entry, ObsMapIndex::Contiguous { .. }))
     }
 }
@@ -470,7 +486,7 @@ mod iter_tests {
     #[test]
     fn mem_layout_split_len_and_iter() {
         let ds = make_dataset_with_index();
-        let traj = ds.materialize_trajectory(&TrajId::Int(10)).unwrap();
+        let traj = ds.materialize_trajectory(TrajId::Int(10)).unwrap();
         assert_eq!(traj.len(), 2);
         let ids: Vec<u64> = traj.iter().map(|o| *o.id()).collect();
         assert_eq!(ids, vec![1, 3]);
@@ -493,7 +509,7 @@ mod iter_tests {
     #[test]
     fn mem_layout_into_iter_split() {
         let ds = make_dataset_with_index();
-        let traj = ds.materialize_trajectory(&TrajId::Int(20)).unwrap();
+        let traj = ds.materialize_trajectory(TrajId::Int(20)).unwrap();
         let ids: Vec<u64> = traj.into_iter().map(|o| *o.id()).collect();
         assert_eq!(ids, vec![2, 4]);
     }
@@ -617,7 +633,7 @@ mod iter_tests {
     #[test]
     fn len_trajectory_correct() {
         let ds = make_dataset_with_index();
-        assert_eq!(ds.len_trajectory(&TrajId::Int(10)), Some(2));
-        assert_eq!(ds.len_trajectory(&TrajId::Int(99)), None);
+        assert_eq!(ds.len_trajectory(TrajId::Int(10)), Some(2));
+        assert_eq!(ds.len_trajectory(TrajId::Int(99)), None);
     }
 }

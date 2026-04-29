@@ -30,7 +30,7 @@ fn test_8467_single_trajectory() {
 #[test]
 fn test_8467_traj_id_is_integer() {
     let ds = ObsDataset::from_mpc_80_col(data("8467.obs").as_path()).unwrap();
-    assert_eq!(ds.len_trajectory(&TrajId::Int(8467)).unwrap_or(0), 61);
+    assert_eq!(ds.len_trajectory(TrajId::Int(8467)).unwrap_or(0), 61);
 }
 
 #[test]
@@ -92,7 +92,7 @@ fn test_k25d50b_obs_count() {
 fn test_k25d50b_traj_id_is_string() {
     let ds = ObsDataset::from_mpc_80_col(data("K25D50B.obs").as_path()).unwrap();
     assert_eq!(
-        ds.len_trajectory(&TrajId::Str("K25D50B".to_string()))
+        ds.len_trajectory(TrajId::Str("K25D50B".to_string()))
             .unwrap_or(0),
         20
     );
@@ -123,7 +123,7 @@ fn test_2015ab_primary_traj_id() {
     let ds = ObsDataset::from_mpc_80_col(data("2015AB.obs").as_path()).unwrap();
     // All observations are under the primary TrajId K09R05F.
     assert_eq!(
-        ds.len_trajectory(&TrajId::Str("K09R05F".to_string()))
+        ds.len_trajectory(TrajId::Str("K09R05F".to_string()))
             .unwrap_or(0),
         37
     );
@@ -171,7 +171,7 @@ fn test_33803_single_trajectory() {
 #[test]
 fn test_33803_traj_id() {
     let ds = ObsDataset::from_mpc_80_col(data("33803.obs").as_path()).unwrap();
-    assert_eq!(ds.len_trajectory(&TrajId::Int(33803)).unwrap_or(0), 129);
+    assert_eq!(ds.len_trajectory(TrajId::Int(33803)).unwrap_or(0), 129);
 }
 
 #[test]

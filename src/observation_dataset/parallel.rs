@@ -124,7 +124,7 @@ impl ObsDatasetIndex {
     /// exists and the trajectory is present; `None` otherwise.
     pub(crate) fn par_iter_traj_obs_index(
         &self,
-        traj_id: &TrajId,
+        traj_id: impl Into<TrajId>,
     ) -> Option<impl ParallelIterator<Item = ObsIndex> + '_> {
         self.get_by_trajectory(traj_id)
             .map(|indices| match indices {
@@ -283,7 +283,7 @@ impl ObsDataset {
     /// that trajectory in insertion order; `None` otherwise.
     pub fn par_iter_trajectory_observations(
         &self,
-        traj_id: &TrajId,
+        traj_id: impl Into<TrajId>,
     ) -> Option<impl ParallelIterator<Item = &Observation>> {
         self.index
             .par_iter_traj_obs_index(traj_id)
@@ -330,9 +330,10 @@ impl ObsDataset {
     /// present; `None` otherwise.  The order of elements in the `Vec` is unspecified.
     pub fn materialize_trajectory_par(
         &self,
-        traj_id: &TrajId,
+        traj_id: impl Into<TrajId>,
     ) -> Option<MemLayoutObservations<'_>> {
-        let traj_index = self.index.obs_index_by_trajectory.as_ref()?.get(traj_id)?;
+        let traj_id = traj_id.into();
+        let traj_index = self.index.obs_index_by_trajectory.as_ref()?.get(&traj_id)?;
         match traj_index {
             ObsMapIndex::Split(indices) => Some(MemLayoutObservations::Split(
                 indices
@@ -789,7 +790,7 @@ mod obsdataset_parallel_tests {
             let dataset = make_dataset_with_index();
             assert!(
                 dataset
-                    .materialize_trajectory_par(&TrajId::Int(10))
+                    .materialize_trajectory_par(TrajId::Int(10))
                     .is_some(),
                 "Expected Some(vec) for TrajId::Int(10)"
             );
@@ -802,7 +803,7 @@ mod obsdataset_parallel_tests {
             let dataset = make_dataset_with_index();
             assert!(
                 dataset
-                    .materialize_trajectory_par(&TrajId::Int(99))
+                    .materialize_trajectory_par(TrajId::Int(99))
                     .is_none(),
                 "Expected None for TrajId::Int(99)"
             );
@@ -813,9 +814,7 @@ mod obsdataset_parallel_tests {
         fn materialize_trajectory_par_count() {
             let dataset = make_dataset_with_index();
             // unwrap is safe: test 26 confirmed Some
-            let vec = dataset
-                .materialize_trajectory_par(&TrajId::Int(10))
-                .unwrap();
+            let vec = dataset.materialize_trajectory_par(TrajId::Int(10)).unwrap();
             assert_eq!(vec.len(), 2);
         }
 
@@ -824,9 +823,7 @@ mod obsdataset_parallel_tests {
         fn materialize_trajectory_par_ids() {
             let dataset = make_dataset_with_index();
             // unwrap is safe: test 26 confirmed Some
-            let vec = dataset
-                .materialize_trajectory_par(&TrajId::Int(10))
-                .unwrap();
+            let vec = dataset.materialize_trajectory_par(TrajId::Int(10)).unwrap();
             let mut ids: Vec<u64> = vec.iter().map(|o| o.id).collect();
             ids.sort_unstable();
             assert_eq!(ids, vec![1u64, 3]);
@@ -926,7 +923,7 @@ mod obsdataset_parallel_tests {
             assert!(
                 dataset
                     .index
-                    .par_iter_traj_obs_index(&TrajId::Int(10))
+                    .par_iter_traj_obs_index(TrajId::Int(10))
                     .is_none(),
                 "Expected None when the dataset index has no trajectory map"
             );
@@ -940,7 +937,7 @@ mod obsdataset_parallel_tests {
             assert!(
                 dataset
                     .index
-                    .par_iter_traj_obs_index(&TrajId::Int(10))
+                    .par_iter_traj_obs_index(TrajId::Int(10))
                     .is_some(),
                 "Expected Some for TrajId::Int(10) which is in the trajectory map"
             );
@@ -954,7 +951,7 @@ mod obsdataset_parallel_tests {
             // unwrap is safe: test 36 confirmed Some
             let count = dataset
                 .index
-                .par_iter_traj_obs_index(&TrajId::Int(10))
+                .par_iter_traj_obs_index(TrajId::Int(10))
                 .unwrap()
                 .count();
             assert_eq!(count, 2);
