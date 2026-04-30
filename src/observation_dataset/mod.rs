@@ -172,8 +172,12 @@ impl ObsDataset {
                 .filter_map(|o| o.observer)
                 .collect::<AHashSet<_>>()
                 .into_iter()
-                .filter_map(|id| self.observer_dataset.get(&id))
-                .cloned()
+                .filter_map(|id| match id {
+                    // MPC codes are resolved lazily — no custom entry to carry over.
+                    ObserverId::MpcCode(_) => None,
+                    // IntId observers live in custom_observers and must be merged.
+                    ObserverId::IntId(_) => self.observer_dataset.get(&id).cloned(),
+                })
                 .collect(),
             None,
         );

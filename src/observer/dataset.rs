@@ -72,10 +72,10 @@ pub struct ObserverDataset {
 
     /// Lazily-initialised MPC observatory lookup table.
     ///
-    /// Populated on the first call to [`ObserverDataset::mpc_observers`].  If
-    /// initialisation fails the error is stored here and re-returned on every
-    /// subsequent call without retrying the network request.
-    mpc_observers: OnceLock<Result<MpcCodeObs, ObsDatasetError>>,
+    /// Populated on the first successful call to [`ObserverDataset::mpc_observers`].
+    /// If initialisation fails, the lock remains uninitialised and the next
+    /// call will retry.
+    mpc_observers: OnceLock<MpcCodeObs>,
 
     /// Astrometric error model used to assign measurement accuracies to
     /// MPC-coded observers during MPC table initialisation.
@@ -185,11 +185,23 @@ impl ObserverDataset {
         offset
     }
 
-    /// Returns a reference to the MPC observatory lookup table, initializing
-    /// it on the first call by fetching data from the MPC website.
+    /// Returns a reference to the MPC observatory lookup table, initialising
+    /// it on demand if not yet available.
     ///
-    /// The result is cached: subsequent calls return immediately without any
-    /// I/O. If initialization failed, the error is returned on every call.
+    /// Initialisation fetches the MPC observatory list and applies the
+    /// astrometric error model supplied via
+    /// [`ObserverDataset::mpc_error_model`].  On success the result is cached
+    /// in a [`OnceLock`]: subsequent calls return immediately without any I/O.
+    ///
+    /// If initialisation fails the lock is left uninitialised, so the next
+    /// call will retry — unlike a pattern that caches the error permanently.
+    ///
+    /// # Concurrency
+    ///
+    /// Safe to call from multiple threads.  If two threads race during the
+    /// first initialisation, both perform the work independently; the winner
+    /// of `OnceLock::set` stores its result and the loser's value is silently
+    /// discarded.  All threads ultimately observe the same cached table.
     ///
     /// # Returns
     ///
@@ -197,20 +209,30 @@ impl ObserverDataset {
     ///
     /// # Errors
     ///
-    /// Returns [`ObsDatasetError::ErrorModelNotFound`] if the error model file
-    /// has not been initialised, or [`ObsDatasetError::MPCError`] if the MPC fetch
-    /// fails.
-    pub(crate) fn mpc_observers(&self) -> Result<&MpcCodeObs, &ObsDatasetError> {
-        self.mpc_observers
-            .get_or_init(|| {
-                let error_model_data = self
-                    .mpc_error_model
-                    .as_ref()
-                    .ok_or(ObsDatasetError::ErrorModelNotFound)?
-                    .read_error_model_file()?;
-                let obs = init_observatories(&error_model_data)?;
-                Ok(obs)
-            })
+    /// - [`ObsDatasetError::ErrorModelNotFound`] — no error model has been
+    ///   attached via [`ObsDataset::with_error_model`].
+    /// - [`ObsDatasetError::MPCError`] — the MPC fetch or table parsing failed.
+    pub(crate) fn mpc_observers(&self) -> Result<&MpcCodeObs, ObsDatasetError> {
+        if let Some(obs) = self.mpc_observers.get() {
+            return Ok(obs);
+        }
+
+        // Not yet initialised (or previous attempt failed) — try now.
+        let error_model_data = self
+            .mpc_error_model
             .as_ref()
+            .ok_or(ObsDatasetError::ErrorModelNotFound)?
+            .read_error_model_file()?;
+
+        let obs = init_observatories(&error_model_data)?;
+
+        // Another thread may have initialised concurrently — `set` is a no-op
+        // if the lock is already filled, and `get` will return the winner.
+        let _ = self.mpc_observers.set(obs);
+
+        Ok(self
+            .mpc_observers
+            .get()
+            .expect("just set above or by a concurrent thread"))
     }
 }

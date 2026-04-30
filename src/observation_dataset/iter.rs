@@ -46,7 +46,7 @@ impl ObsDataset {
     /// `Err(ObsDatasetError::MpcCatalogueLoadError)` if the MPC observatory catalogue could not be loaded, which prevents access to MPC-coded observers.
     pub fn iter_observer(
         &self,
-    ) -> Result<impl Iterator<Item = (ObserverId, &Observer)>, &ObsDatasetError> {
+    ) -> Result<impl Iterator<Item = (ObserverId, &Observer)>, ObsDatasetError> {
         // MPC-coded observer iterator
         let mpc_iter = self
             .observer_dataset

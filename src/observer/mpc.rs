@@ -219,8 +219,7 @@ fn init_observatories_impl(
 /// to a sibling `.html.tmp` file in the same directory as `cache_path` and
 /// atomically renamed into place so readers never observe a partial file.
 /// Parent directories are created with [`std::fs::create_dir_all`] if they do
-/// not yet exist.  Any filesystem error during the write is printed to `stderr`
-/// and silently ignored — the in-memory document is still returned.
+/// not yet exist.  Any filesystem error during the write is returned as an error.
 ///
 /// # Arguments
 ///
@@ -238,7 +237,6 @@ fn init_observatories_impl(
 /// |---------|-------|
 /// | [`MPCError::UreqError`] | HTTP request failed or response body could not be read |
 fn mpc_obs_request(ureq_agent: Agent, cache_path: &std::path::Path) -> Result<String, MPCError> {
-    // Cache miss (or unreadable): fetch from network.
     let fetched = ureq_agent
         .get("https://minorplanetcenter.net/iau/lists/ObsCodes.html")
         .call()?
@@ -249,26 +247,15 @@ fn mpc_obs_request(ureq_agent: Agent, cache_path: &std::path::Path) -> Result<St
     // Write to a sibling .tmp file first, then rename so readers never
     // see a partial file.
     if let Some(parent) = cache_path.parent() {
-        if let Err(e) = std::fs::create_dir_all(parent) {
-            // Non-fatal: proceed without caching.
-            eprintln!(
-                "photom: could not create MPC cache directory {}: {e}",
-                parent.display()
-            );
-        } else {
-            let tmp_path = cache_path.with_extension("html.tmp");
-            match std::fs::write(&tmp_path, fetched.as_bytes()) {
-                Ok(()) => {
-                    if let Err(e) = std::fs::rename(&tmp_path, cache_path) {
-                        eprintln!("photom: could not rename MPC cache file: {e}");
-                        // Best-effort cleanup; ignore secondary errors.
-                        let _ = std::fs::remove_file(&tmp_path);
-                    }
-                }
-                Err(e) => {
-                    eprintln!("photom: could not write MPC cache: {e}");
-                }
-            }
+        std::fs::create_dir_all(parent)?;
+
+        let tmp_path = cache_path.with_extension("html.tmp");
+        std::fs::write(&tmp_path, fetched.as_bytes())?;
+
+        if let Err(e) = std::fs::rename(&tmp_path, cache_path) {
+            // Best-effort cleanup; ignore secondary errors.
+            let _ = std::fs::remove_file(&tmp_path);
+            return Err(MPCError::Io(e));
         }
     }
 
@@ -313,22 +300,17 @@ fn parse_mpc_obs_result(
         let Some((code, remain)) = line.split_at_checked(3) else {
             continue;
         };
-
-        // Convert the 3-char ASCII code to MpcCode ([u8; 3]); skip malformed lines.
         let Ok(mpc_code) = code.as_bytes().try_into() else {
             continue;
         };
-
         let Some((longitude, cos, sin, name)) = parse_remain(remain.trim_end(), code) else {
             continue;
         };
 
         // TODO: support per-site catalog codes (not always "c")
-        let bias_rms = get_bias_rms(error_model, mpc_code, "c");
-        let (ra_acc, dec_acc) = match bias_rms {
-            Some((ra, dec)) => (Some(ra as f64), Some(dec as f64)),
-            None => (None, None),
-        };
+        let (ra_acc, dec_acc) = get_bias_rms(error_model, mpc_code, "c")
+            .map(|(ra, dec)| (Some(ra as f64), Some(dec as f64)))
+            .unwrap_or((None, None));
 
         if let Ok(observer) = Observer::from_parallax(
             longitude as f64,
