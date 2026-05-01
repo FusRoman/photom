@@ -313,7 +313,7 @@ fn parse_mpc_obs_result(
             .unwrap_or((None, None));
 
         if let Ok(observer) = Observer::from_parallax(
-            longitude as f64,
+            (longitude as f64).to_radians(),
             cos as f64,
             sin as f64,
             Some(name),
@@ -631,6 +631,36 @@ Code  Long.   cos      sin    Name\n\
             greenwich.name.as_deref(),
             Some("Greenwich"),
             "Observer name for code '000' should be 'Greenwich'"
+        );
+    }
+
+    /// Verifies that the `Observer` for Meudon (code `005`) has the correct
+    /// longitude, $\rho\cos\phi'$, and $\rho\sin\phi'$ parsed from the mock document.
+    /// Longitude should be stored as radians in the `Observer` struct.
+    #[test]
+    fn init_observatories_observer_parallax_is_correct() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let agent = mock_agent();
+        let error_model: crate::observer::error_model::ErrorModelData =
+            std::collections::HashMap::new();
+
+        let map = init_observatories_impl(agent, &error_model, Some(tmp.path())).unwrap();
+
+        let meudon = map.get(b"005").expect("Meudon must be present");
+        assert_relative_eq!(
+            meudon.longitude.into_inner(),
+            0.03893829467988711_f64,
+            epsilon = 1e-6_f64
+        );
+        assert_relative_eq!(
+            meudon.rho_cos_phi.into_inner(),
+            0.659891_f64,
+            epsilon = 1e-6_f64
+        );
+        assert_relative_eq!(
+            meudon.rho_sin_phi.into_inner(),
+            0.748875_f64,
+            epsilon = 1e-6_f64
         );
     }
 

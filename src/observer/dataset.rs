@@ -22,7 +22,10 @@
 //! The `ObserverDataset` struct itself is `pub(crate)` and is not part of
 //! the public API.
 
-use std::sync::OnceLock;
+use std::{
+    fmt::{self, Display},
+    sync::OnceLock,
+};
 
 use crate::{
     observation_dataset::ObsDatasetError,
@@ -50,6 +53,18 @@ pub enum ObserverId {
     IntId(usize),
     /// Three-byte ASCII MPC observatory code (e.g. `b"G96"`).
     MpcCode(MpcCode),
+}
+
+impl Display for ObserverId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ObserverId::IntId(id) => write!(f, "Observer#{id}"),
+            ObserverId::MpcCode(code) => {
+                let s = std::str::from_utf8(code).unwrap_or("???");
+                write!(f, "MPC({s})")
+            }
+        }
+    }
 }
 
 /// Internal container for all observer metadata used by an observation dataset.

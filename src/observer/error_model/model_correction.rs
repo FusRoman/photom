@@ -1,5 +1,5 @@
 use crate::{
-    constants::ARCSEC_TO_DEG,
+    constants::ARCSEC_TO_RAD,
     observation_dataset::ObsDataset,
     observer::{
         dataset::ObserverId,
@@ -142,9 +142,6 @@ impl ModelCorrection for ObsDataset {
             None => return self,
         };
 
-        // ARCSEC_TO_DEG = 1/3600; multiplying by π/180 gives π/648000 rad/arcsec.
-        let arcsec_to_rad = ARCSEC_TO_DEG * std::f64::consts::PI / 180.0;
-
         for obs in &mut self.observations {
             let mpc_code = match obs.observer {
                 Some(ObserverId::MpcCode(code)) => code,
@@ -154,8 +151,8 @@ impl ModelCorrection for ObsDataset {
             if let Some((rms_ra, rms_dec)) = get_bias_rms(&model_data, mpc_code, "c") {
                 let cos_dec = obs.equ_coord.dec.cos();
 
-                let model_ra_rad = rms_ra as f64 * arcsec_to_rad / cos_dec;
-                let model_dec_rad = rms_dec as f64 * arcsec_to_rad;
+                let model_ra_rad = rms_ra as f64 * ARCSEC_TO_RAD / cos_dec;
+                let model_dec_rad = rms_dec as f64 * ARCSEC_TO_RAD;
 
                 obs.equ_coord.ra_error = obs.equ_coord.ra_error.max(model_ra_rad);
                 obs.equ_coord.dec_error = obs.equ_coord.dec_error.max(model_dec_rad);
@@ -165,7 +162,7 @@ impl ModelCorrection for ObsDataset {
         self
     }
 
-    fn apply_batch_rms_correction(mut self, gap_max: f64) -> ObsDataset {
+    fn apply_batch_rms_correction(mut self, gap_max: f64) -> Self {
         let error_model = match self.observer_dataset.mpc_error_model {
             Some(ref em) => em,
             None => return self,

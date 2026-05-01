@@ -32,3 +32,9 @@ pub const ERAU: f64 = (EARTH_MAJOR_AXIS / 1000.) / AU;
 
 /// Arcseconds to degrees conversion factor.
 pub const ARCSEC_TO_DEG: f64 = 1.0 / 3600.0;
+
+/// Hours → radians conversion factor.
+pub const RADH: f64 = DPI / 24.0;
+
+/// Arcseconds to radians: $\frac{\pi}{180 \times 3600}$
+pub const ARCSEC_TO_RAD: f64 = std::f64::consts::PI / (180.0 * 3600.0);

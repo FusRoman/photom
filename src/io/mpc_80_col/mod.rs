@@ -20,8 +20,8 @@ use nom::{
 use thiserror::Error;
 
 use crate::{
-    Degrees, TrajId,
-    constants::ARCSEC_TO_DEG,
+    Arcseconds, Degrees, Radians, TrajId,
+    constants::ARCSEC_TO_RAD,
     coordinates::equatorial::EquCoord,
     observation_dataset::{
         ObsDataset, ObsId,
@@ -154,13 +154,14 @@ pub(crate) fn parse_mpc_80_col_str(
 // ---------------------------------------------------------------------------
 
 /// Decoded fields from a single 80-column observation line.
+#[derive(Debug)]
 struct LineRecord {
     traj_id: TrajId,
     mjd_tt: f64,
-    ra_deg: Degrees,
-    ra_acc_arcsec: f64,
-    dec_deg: Degrees,
-    dec_acc_arcsec: f64,
+    ra_rad: Radians,
+    ra_error_rad: Radians,
+    dec_rad: Radians,
+    dec_error_rad: Radians,
     mag: Option<f32>,
     band: Option<String>,
     obs_code: [u8; 3],
@@ -168,9 +169,12 @@ struct LineRecord {
 
 impl LineRecord {
     fn into_observation(self, idx: usize, start_id: ObsId) -> ObservationInput {
-        let ra_err_deg = self.ra_acc_arcsec * ARCSEC_TO_DEG;
-        let dec_err_deg = self.dec_acc_arcsec * ARCSEC_TO_DEG;
-        let equ_coord = EquCoord::from_degrees(self.ra_deg, ra_err_deg, self.dec_deg, dec_err_deg);
+        let equ_coord = EquCoord::new(
+            self.ra_rad,
+            self.ra_error_rad,
+            self.dec_rad,
+            self.dec_error_rad,
+        );
 
         let photometry = Photometry {
             magnitude: self.mag.unwrap_or(0.0) as f64,
@@ -228,11 +232,11 @@ fn parse_line(line: &str) -> Result<LineRecord, String> {
         .map_err(|_| format!("invalid date field: '{date_str}'"))?
         .1;
 
-    let (ra_deg, ra_acc_arcsec) = parse_ra(ra_str)
+    let (ra_deg, ra_acc) = parse_ra(ra_str)
         .map_err(|_| format!("invalid RA field: '{ra_str}'"))?
         .1;
 
-    let (dec_deg, dec_acc_arcsec) = parse_dec(dec_str)
+    let (dec_deg, dec_acc) = parse_dec(dec_str)
         .map_err(|_| format!("invalid Dec field: '{dec_str}'"))?
         .1;
 
@@ -249,13 +253,30 @@ fn parse_line(line: &str) -> Result<LineRecord, String> {
 
     let obs_code = mpc_str_to_bytes(obs_code_str);
 
+    let dec_rad = dec_deg.to_radians();
+    // Needed to project the RA precision onto the great-circle arc.
+    let dec_rad_cos = dec_rad.cos();
+
+    // Minimum realistic precision for ground-based astrometry (~10 mas).
+    // Prevents artificially small uncertainties from over-specified fields.
+    const FLOOR_ARCSEC: f64 = 0.01;
+
+    // RA precision: convert from arcsec to radians, then divide by cos(dec)
+    // to obtain the true angular arc length on the sky.
+    // σ_α [rad] = σ_α [arcsec] × (π / 648000) / cos(δ)
+    let ra_acc_rad = (ra_acc.max(FLOOR_ARCSEC) * ARCSEC_TO_RAD) / dec_rad_cos;
+
+    // Dec precision: straightforward arcsec → radian conversion.
+    // σ_δ [rad] = σ_δ [arcsec] × (π / 648000)
+    let dec_acc_rad = dec_acc.max(FLOOR_ARCSEC) * ARCSEC_TO_RAD;
+
     Ok(LineRecord {
         traj_id,
         mjd_tt,
-        ra_deg,
-        ra_acc_arcsec,
-        dec_deg,
-        dec_acc_arcsec,
+        ra_rad: ra_deg.to_radians(),
+        ra_error_rad: ra_acc_rad,
+        dec_rad,
+        dec_error_rad: dec_acc_rad,
         mag,
         band,
         obs_code,
@@ -320,8 +341,8 @@ fn parse_frac_date(input: &str) -> IResult<&str, f64> {
 /// Parse a right ascension string `"HH MM SS.sss"` into `(ra_deg, accuracy_arcsec)`.
 ///
 /// The accuracy is derived from the number of decimal places in the seconds
-/// field: `10⁻ⁿ × 15` arcseconds (1 time-second of RA = 15 arcseconds on sky).
-fn parse_ra(input: &str) -> IResult<&str, (f64, f64)> {
+/// field: `10⁻ⁿ.
+fn parse_ra(input: &str) -> IResult<&str, (Degrees, Arcseconds)> {
     let (input, (h, _, m, _, s_str)) = (
         map_res(digit1, |s: &str| s.parse::<f64>()),
         space1,
@@ -336,7 +357,11 @@ fn parse_ra(input: &str) -> IResult<&str, (f64, f64)> {
     })?;
 
     let ra_deg = (h + m / 60.0 + s / 3_600.0) * 15.0;
-    let acc_arcsec = decimal_precision_arcsec(s_str) * 15.0;
+
+    // RA seconds are time-seconds (1 time-second = 15 arcsec), not arc-seconds.
+    // Multiply by 15 to convert the precision estimate to true arcseconds,
+    // consistent with Dec precision which is already in arcseconds.
+    let acc_arcsec = decimal_accuracy(s_str) * 15.0;
 
     Ok((input, (ra_deg, acc_arcsec)))
 }
@@ -345,7 +370,7 @@ fn parse_ra(input: &str) -> IResult<&str, (f64, f64)> {
 ///
 /// The accuracy is derived from the number of decimal places in the seconds
 /// field: `10⁻ⁿ` arcseconds.
-fn parse_dec(input: &str) -> IResult<&str, (f64, f64)> {
+fn parse_dec(input: &str) -> IResult<&str, (Degrees, Arcseconds)> {
     let (input, sign_char) = opt(nom::character::complete::one_of("+-")).parse(input)?;
     let sign = if sign_char == Some('-') { -1.0 } else { 1.0 };
 
@@ -363,7 +388,7 @@ fn parse_dec(input: &str) -> IResult<&str, (f64, f64)> {
     })?;
 
     let dec_deg = sign * (d + m / 60.0 + s / 3_600.0);
-    let acc_arcsec = decimal_precision_arcsec(s_str);
+    let acc_arcsec = decimal_accuracy(s_str);
 
     Ok((input, (dec_deg, acc_arcsec)))
 }
@@ -376,7 +401,7 @@ fn parse_dec(input: &str) -> IResult<&str, (f64, f64)> {
 /// in a seconds field (e.g. `"23.37"` → 2 digits → `0.01` arcsec).
 ///
 /// This is the raw arcsecond precision before any RA × 15 scaling.
-fn decimal_precision_arcsec(seconds_str: &str) -> f64 {
+fn decimal_accuracy(seconds_str: &str) -> f64 {
     let digits = seconds_str
         .find('.')
         .map(|dot| seconds_str.trim_end().len() - dot - 1)
@@ -451,9 +476,76 @@ mod mpc_80_col_tests {
 
     #[test]
     fn test_decimal_precision_arcsec() {
-        assert_eq!(decimal_precision_arcsec("23.37"), 0.01);
-        assert_eq!(decimal_precision_arcsec("05.4"), 0.1);
-        assert_eq!(decimal_precision_arcsec("18.05"), 0.01);
-        assert_eq!(decimal_precision_arcsec("45.348"), 0.001);
+        assert_eq!(decimal_accuracy("23.37"), 0.01);
+        assert_eq!(decimal_accuracy("05.4"), 0.1);
+        assert_eq!(decimal_accuracy("18.05"), 0.01);
+        assert_eq!(decimal_accuracy("45.348"), 0.001);
+
+        assert_eq!(decimal_accuracy("23.3"), 0.1);
+        assert_eq!(decimal_accuracy("23"), 1.0);
+        assert_eq!(decimal_accuracy("23.370"), 0.001);
+        assert_eq!(decimal_accuracy("23.37"), 0.01);
+    }
+
+    #[test]
+    fn test_parse_line() {
+        use approx::assert_relative_eq;
+
+        let line =
+            "     K09R05F  C2009 09 15.23433 22 52 22.62 -14 47 03.2          20.8 Vr~097wG96";
+
+        let record = parse_line(line).unwrap();
+
+        assert_eq!(record.traj_id, TrajId::from("K09R05F"));
+        assert_relative_eq!(record.mjd_tt, 55_089.235_096_018_51, max_relative = 1e-10);
+        assert_relative_eq!(record.ra_rad, 5.988_124_307_160_555, max_relative = 1e-10);
+        assert_relative_eq!(
+            record.ra_error_rad,
+            7.521_204_506_165_675e-7,
+            max_relative = 1e-6
+        );
+        assert_relative_eq!(
+            record.dec_rad,
+            -0.258_033_355_124_290_54,
+            max_relative = 1e-10
+        );
+        assert_relative_eq!(
+            record.dec_error_rad,
+            4.848_136_811_095_36e-7,
+            max_relative = 1e-6
+        );
+        assert_eq!(record.mag, Some(20.8_f32));
+        assert_eq!(record.band, Some("V".to_string()));
+        assert_eq!(record.obs_code, [b'G', b'9', b'6']);
+
+        let obs = record.into_observation(0, 0);
+
+        assert_eq!(obs.id, 0);
+        assert_relative_eq!(
+            obs.equ_coord.ra,
+            5.988_124_307_160_555,
+            max_relative = 1e-10
+        );
+        assert_relative_eq!(
+            obs.equ_coord.ra_error,
+            7.521_204_506_165_675e-7,
+            max_relative = 1e-6
+        );
+        assert_relative_eq!(
+            obs.equ_coord.dec,
+            -0.258_033_355_124_290_54,
+            max_relative = 1e-10
+        );
+        assert_relative_eq!(
+            obs.equ_coord.dec_error,
+            4.848_136_811_095_36e-7,
+            max_relative = 1e-6
+        );
+        assert_relative_eq!(obs.photometry.magnitude, 20.8_f64, max_relative = 1e-5);
+        assert_relative_eq!(obs.photometry.error, 0.0_f64, epsilon = 1e-10);
+
+        assert_eq!(obs.photometry.filter, Filter::String("V".to_string()));
+        assert_relative_eq!(obs.mjd_tt, 55_089.235_096_018_51, max_relative = 1e-10);
+        assert_eq!(obs.observer, Some(ObserverId::MpcCode([b'G', b'9', b'6'])));
     }
 }
