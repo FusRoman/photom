@@ -2,7 +2,7 @@
 
 use std::{
     fmt::{self, Display},
-    hash::{BuildHasher, Hash, Hasher},
+    hash::Hash,
 };
 
 use ahash::RandomState;
@@ -35,9 +35,7 @@ impl TrajId {
     /// trajectory always receives the same noise sequence regardless of
     /// processing order.
     pub fn stable_hash(&self) -> u64 {
-        let mut hasher = RandomState::with_seeds(1, 2, 3, 4).build_hasher();
-        self.hash(&mut hasher);
-        hasher.finish()
+        RandomState::with_seeds(1, 2, 3, 4).hash_one(self)
     }
 }
 

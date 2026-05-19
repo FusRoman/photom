@@ -95,7 +95,7 @@ pub trait ModelCorrection {
     /// applied to the `ra_error` and `dec_error` of every observation in the batch.
     ///
     /// ### Grouping
-    /// 
+    ///
     /// Two observations belong to the same batch if and only if:
     ///
     /// - they share the same `observer` identity, **and**
@@ -106,7 +106,7 @@ pub trait ModelCorrection {
     /// even when their timestamps interleave in time.
     ///
     /// ### Correction factor
-    /// 
+    ///
     /// For a batch of size $n$:
     ///
     /// | Model    | Condition | Factor                   |
@@ -120,13 +120,13 @@ pub trait ModelCorrection {
     /// $$\sigma' = \sigma \times \sqrt{n}$$
     ///
     /// # Arguments
-    /// 
+    ///
     /// - `gap_max` – Maximum time gap (days) between two consecutive observations
     ///   of the same observer for them to be considered part of the same batch.
     ///   A typical value is $8/24 \approx 0.333$ days (8 hours).
     ///
     /// # Returns
-    /// 
+    ///
     /// The dataset with corrected uncertainties. Consumed by value and returned
     /// by value (builder pattern).
     ///
@@ -134,7 +134,7 @@ pub trait ModelCorrection {
     /// Attach an error model first via `with_error_model` or `set_error_model`.
     ///
     /// # Notes
-    /// 
+    ///
     /// - The internal observation order is **not** modified. Grouping is performed
     ///   on a sorted index without mutating the observation vector.
     /// - Time comparisons are based on Modified Julian Date in Terrestrial Time
@@ -217,8 +217,7 @@ impl ModelCorrection for ObsDataset {
                         ObsErrorModel::VFCC17 if n >= 5 => (n as f64 * 0.25).sqrt(),
                         _ => (n as f64).sqrt(),
                     };
-                    for k in batch_start..j {
-                        let idx = sorted_indices[k];
+                    for &idx in sorted_indices[batch_start..j].iter() {
                         self.observations[idx].equ_coord.ra_error *= factor;
                         self.observations[idx].equ_coord.dec_error *= factor;
                     }
@@ -867,7 +866,7 @@ mod test_batch_rms_correction {
 
                 while ia < n_a || ib < n_b {
                     let time = base_time + slot as f64 * 0.01;
-                    if ia < n_a && (slot % 2 == 0 || ib >= n_b) {
+                    if ia < n_a && (slot.is_multiple_of(2) || ib >= n_b) {
                         observations.push(obs(id, obs_a, time));
                         id_a.push(id);
                         ia += 1;
