@@ -88,47 +88,57 @@ pub trait ModelCorrection {
     /// The updated dataset with corrected observation uncertainties.
     fn apply_model_errors(self) -> Self;
 
-    /// Apply RMS correction based on temporally clustered batches of observations.
+    /// Apply a batch RMS correction to the astrometric uncertainties of each observation.
     ///
-    /// This method adjusts the astrometric uncertainties (`error_ra`, `error_dec`) of each observation
-    /// based on the local density of observations in time and observer identity. Observations that are
-    /// close in time (within 8 hours) and come from the same observer are grouped into batches, and a
-    /// correction factor is applied to reflect statistical correlation or improvement due to redundancy.
+    /// Observations from the same observer that are closely spaced in time are
+    /// grouped into batches. A scaling factor derived from the batch size is then
+    /// applied to the `ra_error` and `dec_error` of every observation in the batch.
     ///
-    /// # Warning
+    /// ### Grouping
+    /// 
+    /// Two observations belong to the same batch if and only if:
     ///
-    /// If no error model is attached to the dataset, this method will return `self` unmodified without applying any correction.
-    /// Call `with_error_model` or `set_error_model` to attach an error model before invoking this method.
+    /// - they share the same `observer` identity, **and**
+    /// - the time gap between consecutive observations (sorted by MJD) is strictly
+    ///   less than `gap_max`.
     ///
-    /// # Behavior
+    /// Observations from different observers are **always** grouped independently,
+    /// even when their timestamps interleave in time.
     ///
-    /// - Observations are grouped by `observer` and sorted in time.
-    /// - A batch is formed when consecutive observations from the same observer are spaced by less than 8 hours.
-    /// - Each observation in a batch of size `n` receives a correction:
-    ///     - `√n` for standard models,
-    ///     - `√(n × 0.25)` for `vfcc17` when `n ≥ 5`.
-    /// - If `n < 5` with `vfcc17`, it falls back to `√n`.
-    /// - Observations with fixed weights (`force_w`) are not affected (not yet implemented in this version).
+    /// ### Correction factor
+    /// 
+    /// For a batch of size $n$:
+    ///
+    /// | Model    | Condition | Factor                   |
+    /// |----------|-----------|--------------------------|
+    /// | `FCCT14` | any $n$   | $\sqrt{n}$               |
+    /// | `VFCC17` | $n \geq 5$| $\sqrt{n \times 0.25}$   |
+    /// | `VFCC17` | $n < 5$   | $\sqrt{n}$               |
+    ///
+    /// Both `ra_error` and `dec_error` are multiplied by the same factor:
+    ///
+    /// $$\sigma' = \sigma \times \sqrt{n}$$
     ///
     /// # Arguments
-    ///
-    /// - `error_model` - The error model to use when applying the batch correction. Supported values include:
-    ///     - `"vfcc17"`: uses a reduced factor `√(n × 0.25)` if the batch has at least 5 observations,
-    ///     - any other string: uses the standard `√n` factor.
-    /// - `gap_max` - The maximum time gap (in days) to consider observations as part of the same batch.
+    /// 
+    /// - `gap_max` – Maximum time gap (days) between two consecutive observations
+    ///   of the same observer for them to be considered part of the same batch.
+    ///   A typical value is $8/24 \approx 0.333$ days (8 hours).
     ///
     /// # Returns
+    /// 
+    /// The dataset with corrected uncertainties. Consumed by value and returned
+    /// by value (builder pattern).
     ///
-    /// - `()` - This function modifies the observations in-place; it does not return a value.
+    /// If no error model is attached to the dataset, `self` is returned unmodified.
+    /// Attach an error model first via `with_error_model` or `set_error_model`.
     ///
-    /// # Computation Details
-    /// ----------
-    /// - The time comparison is based on Modified Julian Date (`MJD`), and the batch window is fixed at 8 hours (i.e., `8.0 / 24.0` days).
-    /// - The error fields `error_ra` and `error_dec` are both scaled by the same batch correction factor.
-    ///
-    /// # Units
-    /// ----------
-    /// - Input and output uncertainties (`error_ra`, `error_dec`) are expressed in **radians**.
+    /// # Notes
+    /// 
+    /// - The internal observation order is **not** modified. Grouping is performed
+    ///   on a sorted index without mutating the observation vector.
+    /// - Time comparisons are based on Modified Julian Date in Terrestrial Time
+    ///   (`MJD TT`). Uncertainties are expressed in **radians**.
     fn apply_batch_rms_correction(self, gap_max: f64) -> ObsDataset;
 }
 
@@ -168,42 +178,58 @@ impl ModelCorrection for ObsDataset {
             None => return self,
         };
 
-        self.observations
-            .sort_by(|a, b| a.mjd_tt.partial_cmp(&b.mjd_tt).unwrap());
-
         let n_obs = self.observations.len();
-
         if n_obs == 0 {
             return self;
         }
 
+        // Single allocation: sort indices by (observer, mjd_tt).
+        let mut sorted_indices: Vec<usize> = (0..n_obs).collect();
+        sorted_indices.sort_unstable_by(|&a, &b| {
+            let oa = &self.observations[a];
+            let ob = &self.observations[b];
+            oa.observer
+                .cmp(&ob.observer)
+                .then_with(|| oa.mjd_tt.partial_cmp(&ob.mjd_tt).unwrap())
+        });
+
         let mut i = 0;
         while i < n_obs {
-            let observer = self.observations[i].observer;
-            let mut batch_indices: Vec<usize> = vec![i];
+            let current_observer = self.observations[sorted_indices[i]].observer;
+            let mut batch_start = i;
             let mut j = i + 1;
 
-            while j < n_obs {
-                let obs_j = &self.observations[j];
-                let prev_time = self.observations[*batch_indices.last().unwrap()].mjd_tt;
+            // Walk all observations belonging to current_observer.
+            loop {
+                let end_of_observer =
+                    j == n_obs || self.observations[sorted_indices[j]].observer != current_observer;
 
-                if obs_j.observer == observer && (obs_j.mjd_tt - prev_time) <= gap_max {
-                    batch_indices.push(j);
-                    j += 1;
-                } else {
+                let end_of_batch = !end_of_observer && {
+                    let prev_time = self.observations[sorted_indices[j - 1]].mjd_tt;
+                    let curr_time = self.observations[sorted_indices[j]].mjd_tt;
+                    (curr_time - prev_time) > gap_max
+                };
+
+                if end_of_observer || end_of_batch {
+                    // Flush batch [batch_start, j).
+                    let n = j - batch_start;
+                    let factor = match error_model {
+                        ObsErrorModel::VFCC17 if n >= 5 => (n as f64 * 0.25).sqrt(),
+                        _ => (n as f64).sqrt(),
+                    };
+                    for k in batch_start..j {
+                        let idx = sorted_indices[k];
+                        self.observations[idx].equ_coord.ra_error *= factor;
+                        self.observations[idx].equ_coord.dec_error *= factor;
+                    }
+                    batch_start = j;
+                }
+
+                if end_of_observer {
                     break;
                 }
-            }
 
-            let n = batch_indices.len();
-            let factor = match error_model {
-                ObsErrorModel::VFCC17 if n >= 5 => (n as f64 * 0.25).sqrt(),
-                _ => (n as f64).sqrt(),
-            };
-
-            for idx in &batch_indices {
-                self.observations[*idx].equ_coord.ra_error *= factor;
-                self.observations[*idx].equ_coord.dec_error *= factor;
+                j += 1;
             }
 
             i = j;
@@ -632,6 +658,256 @@ mod test_batch_rms_correction {
                 obs[0].equ_coord().dec_error,
                 dec_error
             );
+        }
+    }
+
+    mod multiple_observer_case {
+        use super::*;
+
+        // ── interleaved observers ─────────────────────────────────────────────────
+
+        /// Two observers whose observations are interleaved in time.
+        ///
+        /// Timeline (days):
+        /// ```text
+        /// t=0.00  obs A (obs_A1)
+        /// t=0.01  obs B (obs_B1)
+        /// t=0.02  obs A (obs_A2)
+        /// t=0.03  obs B (obs_B2)
+        /// t=0.04  obs A (obs_A3)
+        /// t=0.05  obs B (obs_B3)
+        /// ```
+        ///
+        /// Each observer forms a single batch of 3 observations.
+        /// Expected factor: `sqrt(3)` for both (FCCT14).
+        #[test]
+        fn test_two_observers_interleaved_single_batch_each() {
+            let obs_a = Some(ObserverId::MpcCode(*b"J01"));
+            let obs_b = Some(ObserverId::MpcCode(*b"J02"));
+
+            let ds = dataset(vec![
+                obs(0, obs_a, 59000.00),
+                obs(1, obs_b, 59000.01),
+                obs(2, obs_a, 59000.02),
+                obs(3, obs_b, 59000.03),
+                obs(4, obs_a, 59000.04),
+                obs(5, obs_b, 59000.05),
+            ]);
+
+            let corrected = ds
+                .with_error_model(ObsErrorModel::FCCT14)
+                .apply_batch_rms_correction(8.0 / 24.0);
+
+            let factor = (3.0f64).sqrt();
+            for ob in corrected.iter_observations() {
+                assert_ulps_eq!(ob.equ_coord().ra_error, 1e-6 * factor, max_ulps = 2);
+                assert_ulps_eq!(ob.equ_coord().dec_error, 2e-6 * factor, max_ulps = 2);
+            }
+        }
+
+        /// Two observers interleaved in time, but observer B has a gap that splits
+        /// its observations into two batches. Observer A's last observation also
+        /// falls after the gap.
+        ///
+        /// Timeline (days):
+        /// ```text
+        /// t=0.00  obs A (id=0)  ─┐ batch A1 (n=3)
+        /// t=0.01  obs B (id=1)   │ batch B1 (n=2)
+        /// t=0.02  obs A (id=2)   │
+        /// t=0.03  obs B (id=3)  ─┘
+        /// t=0.04  obs A (id=4)  ─┘
+        /// t=1.00  obs B (id=5)  ── batch B2 (n=1), gap > 8h from B batch 1
+        /// t=1.01  obs A (id=6)  ── batch A2 (n=1), gap > 8h from A batch 1
+        /// ```
+        ///
+        /// Observer A batch 1 (ids 0,2,4): factor `sqrt(3)`.
+        /// Observer A batch 2 (id 6):      factor 1.
+        /// Observer B batch 1 (ids 1,3):   factor `sqrt(2)`.
+        /// Observer B batch 2 (id 5):      factor 1.
+        #[test]
+        fn test_two_observers_interleaved_one_has_gap() {
+            let obs_a = Some(ObserverId::MpcCode(*b"K01"));
+            let obs_b = Some(ObserverId::MpcCode(*b"K02"));
+
+            let ds = dataset(vec![
+                obs(0, obs_a, 59000.00),
+                obs(1, obs_b, 59000.01),
+                obs(2, obs_a, 59000.02),
+                obs(3, obs_b, 59000.03),
+                obs(4, obs_a, 59000.04),
+                obs(5, obs_b, 59001.00), // gap > 8h from obs B batch 1
+                obs(6, obs_a, 59001.01), // gap > 8h from obs A batch 1
+            ]);
+
+            let corrected = ds
+                .with_error_model(ObsErrorModel::FCCT14)
+                .apply_batch_rms_correction(8.0 / 24.0);
+
+            let mut by_id: std::collections::HashMap<u64, f64> = std::collections::HashMap::new();
+            for ob in corrected.iter_observations() {
+                by_id.insert(*ob.id(), ob.equ_coord().ra_error);
+            }
+
+            let factor_a1 = (3.0f64).sqrt(); // ids 0, 2, 4
+            let factor_a2 = 1.0f64; // id 6
+            let factor_b1 = (2.0f64).sqrt(); // ids 1, 3
+            let factor_b2 = 1.0f64; // id 5
+
+            assert_ulps_eq!(by_id[&0], 1e-6 * factor_a1, max_ulps = 2);
+            assert_ulps_eq!(by_id[&2], 1e-6 * factor_a1, max_ulps = 2);
+            assert_ulps_eq!(by_id[&4], 1e-6 * factor_a1, max_ulps = 2);
+            assert_ulps_eq!(by_id[&6], 1e-6 * factor_a2, max_ulps = 2);
+
+            assert_ulps_eq!(by_id[&1], 1e-6 * factor_b1, max_ulps = 2);
+            assert_ulps_eq!(by_id[&3], 1e-6 * factor_b1, max_ulps = 2);
+            assert_ulps_eq!(by_id[&5], 1e-6 * factor_b2, max_ulps = 2);
+        }
+
+        /// Three observers interleaved, each forming multiple batches, with VFCC17
+        /// triggered for the large batch.
+        ///
+        /// Timeline (days):
+        /// ```text
+        /// t=0.00  obs A (obs_A1)  ─┐
+        /// t=0.01  obs B (obs_B1)   │
+        /// t=0.02  obs C (obs_C1)   │ all within 8h
+        /// t=0.03  obs A (obs_A2)   │
+        /// t=0.04  obs B (obs_B2)   │
+        /// t=0.05  obs C (obs_C2)   │
+        /// t=0.06  obs A (obs_A3)   │
+        /// t=0.07  obs B (obs_B3)   │
+        /// t=0.08  obs C (obs_C3)   │
+        /// t=0.09  obs A (obs_A4)   │
+        /// t=0.10  obs B (obs_B4)   │
+        /// t=0.11  obs A (obs_A5)  ─┘  A: n=5, B: n=4, C: n=3
+        ///
+        /// t=2.00  obs C (obs_C4)  ── batch C2: n=1 (isolated)
+        /// ```
+        ///
+        /// Under VFCC17:
+        /// - Observer A (n=5): factor = `sqrt(5 * 0.25)` = `sqrt(1.25)`
+        /// - Observer B (n=4): factor = `sqrt(4)` = 2  (n < 5, fallback to sqrt(n))
+        /// - Observer C batch 1 (n=3): factor = `sqrt(3)`
+        /// - Observer C batch 2 (n=1): factor = 1
+        #[test]
+        fn test_three_observers_interleaved_vfcc17() {
+            let obs_a = Some(ObserverId::MpcCode(*b"L01"));
+            let obs_b = Some(ObserverId::MpcCode(*b"L02"));
+            let obs_c = Some(ObserverId::MpcCode(*b"L03"));
+
+            let ds = dataset(vec![
+                obs(0, obs_a, 59000.00),
+                obs(1, obs_b, 59000.01),
+                obs(2, obs_c, 59000.02),
+                obs(3, obs_a, 59000.03),
+                obs(4, obs_b, 59000.04),
+                obs(5, obs_c, 59000.05),
+                obs(6, obs_a, 59000.06),
+                obs(7, obs_b, 59000.07),
+                obs(8, obs_c, 59000.08),
+                obs(9, obs_a, 59000.09),
+                obs(10, obs_b, 59000.10),
+                obs(11, obs_a, 59000.11),
+                obs(12, obs_c, 59002.00), // isolated batch for C
+            ]);
+
+            let corrected = ds
+                .with_error_model(ObsErrorModel::VFCC17)
+                .apply_batch_rms_correction(8.0 / 24.0);
+
+            let mut by_id: std::collections::HashMap<u64, f64> = std::collections::HashMap::new();
+            for ob in corrected.iter_observations() {
+                by_id.insert(*ob.id(), ob.equ_coord().ra_error);
+            }
+
+            let factor_a = (5.0_f64 * 0.25).sqrt(); // n=5, VFCC17 branch
+            let factor_b = (4.0_f64).sqrt(); // n=4, fallback
+            let factor_c1 = (3.0_f64).sqrt(); // n=3, fallback
+            let factor_c2 = 1.0_f64; // n=1
+
+            for id in [0, 3, 6, 9, 11] {
+                assert_ulps_eq!(by_id[&id], 1e-6 * factor_a, max_ulps = 2);
+            }
+            for id in [1, 4, 7, 10] {
+                assert_ulps_eq!(by_id[&id], 1e-6 * factor_b, max_ulps = 2);
+            }
+            for id in [2, 5, 8] {
+                assert_ulps_eq!(by_id[&id], 1e-6 * factor_c1, max_ulps = 2);
+            }
+            assert_ulps_eq!(by_id[&12], 1e-6 * factor_c2, max_ulps = 2);
+        }
+
+        // ── proptest: interleaved observers never contaminate each other ──────────
+
+        proptest! {
+            /// For any two observers whose observations are strictly interleaved in time,
+            /// each observer's batch factor must match what would be computed if the
+            /// observations of that observer were alone in the dataset.
+            ///
+            /// This verifies that temporal interleaving between observers does not cause
+            /// cross-contamination of batch membership.
+            #[test]
+            fn prop_interleaved_observers_independent_factors(
+                n_a in 1usize..=10usize,
+                n_b in 1usize..=10usize,
+                base_time in 59000.0..60000.0f64,
+            ) {
+                let obs_a = Some(ObserverId::MpcCode(*b"M01"));
+                let obs_b = Some(ObserverId::MpcCode(*b"M02"));
+
+                // Interleave: A at even slots, B at odd slots, 0.01-day spacing.
+                let total = n_a + n_b;
+                let mut observations = Vec::with_capacity(total);
+                let mut id_a = vec![];
+                let mut id_b = vec![];
+                let mut ia = 0usize;
+                let mut ib = 0usize;
+                let mut slot = 0usize;
+                let mut id = 0u64;
+
+                while ia < n_a || ib < n_b {
+                    let time = base_time + slot as f64 * 0.01;
+                    if ia < n_a && (slot % 2 == 0 || ib >= n_b) {
+                        observations.push(obs(id, obs_a, time));
+                        id_a.push(id);
+                        ia += 1;
+                    } else {
+                        observations.push(obs(id, obs_b, time));
+                        id_b.push(id);
+                        ib += 1;
+                    }
+                    id += 1;
+                    slot += 1;
+                }
+
+                // Expected factors from isolated runs.
+                let expected_a = (n_a as f64).sqrt();
+                let expected_b = (n_b as f64).sqrt();
+
+                let corrected = dataset(observations)
+                    .with_error_model(ObsErrorModel::FCCT14)
+                    .apply_batch_rms_correction(8.0 / 24.0);
+
+                let mut by_id: std::collections::HashMap<u64, f64> = std::collections::HashMap::new();
+                for ob in corrected.iter_observations() {
+                    by_id.insert(*ob.id(), ob.equ_coord().ra_error);
+                }
+
+                for aid in &id_a {
+                    prop_assert!(
+                        (by_id[aid] - 1e-6 * expected_a).abs() < 1e-12,
+                        "observer A contaminated: got {}, expected {}",
+                        by_id[aid], 1e-6 * expected_a
+                    );
+                }
+                for bid in &id_b {
+                    prop_assert!(
+                        (by_id[bid] - 1e-6 * expected_b).abs() < 1e-12,
+                        "observer B contaminated: got {}, expected {}",
+                        by_id[bid], 1e-6 * expected_b
+                    );
+                }
+            }
         }
     }
 }
