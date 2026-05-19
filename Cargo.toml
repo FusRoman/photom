@@ -34,10 +34,7 @@ polars = { version = "0.53.0", default-features = false, features = [
     "parquet",
 ], optional = true }
 rayon = { version = "1.12.0", default-features = false, optional = true }
-hifitime = { version = "4.2.6", default-features = false, features = [
-    "ut1",
-    "std",
-], optional = true }
+hifitime = { version = "4.2.6", default-features = false, optional = true }
 quick-xml = { version = "0.39.2", features = [
     "serialize",
 ], default-features = false, optional = true }
@@ -73,7 +70,13 @@ parquet = { version = "56", default-features = false, features = ["arrow"] }
 polars = ["dep:polars"]
 parallel = ["dep:rayon"]
 serde = ["dep:serde", "dep:serde_json", "ordered-float/serde"]
-ades = ["dep:hifitime", "dep:quick-xml", "dep:serde", "dep:camino", "ordered-float/serde"]
+ades = [
+    "dep:hifitime",
+    "dep:quick-xml",
+    "dep:serde",
+    "dep:camino",
+    "ordered-float/serde",
+]
 mpc_80_col = ["dep:hifitime", "dep:camino"]
 datafusion = [
     "dep:datafusion",

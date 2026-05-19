@@ -68,7 +68,7 @@
 //!
 //! # Type Aliases
 //!
-//! The crate exports four primitive type aliases used throughout the API to make units
+//! The crate exports five primitive type aliases used throughout the API to make units
 //! explicit in function signatures:
 //!
 //! | Alias | Underlying type | Unit |
@@ -83,8 +83,8 @@
 //!
 //! *Requires the `polars` feature.*
 //!
-//! When loading data via `ObsDataset::from_polars`, `ObsDataset::from_lazy`,
-//! `TrajDataset::from_polars`, or `TrajDataset::from_lazy`, the input frame must conform
+//! When loading data via [`observation_dataset::ObsDataset::from_polars`] or
+//! [`observation_dataset::ObsDataset::from_lazy`], the input frame must conform
 //! to the following column layout.
 //!
 //! ## Mandatory base columns (non-nullable)
@@ -183,7 +183,7 @@
 //!
 //! ```rust,ignore
 //! use polars::prelude::*;
-//! use photom::observation::ObsDataset;
+//! use photom::observation_dataset::ObsDataset;
 //! use photom::observer::error_model::ObsErrorModel;
 //!
 //! // Construct a two-row DataFrame matching the required schema.
@@ -215,7 +215,7 @@
 //!
 //! ```rust,ignore
 //! use polars::prelude::*;
-//! use photom::observation::ObsDataset;
+//! use photom::observation_dataset::ObsDataset;
 //! use photom::observer::error_model::ObsErrorModel;
 //!
 //! let df = df! {
@@ -238,8 +238,9 @@
 //!
 //! ```rust,ignore
 //! use polars::prelude::*;
-//! use photom::trajectory::{TrajDataset, TrajId};
-//! use photom::observer::error_model::ObsErrorModel;
+//! use photom::observation_dataset::ObsDataset;
+//! use photom::io::polars::FromPolarsArgs;
+//! use photom::TrajId;
 //!
 //! // traj_id can be UInt32 or String; null rows are loaded but not grouped.
 //! let df = df! {
@@ -255,16 +256,17 @@
 //!     "traj_id"   => &[Some("2020 AV2"), Some("2020 AV2"), None],
 //! }?;
 //!
-//! let mut dataset = TrajDataset::from_polars(&df, ObsErrorModel::FCCT14, Some(1000))?;
-//! if let Some(traj) = dataset.get_trajectory(&TrajId::Str("2020 AV2".to_string())) {
-//!     println!("{} observations in trajectory", traj.obs_ids.len());
+//! let dataset = ObsDataset::from_polars(&df, FromPolarsArgs::default())?;
+//! let tid = TrajId::Str("2020 AV2".to_owned());
+//! if let Some(iter) = dataset.iter_trajectory_observations(&tid) {
+//!     println!("{} observations in trajectory", iter.count());
 //! }
 //! ```
 //!
 //! ## Load observations from a `LazyFrame`
 //!
 //! ```rust,ignore
-//! use photom::observation::ObsDataset;
+//! use photom::observation_dataset::ObsDataset;
 //! use photom::observer::error_model::ObsErrorModel;
 //!
 //! // Any DataFrame can be turned into a LazyFrame with .lazy().
