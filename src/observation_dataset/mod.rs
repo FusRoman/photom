@@ -43,6 +43,8 @@ pub mod parallel;
 
 #[cfg(feature = "polars")]
 pub mod polars;
+use std::fmt;
+
 #[cfg(feature = "polars")]
 use crate::io::polars::error::PolarsError;
 
@@ -129,6 +131,126 @@ pub struct ObsDataset {
 impl Default for ObsDataset {
     fn default() -> Self {
         Self::empty()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ObsDataset Display
+// ---------------------------------------------------------------------------
+
+/// Formats a statistical summary of the dataset.
+///
+/// # Format
+///
+/// Default (`{}`) — multi-line summary block:
+///
+/// ```text
+/// ObsDataset — 12 450 observations
+///   Epoch range : 59 000.000000 – 60 312.500000 MJD (TT)  [Δ = 1 312.50 days]
+///   Nights      : 87
+///   Trajectories: 412  (3 aliases)
+///   Observers   : 5 custom  |  12 MPC codes
+///   Error model : VFCC17
+/// ```
+///
+/// Alternate (`{:#}`) — compact one-liner:
+///
+/// ```text
+/// ObsDataset [12 450 obs | 59000.00–60312.50 MJD | 87 nights | 412 traj | 17 observers]
+/// ```
+impl fmt::Display for ObsDataset {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let n_obs = self.observations.len();
+
+        // Epoch range
+        let (mjd_min, mjd_max) = self
+            .observations
+            .iter()
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), o| {
+                (lo.min(o.mjd_tt), hi.max(o.mjd_tt))
+            });
+        let (mjd_min, mjd_max) = if n_obs == 0 {
+            (0.0_f64, 0.0_f64)
+        } else {
+            (mjd_min, mjd_max)
+        };
+        let delta_days = mjd_max - mjd_min;
+
+        // Observer counts
+        let n_custom = self.observer_dataset.custom_observers.len();
+        let n_mpc = self
+            .observations
+            .iter()
+            .filter_map(|o| o.observer.as_ref())
+            .filter(|id| matches!(id, ObserverId::MpcCode(_)))
+            .collect::<std::collections::HashSet<_>>()
+            .len();
+
+        // Index metadata
+        let n_nights = self
+            .index
+            .obs_index_by_night
+            .as_ref()
+            .map(|m| m.len())
+            .unwrap_or(0);
+        let n_traj = self
+            .index
+            .obs_index_by_trajectory
+            .as_ref()
+            .map(|m| m.len())
+            .unwrap_or(0);
+        let n_aliases = self.index.traj_aliases.len();
+
+        let error_model = self
+            .observer_dataset
+            .mpc_error_model
+            .as_ref()
+            .map(|m| format!("{m}"))
+            .unwrap_or_else(|| "none".to_string());
+
+        if f.alternate() {
+            // ------------------------------------------------------------------
+            // Compact form: {:#}
+            // ------------------------------------------------------------------
+            write!(
+                f,
+                "ObsDataset [{n_obs} obs | {mjd_min:.2}–{mjd_max:.2} MJD \
+                 | {n_nights} nights | {n_traj} traj | {} observers]",
+                n_custom + n_mpc,
+            )
+        } else {
+            // ------------------------------------------------------------------
+            // Verbose form: {}
+            // ------------------------------------------------------------------
+            let nights_str = if self.index.obs_index_by_night.is_some() {
+                format!("{n_nights}")
+            } else {
+                "—  (no night index)".to_string()
+            };
+            let traj_str = if self.index.obs_index_by_trajectory.is_some() {
+                if n_aliases > 0 {
+                    format!("{n_traj}  ({n_aliases} aliases)")
+                } else {
+                    format!("{n_traj}")
+                }
+            } else {
+                "—  (no trajectory index)".to_string()
+            };
+
+            writeln!(f, "ObsDataset — {n_obs} observations")?;
+            if n_obs > 0 {
+                writeln!(
+                    f,
+                    "  Epoch range : {mjd_min:.6} – {mjd_max:.6} MJD (TT)  [Δ = {delta_days:.2} days]"
+                )?;
+            } else {
+                writeln!(f, "  Epoch range : —  (empty dataset)")?;
+            }
+            writeln!(f, "  Nights      : {nights_str}")?;
+            writeln!(f, "  Trajectories: {traj_str}")?;
+            writeln!(f, "  Observers   : {n_custom} custom  |  {n_mpc} MPC codes")?;
+            write!(f, "  Error model : {error_model}")
+        }
     }
 }
 

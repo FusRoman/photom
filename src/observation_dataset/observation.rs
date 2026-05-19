@@ -23,6 +23,8 @@
 //! field is accessed indirectly via
 //! [`ObsDataset::get_observer`](crate::observation_dataset::ObsDataset::get_observer).
 
+use std::fmt;
+
 use crate::{
     MJDTT,
     coordinates::equatorial::EquCoord,
@@ -180,6 +182,56 @@ impl Ord for Observation {
 impl PartialOrd for Observation {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Observation Display
+// ---------------------------------------------------------------------------
+
+/// Formats the observation in either compact or verbose form.
+///
+/// # Modes
+///
+/// - **Verbose** `{}`:
+///
+/// ```text
+/// Observation
+///   Epoch   : 60310.123456 MJD (TT)
+///   Position: HHh MMm SS.sss s (+DD° MM' SS.sss") (RA/Dec decimal) ± ...
+///   Photometry: 18.432 ± 0.023 mag [r']
+///   Observer: MPC:I41
+/// ```
+///
+/// - **Compact** `{:#}`:
+///
+/// ```text
+/// [60310.123456 MJD] HHh MMm SS.sss s +DDd MMm SS.sss s | 18.432 ± 0.023 mag [r']
+/// ```
+impl fmt::Display for Observation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if f.alternate() {
+            // ------------------------------------------------------------------
+            // Compact form: {:#}
+            // ------------------------------------------------------------------
+            write!(
+                f,
+                "[{:.6} MJD] {} | {}",
+                self.mjd_tt, self.equ_coord, self.photometry
+            )
+        } else {
+            // ------------------------------------------------------------------
+            // Verbose form: {}
+            // ------------------------------------------------------------------
+            writeln!(f, "Observation")?;
+            writeln!(f, "  Epoch     : {:.6} MJD (TT)", self.mjd_tt)?;
+            writeln!(f, "  Position  : {}", self.equ_coord)?;
+            writeln!(f, "  Photometry: {}", self.photometry)?;
+            match &self.observer {
+                Some(obs) => write!(f, "  Observer  : {obs}"),
+                None => write!(f, "  Observer  : unknown"),
+            }
+        }
     }
 }
 

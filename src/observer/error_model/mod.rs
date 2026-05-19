@@ -39,7 +39,7 @@ pub mod model_correction;
 mod vfcc17;
 pub use model_correction::ModelCorrection;
 
-use std::{collections::HashMap, str::FromStr};
+use std::{collections::HashMap, fmt, str::FromStr};
 
 use nom::{
     IResult, Parser,
@@ -82,6 +82,17 @@ pub enum ObsErrorModel {
     CBM10,
     /// Vereš, Farnocchia, Chesley & Chamberlin (2017).
     VFCC17,
+}
+
+impl fmt::Display for ObsErrorModel {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = match self {
+            ObsErrorModel::FCCT14 => "FCCT14 (Farnocchia et al. 2014)",
+            ObsErrorModel::CBM10 => "CBM10  (Chesley, Baer & Monet 2010)",
+            ObsErrorModel::VFCC17 => "VFCC17 (Vereš et al. 2017)",
+        };
+        write!(f, "{s}")
+    }
 }
 
 /// Bundled FCCT14 rules file, included at compile time.

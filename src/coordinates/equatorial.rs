@@ -235,13 +235,72 @@ impl EquCoord {
     }
 }
 
-/// Formats the coordinate as a human-readable string of the form
-/// `RA: <ra_deg> deg, Dec: <dec_deg> deg`, where both angles are expressed
-/// in degrees.  Measurement uncertainties are not included in the output.
+// ---------------------------------------------------------------------------
+// EquCoord Display
+// ---------------------------------------------------------------------------
+
+/// Formats the equatorial coordinates in sexagesimal notation with
+/// measurement uncertainties expressed in arcseconds.
+///
+/// # Format
+///
+/// ```text
+/// RA: HHh MMm SS.sss s (DDD.dddddd deg) ± E.eee arcsec,
+/// Dec: ±DDd MMm SS.sss s (±DDD.dddddd deg) ± E.eee arcsec
+/// ```
+///
+/// Decimal degree values are shown in parentheses for quick numerical
+/// reference.
 impl fmt::Display for EquCoord {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let (ra_deg, dec_deg) = self.to_degrees();
-        write!(f, "RA: {} deg, Dec: {} deg", ra_deg, dec_deg)
+        let ra_deg = self.ra.to_degrees();
+        let dec_deg = self.dec.to_degrees();
+
+        // Uncertainties converted from radians to arcseconds (1 rad = 206 264.806 arcsec)
+        let ra_err_arcsec = self.ra_error.to_degrees() * 3600.0;
+        let dec_err_arcsec = self.dec_error.to_degrees() * 3600.0;
+
+        let ra_sex = deg_to_sexagesimal(ra_deg, true);
+        let dec_sex = deg_to_sexagesimal(dec_deg, false);
+
+        write!(
+            f,
+            "RA: {ra_sex} ({ra_deg:.6} deg) ± {ra_err_arcsec:.3} arcsec, \
+             Dec: {dec_sex} ({dec_deg:.6} deg) ± {dec_err_arcsec:.3} arcsec"
+        )
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Helper: decimal degrees → sexagesimal string
+// ---------------------------------------------------------------------------
+
+/// Converts a decimal degree value to a sexagesimal (DMS) string.
+///
+/// # Format
+///
+/// - For right ascension (hours): `HHh MMm SS.sss s`
+/// - For declination (degrees):   `±DDd MMm SS.sss s`
+///
+/// The `is_ra` flag controls whether the value is divided by 15 to convert
+/// from degrees to hours (RA convention).
+fn deg_to_sexagesimal(deg: f64, is_ra: bool) -> String {
+    if is_ra {
+        // Convert degrees → hours
+        let total_hours = deg / 15.0;
+        let h = total_hours.abs().floor() as u32;
+        let rem_m = (total_hours.abs() - h as f64) * 60.0;
+        let m = rem_m.floor() as u32;
+        let s = (rem_m - m as f64) * 60.0;
+        format!("{:02}h {:02}m {:06.3}s", h, m, s)
+    } else {
+        let sign = if deg < 0.0 { '-' } else { '+' };
+        let abs = deg.abs();
+        let d = abs.floor() as u32;
+        let rem_m = (abs - d as f64) * 60.0;
+        let m = rem_m.floor() as u32;
+        let s = (rem_m - m as f64) * 60.0;
+        format!("{}{:02}d {:02}m {:06.3}s", sign, d, m, s)
     }
 }
 

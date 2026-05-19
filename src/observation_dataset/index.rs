@@ -192,7 +192,7 @@ pub struct ObsDatasetIndex {
     ///
     /// Empty for most datasets; populated by the MPC 80-column reader when a
     /// file contains multiple designations for the same physical object.
-    traj_aliases: TrajAliasMap,
+    pub(crate) traj_aliases: TrajAliasMap,
 }
 
 impl ObsDatasetIndex {

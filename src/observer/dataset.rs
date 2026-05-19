@@ -23,7 +23,7 @@
 //! the public API.
 
 use std::{
-    fmt::{self, Display},
+    fmt::{self},
     sync::OnceLock,
 };
 
@@ -55,13 +55,29 @@ pub enum ObserverId {
     MpcCode(MpcCode),
 }
 
-impl Display for ObserverId {
+// ---------------------------------------------------------------------------
+// ObserverId Display
+// ---------------------------------------------------------------------------
+
+/// Formats the observer reference as a human-readable string.
+///
+/// # Format
+///
+/// - **MPC code** — `MPC observatory code: I41`
+/// - **Internal index** — `Custom observer (dataset index: 3)`
+impl fmt::Display for ObserverId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            ObserverId::IntId(id) => write!(f, "Observer#{id}"),
             ObserverId::MpcCode(code) => {
-                let s = std::str::from_utf8(code).unwrap_or("???");
-                write!(f, "MPC({s})")
+                // MpcCode is [u8; 3] — display as ASCII, falling back to
+                // escaped bytes if the code contains non-ASCII characters.
+                match std::str::from_utf8(code) {
+                    Ok(s) => write!(f, "MPC observatory code: {s}"),
+                    Err(_) => write!(f, "MPC observatory code: {:?}", code),
+                }
+            }
+            ObserverId::IntId(idx) => {
+                write!(f, "Custom observer (dataset index: {idx})")
             }
         }
     }

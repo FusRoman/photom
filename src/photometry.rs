@@ -15,6 +15,8 @@
 //! | [`Filter`] | enum | Photometric bandpass filter identifier |
 //! | [`Photometry`] | struct | Apparent magnitude, uncertainty, and filter |
 
+use std::fmt;
+
 /// The photometric bandpass filter used during an observation.
 ///
 /// Source catalogues encode filter information in two ways: some use
@@ -46,6 +48,46 @@ pub struct Photometry {
     pub error: f64,
     /// Bandpass filter through which the measurement was taken.
     pub filter: Filter,
+}
+
+// ---------------------------------------------------------------------------
+// Filter Display
+// ---------------------------------------------------------------------------
+
+/// Formats the filter as its label or numeric code.
+///
+/// # Format
+///
+/// - `Filter::String(s)` → `s`
+/// - `Filter::Int(n)`    → `n`
+impl fmt::Display for Filter {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Filter::String(s) => write!(f, "{s}"),
+            Filter::Int(n) => write!(f, "{n}"),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Photometry Display
+// ---------------------------------------------------------------------------
+
+/// Formats the photometric measurement as a compact inline string.
+///
+/// # Format
+///
+/// ```text
+/// 18.432 ± 0.023 mag [r']
+/// ```
+impl fmt::Display for Photometry {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{:.3} ± {:.3} mag [{}]",
+            self.magnitude, self.error, self.filter
+        )
+    }
 }
 
 #[cfg(test)]
