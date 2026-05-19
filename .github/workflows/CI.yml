@@ -1,0 +1,220 @@
+name: CI
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fmt:
+    name: Format check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: cargo fmt
+        run: cargo fmt --all -- --check
+
+  ci:
+    name: ${{ matrix.command }} (${{ matrix.features }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        features:
+          - no-features
+          - polars
+          - parallel
+          - ades
+          - mpc_80_col
+          - datafusion
+          - serde
+          - polars-parallel-ades-mpc_80_col-datafusion-serde
+        command: [clippy, check]
+        include:
+          - features: no-features
+            cargo_flags: --no-default-features
+          - features: polars
+            cargo_flags: --no-default-features --features polars
+          - features: parallel
+            cargo_flags: --no-default-features --features parallel
+          - features: ades
+            cargo_flags: --no-default-features --features ades
+          - features: mpc_80_col
+            cargo_flags: --no-default-features --features mpc_80_col
+          - features: datafusion
+            cargo_flags: --no-default-features --features datafusion
+          - features: serde
+            cargo_flags: --no-default-features --features serde
+          - features: polars-parallel-ades-mpc_80_col-datafusion-serde
+            cargo_flags: --no-default-features --features polars,parallel,ades,mpc_80_col,datafusion,serde
+          - command: clippy
+            components: clippy
+          - command: check
+            components: ""
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: ${{ matrix.components }}
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+          key: ${{ matrix.features }}-${{ matrix.command }}
+
+      - name: cargo clippy
+        if: matrix.command == 'clippy'
+        run: cargo clippy --all-targets ${{ matrix.cargo_flags }} -- -D warnings
+
+      - name: cargo check
+        if: matrix.command == 'check'
+        run: cargo check --all-targets ${{ matrix.cargo_flags }}
+
+  doc:
+    name: doc (all-features)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: cargo doc
+        run: RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features
+
+  # semver:
+  #   name: Semver checks
+  #   runs-on: ubuntu-latest
+  #   needs: [fmt, ci, doc]
+  #   steps:
+  #     - name: Checkout
+  #       uses: actions/checkout@v4
+
+  #     - name: Check semver
+  #       uses: obi1kenobi/cargo-semver-checks-action@v2
+  #       with:
+  #         feature-group: all-features
+
+  coverage:
+    name: Coverage (${{ matrix.features }})
+    runs-on: ubuntu-latest
+    needs: [fmt, ci, doc]
+    strategy:
+      fail-fast: false
+      matrix:
+        features:
+          - no-features
+          - polars
+          - parallel
+          - ades
+          - mpc_80_col
+          - datafusion
+          - serde
+          - polars-parallel-ades-mpc_80_col-datafusion-serde
+        include:
+          - features: no-features
+            cargo_flags: --no-default-features
+          - features: polars
+            cargo_flags: --no-default-features --features polars
+          - features: parallel
+            cargo_flags: --no-default-features --features parallel
+          - features: ades
+            cargo_flags: --no-default-features --features ades
+          - features: mpc_80_col
+            cargo_flags: --no-default-features --features mpc_80_col
+          - features: datafusion
+            cargo_flags: --no-default-features --features datafusion
+          - features: serde
+            cargo_flags: --no-default-features --features serde
+          - features: polars-parallel-ades-mpc_80_col-datafusion-serde
+            cargo_flags: --no-default-features --features polars,parallel,ades,mpc_80_col,datafusion,serde
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable + llvm-tools
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+          key: ${{ matrix.features }}-coverage
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Clean coverage artifacts
+        run: cargo llvm-cov clean --workspace
+
+      - name: Generate coverage (lcov)
+        env:
+          RAYON_NUM_THREADS: 2
+          RUST_TEST_THREADS: 1
+        run: |
+          cargo llvm-cov \
+            ${{ matrix.cargo_flags }} \
+            --lcov --output-path lcov-${{ matrix.features }}.info
+
+      - name: Upload lcov artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ matrix.features }}
+          path: lcov-${{ matrix.features }}.info
+          retention-days: 1
+
+  coverage-report:
+    name: Coverage report
+    runs-on: ubuntu-latest
+    needs: [coverage]
+    steps:
+      - name: Download all lcov artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: coverage-*
+          merge-multiple: true
+
+      - name: Install lcov
+        run: sudo apt-get update && sudo apt-get install -y lcov
+
+      - name: Merge lcov reports
+        run: |
+          lcov \
+            --add-tracefile lcov-no-features.info \
+            --add-tracefile lcov-polars.info \
+            --add-tracefile lcov-parallel.info \
+            --add-tracefile lcov-ades.info \
+            --add-tracefile lcov-mpc_80_col.info \
+            --add-tracefile lcov-datafusion.info \
+            --add-tracefile lcov-serde.info \
+            --add-tracefile lcov-polars-parallel-ades-mpc_80_col-datafusion-serde.info \
+            --output-file lcov.info
+
+      - name: Upload to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          files: lcov.info
+          flags: rust
+          fail_ci_if_error: false
+          token: ${{ secrets.CODECOV_TOKEN }}

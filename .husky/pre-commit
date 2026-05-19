@@ -1,13 +1,56 @@
 #!/bin/sh
 
-echo "Running cargo fmt..."
+# Feature sets to check for clippy and cargo check.
+# The empty string represents the no-features build.
+FEATURE_SETS="
+ 
+polars
+parallel
+ades
+mpc_80_col
+datafusion
+serde
+polars,parallel,ades,mpc_80_col,datafusion,serde
+"
+
+# ---------------------------------------------------------------------------
+# 1. Format check (feature-independent)
+# ---------------------------------------------------------------------------
+echo "==> cargo fmt --check"
 cargo fmt --all -- --check || exit 1
 
-echo "Running cargo clippy..."
-cargo clippy --all-targets --all-features -- -D warnings || exit 1
+# ---------------------------------------------------------------------------
+# 2. clippy + check for every feature combination
+# ---------------------------------------------------------------------------
+for features in $FEATURE_SETS; do
+    if [ -z "$features" ]; then
+        label="(no features)"
+        flag="--no-default-features"
+    else
+        label="--features $features"
+        flag="--no-default-features --features $features"
+    fi
 
-echo "Running cargo check..."
-cargo check --all-targets --all-features || exit 1
+    echo ""
+    echo "==> cargo clippy  [$label]"
+    # shellcheck disable=SC2086
+    cargo clippy --all-targets $flag -- -D warnings || exit 1
 
-echo "Checking documentation build..."
-RUSTDOCFLAGS="-D warnings --html-in-header $(pwd)/katex-header.html" cargo doc --no-deps --all-features || exit 1
+    echo "==> cargo check   [$label]"
+    # shellcheck disable=SC2086
+    cargo check --all-targets $flag || exit 1
+done
+
+# ---------------------------------------------------------------------------
+# 3. Documentation — all features only
+#    rustdoc resolves cross-feature intra-doc links only when every referenced
+#    item is compiled, so running with a partial feature set would produce
+#    spurious "unresolved link" errors for feature-gated public items.
+# ---------------------------------------------------------------------------
+echo ""
+echo "==> cargo doc [--all-features]"
+RUSTDOCFLAGS="-D warnings --html-in-header $(pwd)/katex-header.html" \
+    cargo doc --no-deps --all-features || exit 1
+
+echo ""
+echo "All checks passed."

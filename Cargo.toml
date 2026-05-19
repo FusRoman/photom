@@ -19,27 +19,77 @@ categories = ["science", "parsing", "data-structures"]
 
 [dependencies]
 ahash = { version = "0.8.12", default-features = false, features = ["std"] }
-itertools = "0.14.0"
-lru = "0.16.3"
+itertools = { version = "0.14.0", default-features = false }
 nom = { version = "8.0.0", default-features = false }
-ordered-float = { version = "5.3.0", default-features = false }
+ordered-float = { version = "5.3.0", default-features = false, features = [] }
 thiserror = { version = "2.0.18" }
 ureq = { version = "3.3.0", default-features = false, features = ["rustls"] }
+directories = { version = "6.0.0", default-features = false }
 
 # optional dependencies gated behind features
 polars = { version = "0.53.0", default-features = false, features = [
     "lazy",
+    "dtype-u8",
+    "dtype-u16",
+    "parquet",
 ], optional = true }
+rayon = { version = "1.12.0", default-features = false, optional = true }
+hifitime = { version = "4.2.6", default-features = false, optional = true }
+quick-xml = { version = "0.39.2", features = [
+    "serialize",
+], default-features = false, optional = true }
+serde = { version = "1.0.228", features = [
+    "derive",
+], default-features = false, optional = true }
+serde_json = { version = "1", default-features = false, features = [
+    "std",
+], optional = true }
+camino = { version = "1.2.2", default-features = false, optional = true }
+
+datafusion = { version = "50", default-features = false, features = [
+    "parquet",
+], optional = true }
+object_store = { version = "0.12.5", features = [
+    "http",
+], default-features = false, optional = true }
+hdfs-native-object-store = { version = "0.15", default-features = false, optional = true }
+tokio = { version = "1", features = [
+    "rt-multi-thread",
+], default-features = false, optional = true }
+url = { version = "2", default-features = false, optional = true }
+arrow-array = { version = "56.2", default-features = false, optional = true }
 
 [dev-dependencies]
 approx = "0.5.1"
 husky-rs = "0.3.2"
 proptest = "1.11.0"
+tempfile = "3"
+parquet = { version = "56", default-features = false, features = ["arrow"] }
 
 [features]
 polars = ["dep:polars"]
-
+parallel = ["dep:rayon"]
+serde = ["dep:serde", "dep:serde_json", "ordered-float/serde"]
+ades = [
+    "dep:hifitime",
+    "dep:quick-xml",
+    "dep:serde",
+    "dep:camino",
+    "ordered-float/serde",
+]
+mpc_80_col = ["dep:hifitime", "dep:camino"]
+datafusion = [
+    "dep:datafusion",
+    "dep:object_store",
+    "dep:hdfs-native-object-store",
+    "dep:tokio",
+    "dep:url",
+    "dep:serde",
+    "dep:serde_json",
+    "dep:arrow-array",
+    "ordered-float/serde",
+]
 
 [package.metadata.docs.rs]
-features = ["polars"]
+features = ["polars", "parallel", "ades", "mpc_80_col", "datafusion", "serde"]
 rustdoc-args = ["--cfg", "docsrs"]

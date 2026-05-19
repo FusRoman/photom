@@ -35,9 +35,11 @@
 //! - Farnocchia, D., Chesley, S. R., Chamberlin, A. B., & Tholen, D. J. (2014)
 //! - Chesley, S. R., Baer, J., & Monet, D. G. (2010)
 //! - Vereš, P., Farnocchia, D., Chesley, S. R., & Chamberlin, A. B. (2017)
+pub mod model_correction;
 mod vfcc17;
+pub use model_correction::ModelCorrection;
 
-use std::{collections::HashMap, str::FromStr};
+use std::{collections::HashMap, fmt, str::FromStr};
 
 use nom::{
     IResult, Parser,
@@ -72,6 +74,7 @@ pub type ErrorModelData = HashMap<(MpcCode, CatalogCode), (f32, f32)>;
 /// [`ObsErrorModel::read_error_model_file`] to parse the file for the
 /// selected variant into an [`ErrorModelData`] map.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ObsErrorModel {
     /// Farnocchia, Chesley, Chamberlin & Tholen (2014).
     FCCT14,
@@ -81,8 +84,22 @@ pub enum ObsErrorModel {
     VFCC17,
 }
 
+impl fmt::Display for ObsErrorModel {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = match self {
+            ObsErrorModel::FCCT14 => "FCCT14 (Farnocchia et al. 2014)",
+            ObsErrorModel::CBM10 => "CBM10  (Chesley, Baer & Monet 2010)",
+            ObsErrorModel::VFCC17 => "VFCC17 (Vereš et al. 2017)",
+        };
+        write!(f, "{s}")
+    }
+}
+
+/// Bundled FCCT14 rules file, included at compile time.
 static FCCT14_RULES: &str = include_str!("data_models/fcct14.rules");
+/// Bundled CBM10 rules file, included at compile time.
 static CBM10_RULES: &str = include_str!("data_models/cbm10.rules");
+/// Bundled VFCC17 rules file, included at compile time.
 static VFCC17_RULES: &str = include_str!("data_models/vfcc17.rules");
 
 /// Internal parse result: a list of `((station_str, catalog_code), (rms_ra, rms_dec))`.
@@ -97,9 +114,14 @@ pub(in crate::observer::error_model) type ParseResult<'a> =
 
 /// Parse an alphanumeric station code followed by `:` (e.g. `"699:"`, `"ALL:"`).
 ///
+/// # Arguments
+///
+/// - `input` — the parser input slice starting at a station code.
+///
 /// # Returns
 ///
-/// The station code string slice (without the trailing `:`).
+/// The station code string slice (without the trailing `:`), together with
+/// the unconsumed input tail.
 fn parse_station(input: &str) -> IResult<&str, &str> {
     terminated(take_while1(|c: char| c.is_alphanumeric()), char(':')).parse(input)
 }
@@ -110,9 +132,15 @@ fn parse_station(input: &str) -> IResult<&str, &str> {
 /// `c=` prefix (e.g. `ALL: c=cd @ …`).  Each ASCII character in the matched
 /// run is expanded into its own [`CatalogCode`] string.
 ///
+/// # Arguments
+///
+/// - `input` — the parser input slice positioned at optional whitespace before
+///   the optional `c=` prefix and catalog characters.
+///
 /// # Returns
 ///
-/// A `Vec<String>` where each element is a single-character catalog code.
+/// A `Vec<String>` where each element is a single-character catalog code,
+/// together with the unconsumed input tail.
 fn parse_catalog_codes(input: &str) -> IResult<&str, Vec<String>> {
     preceded(
         (multispace0, opt(tag("c="))),
@@ -134,9 +162,15 @@ fn parse_catalog_codes(input: &str) -> IResult<&str, Vec<String>> {
 
 /// Parse `@ rms_ra, rms_dec`, consuming any leading whitespace before the `@`.
 ///
+/// # Arguments
+///
+/// - `input` — the parser input slice positioned at optional whitespace before
+///   the `@` marker.
+///
 /// # Returns
 ///
-/// A tuple `(rms_ra, rms_dec)` as `f32` values.
+/// A tuple `(rms_ra, rms_dec)` as `f32` values, together with the unconsumed
+/// input tail.
 fn parse_rms_values(input: &str) -> IResult<&str, (f32, f32)> {
     preceded(
         (multispace0, char('@')),
@@ -151,8 +185,17 @@ fn parse_rms_values(input: &str) -> IResult<&str, (f32, f32)> {
 
 /// Parse one FCCT14/CBM10 rule line, stripping inline comments (`! …`).
 ///
-/// Returns a flat list of `((station, catalog), (rms_ra, rms_dec))` — one
-/// entry per catalog character in the rule.
+/// Expects the format `<station>: [c=]<catalogs> @ <rms_ra>, <rms_dec>`.
+/// The portion from `!` to end-of-line is discarded before parsing.
+///
+/// # Arguments
+///
+/// - `input` — a single rule line from the FCCT14 or CBM10 rules file.
+///
+/// # Returns
+///
+/// A flat list of `((station, catalog), (rms_ra, rms_dec))` — one entry per
+/// catalog character in the rule — together with the unconsumed input tail.
 fn parse_full_line(input: &str) -> ParseResult<'_> {
     // Strip everything from `!` onward (inline comment), then trim whitespace.
     let line = match input.find('!') {
@@ -177,7 +220,7 @@ fn parse_full_line(input: &str) -> ParseResult<'_> {
 // ---------------------------------------------------------------------------
 
 /// Errors that can arise when parsing an astrometric error model file.
-#[derive(Debug, Error)]
+#[derive(Debug, Error, Clone)]
 pub enum ErrorModelParseError {
     /// A `nom` parser failed on the given line content.
     #[error("Nom parsing error on: {0}")]
@@ -259,12 +302,17 @@ impl ObsErrorModel {
     /// Parses the reference file for the selected variant and returns an
     /// [`ErrorModelData`] map ready to be queried with [`get_bias_rms`].
     ///
+    /// # Returns
+    ///
+    /// An [`ErrorModelData`] map containing all `(MpcCode, CatalogCode)` →
+    /// `(rms_ra, rms_dec)` entries from the bundled reference file.
+    ///
     /// # Errors
     ///
     /// Returns [`ErrorModelParseError`] if any line in the reference file
     /// cannot be parsed (this should never happen with the bundled files).
     ///
-    /// # Example
+    /// # Examples
     ///
     /// ```rust,ignore
     /// let data = ObsErrorModel::FCCT14.read_error_model_file().unwrap();
@@ -279,12 +327,22 @@ impl ObsErrorModel {
     }
 }
 
-/// Parse an [`ObsErrorModel`] from its string name (`"FCCT14"`, `"CBM10"`, or `"VFCC17"`).
+/// Parse an [`ObsErrorModel`] from its canonical string name.
+///
+/// Recognised names (case-sensitive): `"FCCT14"`, `"CBM10"`, `"VFCC17"`.
+///
+/// # Arguments
+///
+/// - `s` — the string to parse (e.g. `"FCCT14"`).
+///
+/// # Returns
+///
+/// `Ok(ObsErrorModel)` for a recognised name.
 ///
 /// # Errors
 ///
-/// Returns [`ErrorModelParseError::NomParsingError`] if the string does not
-/// match any known model name.
+/// Returns [`ErrorModelParseError::NomParsingError`] if `s` does not match
+/// any known model name.
 impl FromStr for ObsErrorModel {
     type Err = ErrorModelParseError;
 
@@ -300,7 +358,17 @@ impl FromStr for ObsErrorModel {
     }
 }
 
-/// Delegates to [`FromStr`] for [`ObsErrorModel`].
+/// Infallible conversion from `&str` to [`ObsErrorModel`] by delegating to [`FromStr`].
+///
+/// Recognised names (case-sensitive): `"FCCT14"`, `"CBM10"`, `"VFCC17"`.
+///
+/// # Arguments
+///
+/// - `value` — the string slice to convert (e.g. `"VFCC17"`).
+///
+/// # Returns
+///
+/// `Ok(ObsErrorModel)` for a recognised name.
 ///
 /// # Errors
 ///
@@ -367,6 +435,13 @@ pub fn get_bias_rms(
 mod test_error_model {
     use super::*;
 
+    /// Verifies that `parse_full_line` correctly parses representative FCCT14/CBM10 rule lines.
+    ///
+    /// Covers three patterns:
+    /// - multi-catalog `c=` prefix with inline `!` comment (`ALL: c=eqru @ …`),
+    /// - multi-catalog `c=` prefix with inline comment and space padding
+    ///   (`ALL: c=cd @ … ! …`),
+    /// - bare single-catalog code without `c=` prefix (`699:c @ …`).
     #[test]
     fn test_parse_fcct14_line() {
         let line = "ALL:  c=eqru @ 0.33, 0.30";
@@ -397,6 +472,8 @@ mod test_error_model {
         assert_eq!(*rmsd, 0.78);
     }
 
+    /// Verifies that `read_error_model_file` succeeds and returns a non-empty map
+    /// for all three bundled model variants (FCCT14, CBM10, and VFCC17).
     #[test]
     fn test_read_error_model_file() {
         let result = ObsErrorModel::FCCT14.read_error_model_file();
@@ -412,6 +489,9 @@ mod test_error_model {
         assert!(!result.unwrap().is_empty());
     }
 
+    /// Verifies that `get_bias_rms` returns the expected RMS values for known entries
+    /// in all three bundled model files (FCCT14, CBM10, and VFCC17), covering both
+    /// the `*b"ALL"` wildcard key and a specific observatory code (`*b"699"`).
     #[test]
     fn test_get_bias_rms() {
         let model = ObsErrorModel::FCCT14.read_error_model_file().unwrap();

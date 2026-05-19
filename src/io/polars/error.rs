@@ -6,7 +6,7 @@ use thiserror::Error;
 ///
 /// Every variant carries enough context to identify the offending row or
 /// column so that callers can produce actionable diagnostics.
-#[derive(Debug, Error)]
+#[derive(Debug, Error, Clone)]
 pub enum PolarsError {
     /// The `DataFrame` did not satisfy the required schema.
     ///
@@ -73,21 +73,50 @@ pub enum PolarsError {
     #[error("Invalid MPC code '{0}' at row {1}: must be exactly 3 ASCII bytes")]
     InvalidMpcCode(String, usize),
 
-    /// The `traj_id` column is present in the `DataFrame` but its Polars
-    /// type is neither `UInt64` nor `String`.
+    /// The `filter` column is present in the `DataFrame` but its Polars
+    /// type is neither `String` nor `UInt32`.
     ///
-    /// Only these two column types are accepted: `UInt64` cells are mapped to
-    /// [`crate::trajectory::TrajId::Int`] and `String` cells are mapped to
-    /// [`crate::trajectory::TrajId::Str`].  Any other type (e.g. `Int32`,
+    /// Only these two column types are accepted: `String` cells are mapped to
+    /// [`crate::photometry::Filter::String`] and `UInt32` cells are mapped to
+    /// [`crate::photometry::Filter::Int`].  Any other type must be cast by the
+    /// caller before ingestion.
+    ///
+    /// The inner `String` is a human-readable description of the actual type
+    /// that was found.
+    #[error("filter column has unsupported type: {0} (expected String or UInt32)")]
+    FilterColumnTypeError(String),
+
+    /// The `night_id` column is present in the `DataFrame` but its Polars
+    /// type is not `UInt32`.
+    ///
+    /// The `night_id` column must be of type `UInt32`; cells are mapped to
+    /// [`crate::NightId`].  Any other type must be cast by the caller before
+    /// ingestion.
+    ///
+    /// The inner `String` is a human-readable description of the actual type
+    /// that was found.
+    #[error("night_id column has unsupported type: {0} (expected UInt32)")]
+    NightIdColumnTypeError(String),
+
+    /// The `traj_id` column is present in the `DataFrame` but its Polars
+    /// type is neither `UInt32` nor `String`.
+    ///
+    /// Only these two column types are accepted: `UInt32` cells are mapped to
+    /// [`crate::TrajId::Int`] and `String` cells are mapped to [`crate::TrajId::Str`].  Any other type (e.g. `Int32`,
     /// `Float64`) must be cast by the caller before ingestion.
     ///
     /// The inner `String` is a human-readable description of the actual type
     /// that was found.
-    #[error("traj_id column has unsupported type: {0} (expected UInt64 or String)")]
+    #[error("traj_id column has unsupported type: {0} (expected UInt32 or String)")]
     TrajIdColumnTypeError(String),
 
     /// A Polars-internal error propagated transparently from the underlying
     /// [`polars`] crate.
     #[error(transparent)]
     Polars(#[from] polars::error::PolarsError),
+
+    /// The `base_fields()` function expected exactly 7 `Float64` columns but
+    /// got a different number.
+    #[error("Expected exactly 7 Float64 columns in base_fields(), but got a different number")]
+    Float64ColumnCountError,
 }
