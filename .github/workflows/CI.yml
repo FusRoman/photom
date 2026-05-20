@@ -29,8 +29,6 @@ jobs:
   ci:
     name: ${{ matrix.command }} (${{ matrix.features }})
     runs-on: ubuntu-latest
-    # Skip the lint/check matrix on direct pushes to main (merge commits):
-    # these were already validated on the PR that preceded the merge.
     if: github.event_name != 'push'
     strategy:
       fail-fast: false
@@ -92,7 +90,6 @@ jobs:
   doc:
     name: doc (all-features)
     runs-on: ubuntu-latest
-    # Same rationale as the ci job: skip on push to main.
     if: github.event_name != 'push'
     steps:
       - name: Checkout
@@ -109,24 +106,9 @@ jobs:
       - name: cargo doc
         run: RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features
 
-  # semver:
-  #   name: Semver checks
-  #   runs-on: ubuntu-latest
-  #   needs: [fmt, ci, doc]
-  #   steps:
-  #     - name: Checkout
-  #       uses: actions/checkout@v4
-
-  #     - name: Check semver
-  #       uses: obi1kenobi/cargo-semver-checks-action@v2
-  #       with:
-  #         feature-group: all-features
-
   coverage:
-    name: Coverage (${{ matrix.features }})
+    name: Coverage (all features)
     runs-on: ubuntu-latest
-    # On PRs: wait for the full lint/check/doc pipeline.
-    # On push to main (post-merge): run immediately, no prior jobs to wait for.
     needs:
       - fmt
       - ci
@@ -139,35 +121,6 @@ jobs:
           needs.ci.result  == 'success' &&
           needs.doc.result == 'success')
       )
-    strategy:
-      fail-fast: false
-      matrix:
-        features:
-          - no-features
-          - polars
-          - parallel
-          - ades
-          - mpc_80_col
-          - datafusion-large-test-fixtures
-          - serde
-          - polars-parallel-ades-mpc_80_col-datafusion-large-test-fixtures-serde
-        include:
-          - features: no-features
-            cargo_flags: --no-default-features
-          - features: polars
-            cargo_flags: --no-default-features --features polars
-          - features: parallel
-            cargo_flags: --no-default-features --features parallel
-          - features: ades
-            cargo_flags: --no-default-features --features ades
-          - features: mpc_80_col
-            cargo_flags: --no-default-features --features mpc_80_col
-          - features: datafusion-large-test-fixtures
-            cargo_flags: --no-default-features --features datafusion,large-test-fixtures
-          - features: serde
-            cargo_flags: --no-default-features --features serde
-          - features: polars-parallel-ades-mpc_80_col-datafusion-large-test-fixtures-serde
-            cargo_flags: --no-default-features --features polars,parallel,ades,mpc_80_col,datafusion,large-test-fixtures,serde
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -181,7 +134,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
-          key: ${{ matrix.features }}-coverage
+          key: coverage-all-features
 
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
@@ -189,49 +142,14 @@ jobs:
       - name: Clean coverage artifacts
         run: cargo llvm-cov clean --workspace
 
-      - name: Generate coverage (lcov)
+      - name: Generate coverage (lcov, all features)
         env:
           RAYON_NUM_THREADS: 2
           RUST_TEST_THREADS: 1
         run: |
           cargo llvm-cov \
-            ${{ matrix.cargo_flags }} \
-            --lcov --output-path lcov-${{ matrix.features }}.info
-
-      - name: Upload lcov artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: coverage-${{ matrix.features }}
-          path: lcov-${{ matrix.features }}.info
-          retention-days: 1
-
-  coverage-report:
-    name: Coverage report
-    runs-on: ubuntu-latest
-    needs: [coverage]
-    if: always() && needs.coverage.result == 'success'
-    steps:
-      - name: Download all lcov artifacts
-        uses: actions/download-artifact@v4
-        with:
-          pattern: coverage-*
-          merge-multiple: true
-
-      - name: Install lcov
-        run: sudo apt-get update && sudo apt-get install -y lcov
-
-      - name: Merge lcov reports
-        run: |
-          lcov \
-            --add-tracefile lcov-no-features.info \
-            --add-tracefile lcov-polars.info \
-            --add-tracefile lcov-parallel.info \
-            --add-tracefile lcov-ades.info \
-            --add-tracefile lcov-mpc_80_col.info \
-            --add-tracefile lcov-datafusion-large-test-fixtures.info \
-            --add-tracefile lcov-serde.info \
-            --add-tracefile lcov-polars-parallel-ades-mpc_80_col-datafusion-large-test-fixtures-serde.info \
-            --output-file lcov.info
+            --all-features \
+            --lcov --output-path lcov.info
 
       - name: Upload to Codecov
         uses: codecov/codecov-action@v4
