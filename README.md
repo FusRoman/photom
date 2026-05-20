@@ -1,5 +1,26 @@
 # photom
 
+<p align="center">
+  <a href="https://crates.io/crates/photom">
+    <img src="https://img.shields.io/crates/v/photom.svg" alt="Crates.io"/>
+  </a>
+  <a href="https://docs.rs/photom">
+    <img src="https://docs.rs/photom/badge.svg" alt="Docs.rs"/>
+  </a>
+  <a href="LICENSE">
+    <img src="https://img.shields.io/badge/license-CeCILL--C-blue.svg" alt="License: CeCILL-C"/>
+  </a>
+  <a href="https://github.com/FusRoman/photom/actions">
+    <img src="https://github.com/FusRoman/photom/actions/workflows/ci.yml/badge.svg" alt="CI"/>
+  </a>
+  <a href="https://codecov.io/gh/FusRoman/photom">
+    <img src="https://codecov.io/gh/FusRoman/photom/branch/main/graph/badge.svg" alt="codecov"/>
+  </a>
+  <a href="https://www.rust-lang.org/">
+    <img src="https://img.shields.io/badge/MSRV-1.82%2B-orange" alt="MSRV"/>
+  </a>
+</p>
+
 Rust library for loading, structuring, and querying astronomical observation datasets — with trajectory grouping, multi-observer support, and efficient lookups.
 
 ## Features
