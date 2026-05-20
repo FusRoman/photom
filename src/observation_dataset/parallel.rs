@@ -78,6 +78,18 @@ impl ObsDatasetIndex {
         })
     }
 
+    /// Return a parallel iterator over all `NightId` keys present in the night index.
+    ///
+    /// # Returns
+    ///
+    /// `Some(iterator)` if a night index was built; `None` otherwise.
+    /// The iteration order is unspecified (hash map key order).
+    pub(crate) fn par_iter_night_id(&self) -> Option<impl ParallelIterator<Item = &NightId>> {
+        self.obs_index_by_night
+            .as_ref()
+            .map(|night_map| night_map.keys().collect::<Vec<_>>().into_par_iter())
+    }
+
     /// Return a parallel iterator over `(NightId, ObsIndex)` pairs for every observation
     /// in the night index.
     ///
@@ -165,9 +177,31 @@ impl ObsDatasetIndex {
                 })
         })
     }
+
+    /// Return a parallel iterator over all `TrajId` keys present in the trajectory index.
+    ///
+    /// # Returns
+    ///
+    /// `Some(iterator)` if a trajectory index was built; `None` otherwise.
+    /// The iteration order is unspecified (hash map key order).
+    pub(crate) fn par_iter_traj_id(&self) -> Option<impl ParallelIterator<Item = &TrajId>> {
+        self.obs_index_by_trajectory
+            .as_ref()
+            .map(|traj_map| traj_map.keys().collect::<Vec<_>>().into_par_iter())
+    }
 }
 
 impl ObsDataset {
+    /// Return a parallel iterator over all `NightId` keys present in the night index.
+    ///
+    /// # Returns
+    ///
+    /// `Some(iterator)` if the dataset was built with a night index; `None` otherwise.
+    /// The iteration order is unspecified.
+    pub fn par_iter_night_id(&self) -> Option<impl ParallelIterator<Item = &NightId>> {
+        self.index.par_iter_night_id()
+    }
+
     /// Return a parallel iterator over all observations in insertion order.
     ///
     /// The iterator yields shared references and does not clone any data.
@@ -262,6 +296,16 @@ impl ObsDataset {
                 &self.observations[*start..*end],
             )),
         }
+    }
+
+    /// Return a parallel iterator over all `TrajId` keys present in the trajectory index.
+    ///
+    /// # Returns
+    ///
+    /// `Some(iterator)` if the dataset was built with a trajectory index; `None` otherwise.
+    /// The iteration order is unspecified.
+    pub fn par_iter_traj_id(&self) -> Option<impl ParallelIterator<Item = &TrajId>> {
+        self.index.par_iter_traj_id()
     }
 
     /// Return a parallel iterator over all observations belonging to a given trajectory, in
@@ -980,6 +1024,54 @@ mod obsdataset_parallel_tests {
             // unwrap is safe: the trajectory map is present
             let count = dataset.index.par_iter_full_trajectory().unwrap().count();
             assert_eq!(count, 4);
+        }
+    }
+
+    // =======================================================================
+    // mod parallel_traj_id_iter — par_iter_traj_id (tests 4–7)
+    // =======================================================================
+
+    mod parallel_traj_id_iter {
+        use super::*;
+
+        /// Test 4 — `par_iter_traj_id` returns `Some` when a trajectory index is present.
+        #[test]
+        fn returns_some_when_index_present() {
+            let dataset = make_dataset_with_index();
+            assert!(dataset.par_iter_traj_id().is_some());
+        }
+
+        /// Test 5 — `par_iter_traj_id` returns `None` when no trajectory index was built.
+        #[test]
+        fn returns_none_when_no_index() {
+            let dataset = make_dataset_no_index();
+            assert!(dataset.par_iter_traj_id().is_none());
+        }
+
+        /// Test 6 — the parallel iterator yields exactly as many keys as trajectories
+        /// registered in the index (2 in the test fixture).
+        #[test]
+        fn yields_correct_count() {
+            let dataset = make_dataset_with_index();
+            let count = dataset
+                .par_iter_traj_id()
+                .expect("trajectory index must be present")
+                .count();
+            assert_eq!(count, 2);
+        }
+
+        /// Test 7 — the collected and sorted trajectory ids match the expected set,
+        /// regardless of thread scheduling order.
+        #[test]
+        fn yields_correct_ids() {
+            let dataset = make_dataset_with_index();
+            let mut ids: Vec<u32> = dataset
+                .par_iter_traj_id()
+                .expect("trajectory index must be present")
+                .map(traj_id_key)
+                .collect();
+            ids.sort_unstable();
+            assert_eq!(ids, vec![10u32, 20]);
         }
     }
 }
