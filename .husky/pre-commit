@@ -8,9 +8,9 @@ polars
 parallel
 ades
 mpc_80_col
-datafusion
+datafusion,large-test-fixtures
 serde
-polars,parallel,ades,mpc_80_col,datafusion,serde
+polars,parallel,ades,mpc_80_col,datafusion,large-test-fixtures,serde
 "
 
 # ---------------------------------------------------------------------------

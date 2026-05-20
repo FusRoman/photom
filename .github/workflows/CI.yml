@@ -127,9 +127,9 @@ jobs:
           - parallel
           - ades
           - mpc_80_col
-          - datafusion
+          - datafusion-large-test-fixtures
           - serde
-          - polars-parallel-ades-mpc_80_col-datafusion-serde
+          - polars-parallel-ades-mpc_80_col-datafusion-serde-large-test-fixtures
         include:
           - features: no-features
             cargo_flags: --no-default-features
@@ -141,12 +141,12 @@ jobs:
             cargo_flags: --no-default-features --features ades
           - features: mpc_80_col
             cargo_flags: --no-default-features --features mpc_80_col
-          - features: datafusion
-            cargo_flags: --no-default-features --features datafusion
+          - features: datafusion-large-test-fixtures
+            cargo_flags: --no-default-features --features datafusion,large-test-fixtures
           - features: serde
             cargo_flags: --no-default-features --features serde
-          - features: polars-parallel-ades-mpc_80_col-datafusion-serde
-            cargo_flags: --no-default-features --features polars,parallel,ades,mpc_80_col,datafusion,serde
+          - features: polars-parallel-ades-mpc_80_col-datafusion-serde-large-test-fixtures
+            cargo_flags: --no-default-features --features polars,parallel,ades,mpc_80_col,datafusion,serde,large-test-fixtures
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -206,7 +206,7 @@ jobs:
             --add-tracefile lcov-parallel.info \
             --add-tracefile lcov-ades.info \
             --add-tracefile lcov-mpc_80_col.info \
-            --add-tracefile lcov-datafusion.info \
+            --add-tracefile lcov-datafusion-large-test-fixtures.info \
             --add-tracefile lcov-serde.info \
             --add-tracefile lcov-polars-parallel-ades-mpc_80_col-datafusion-serde.info \
             --output-file lcov.info

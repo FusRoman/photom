@@ -16,6 +16,10 @@ keywords = [
     "trajectory",
 ]
 categories = ["science", "parsing", "data-structures"]
+# exclude large test fixtures from the published crate to avoid bloating it, but they can be used for local testing and in CI.
+exclude = [
+    "tests/data/*.parquet",
+]
 
 [dependencies]
 ahash = { version = "0.8.12", default-features = false, features = ["std"] }
@@ -89,6 +93,9 @@ datafusion = [
     "dep:arrow-array",
     "ordered-float/serde",
 ]
+
+# fixture using the large parquet file. Not included in the crate.io package to avoid bloating it, but can be used for local testing.
+large-test-fixtures = []
 
 [package.metadata.docs.rs]
 features = ["polars", "parallel", "ades", "mpc_80_col", "datafusion", "serde"]
