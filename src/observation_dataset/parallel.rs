@@ -21,13 +21,16 @@
 //!
 //! | Method | Description |
 //! |--------|-------------|
+//! | [`ObsDataset::par_iter_night_id`] | Parallel iterator over all `NightId` keys in the night index |
 //! | [`ObsDataset::par_iter_observations`] | Parallel iterator over all observations in insertion order |
 //! | [`ObsDataset::par_iter_full_night`] | Parallel iterator over `(NightId, &Observation)` pairs for every indexed night |
 //! | [`ObsDataset::par_iter_night_observations`] | Parallel iterator over observations for a single night |
+//! | [`ObsDataset::par_iter_traj_id`] | Parallel iterator over all `TrajId` keys in the trajectory index |
 //! | [`ObsDataset::materialize_night_par`] | Collect observations for a single night into a `Vec` using parallel iteration |
 //! | [`ObsDataset::par_iter_trajectory_observations`] | Parallel iterator over observations for a single trajectory |
 //! | [`ObsDataset::par_iter_full_trajectory`] | Parallel iterator over `(TrajId, &Observation)` pairs for every indexed trajectory |
 //! | [`ObsDataset::materialize_trajectory_par`] | Collect observations for a single trajectory into a `Vec` using parallel iteration |
+//! | [`ObsDataset::par_iter_observer`] | Parallel iterator over all observers in the dataset, including both custom geodetic observers and MPC-coded observers |
 //!
 //! ## Ordering guarantees
 //!
