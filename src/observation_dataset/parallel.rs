@@ -21,13 +21,16 @@
 //!
 //! | Method | Description |
 //! |--------|-------------|
+//! | [`ObsDataset::par_iter_night_id`] | Parallel iterator over all `NightId` keys in the night index |
 //! | [`ObsDataset::par_iter_observations`] | Parallel iterator over all observations in insertion order |
 //! | [`ObsDataset::par_iter_full_night`] | Parallel iterator over `(NightId, &Observation)` pairs for every indexed night |
 //! | [`ObsDataset::par_iter_night_observations`] | Parallel iterator over observations for a single night |
+//! | [`ObsDataset::par_iter_traj_id`] | Parallel iterator over all `TrajId` keys in the trajectory index |
 //! | [`ObsDataset::materialize_night_par`] | Collect observations for a single night into a `Vec` using parallel iteration |
 //! | [`ObsDataset::par_iter_trajectory_observations`] | Parallel iterator over observations for a single trajectory |
 //! | [`ObsDataset::par_iter_full_trajectory`] | Parallel iterator over `(TrajId, &Observation)` pairs for every indexed trajectory |
 //! | [`ObsDataset::materialize_trajectory_par`] | Collect observations for a single trajectory into a `Vec` using parallel iteration |
+//! | [`ObsDataset::par_iter_observer`] | Parallel iterator over all observers in the dataset, including both custom geodetic observers and MPC-coded observers |
 //!
 //! ## Ordering guarantees
 //!
@@ -43,16 +46,19 @@
 //! [`ObsDataset`]: crate::observation_dataset::ObsDataset
 
 use itertools::Either;
-use rayon::iter::{IntoParallelIterator, IntoParallelRefIterator, ParallelIterator};
+use rayon::iter::{
+    IndexedParallelIterator, IntoParallelIterator, IntoParallelRefIterator, ParallelIterator,
+};
 
 use crate::{
     NightId, TrajId,
     observation_dataset::{
-        ObsDataset,
+        ObsDataset, ObsDatasetError,
         index::{ObsDatasetIndex, ObsIndex, ObsMapIndex},
         iter::MemLayoutObservations,
         observation::Observation,
     },
+    observer::{Observer, dataset::ObserverId},
 };
 
 impl ObsDatasetIndex {
@@ -389,6 +395,32 @@ impl ObsDataset {
                 &self.observations[*start..*end],
             )),
         }
+    }
+
+    /// Return a parallel iterator over all observers in the dataset, including both custom geodetic observers and MPC-coded observers.
+    /// The order of the yielded observers is unspecified.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(iterator)` where `iterator` yields `(ObserverId, &Observer)` pairs for each observer in the dataset, if the MPC observatory catalogue was successfully loaded;
+    /// `Err(ObsDatasetError::MpcCatalogueLoadError)` if the MPC observatory catalogue could not be loaded, which prevents access to MPC-coded observers.
+    pub fn par_iter_observer(
+        &self,
+    ) -> Result<impl ParallelIterator<Item = (ObserverId, &Observer)>, ObsDatasetError> {
+        let mpc_iter = self
+            .observer_dataset
+            .mpc_observers()?
+            .par_iter()
+            .map(|(code, obs)| (ObserverId::MpcCode(*code), obs));
+
+        let custom_observer_iter = self
+            .observer_dataset
+            .custom_observers
+            .par_iter()
+            .enumerate()
+            .map(|(idx, obs)| (ObserverId::IntId(idx), obs));
+
+        Ok(mpc_iter.chain(custom_observer_iter))
     }
 }
 
