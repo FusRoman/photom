@@ -339,6 +339,18 @@ To compile the documentation locally, run the following command in the terminal:
 RUSTDOCFLAGS="--html-in-header $(pwd)/katex-header.html" cargo doc --no-deps --all-features
 ```
 
+## Testing Notes
+
+The DataFusion tests require the large-test-fixtures feature to run. The large Parquet fixtures have been excluded from the crates.io package and are gated behind this feature.
+
+To run the full test suite including DataFusion:
+
+```bash
+cargo test --features "datafusion,large-test-fixtures"
+```
+
+All other tests are gated behind their associated features and do not require this additional flag.
+
 ## Minimum Supported Rust Version
 
 `photom` requires **Rust 1.94.0** or later.
