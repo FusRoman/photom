@@ -1,3 +1,7 @@
 /target
 proptest-regressions/
 .vscode/
+
+format_ztf_data.py
+ztf_cleaned.parquet
+ztf_dataset_2025.parquet
