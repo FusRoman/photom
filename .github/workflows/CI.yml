@@ -2,6 +2,9 @@ name: CI
 
 on:
   pull_request:
+  push:
+    branches:
+      - main
   workflow_dispatch:
 
 permissions:
@@ -26,6 +29,9 @@ jobs:
   ci:
     name: ${{ matrix.command }} (${{ matrix.features }})
     runs-on: ubuntu-latest
+    # Skip the lint/check matrix on direct pushes to main (merge commits):
+    # these were already validated on the PR that preceded the merge.
+    if: github.event_name != 'push'
     strategy:
       fail-fast: false
       matrix:
@@ -86,6 +92,8 @@ jobs:
   doc:
     name: doc (all-features)
     runs-on: ubuntu-latest
+    # Same rationale as the ci job: skip on push to main.
+    if: github.event_name != 'push'
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -117,7 +125,20 @@ jobs:
   coverage:
     name: Coverage (${{ matrix.features }})
     runs-on: ubuntu-latest
-    needs: [fmt, ci, doc]
+    # On PRs: wait for the full lint/check/doc pipeline.
+    # On push to main (post-merge): run immediately, no prior jobs to wait for.
+    needs:
+      - fmt
+      - ci
+      - doc
+    if: |
+      always() && (
+        (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+        (github.event_name != 'push' &&
+          needs.fmt.result == 'success' &&
+          needs.ci.result  == 'success' &&
+          needs.doc.result == 'success')
+      )
     strategy:
       fail-fast: false
       matrix:
@@ -188,6 +209,7 @@ jobs:
     name: Coverage report
     runs-on: ubuntu-latest
     needs: [coverage]
+    if: always() && needs.coverage.result == 'success'
     steps:
       - name: Download all lcov artifacts
         uses: actions/download-artifact@v4
