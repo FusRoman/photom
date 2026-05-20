@@ -24,7 +24,7 @@
 //! | `test_data_traj_int.parquet` | geodetic | `UInt32` | 561 287 | 10 | 68 145 |
 //! | `test_data_traj_str.parquet` | `mpc_code_obs = "I41"` | `String` | 561 287 | 10 | 68 145 |
 
-#![cfg(feature = "datafusion")]
+#![cfg(all(feature = "datafusion", feature = "large-test-fixtures"))]
 
 mod helpers;
 use helpers::*;

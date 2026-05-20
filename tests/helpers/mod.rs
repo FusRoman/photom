@@ -73,13 +73,13 @@ pub const OBSERVER_TOLERANCE: f64 = 1e-9;
 
 // ── fixture loaders (datafusion) ───────────────────────────────────────────────
 
-#[cfg(feature = "datafusion")]
+#[cfg(all(feature = "datafusion", feature = "large-test-fixtures"))]
 use photom::io::datafusion::loader::LoadObsArgs;
-#[cfg(feature = "datafusion")]
+#[cfg(all(feature = "datafusion", feature = "large-test-fixtures"))]
 use photom::observation_dataset::ObsDataset as DfObsDataset;
 
 /// Load the integer-traj fixture via `ObsDataset::from_parquet_uri` (`file://`).
-#[cfg(feature = "datafusion")]
+#[cfg(all(feature = "datafusion", feature = "large-test-fixtures"))]
 #[allow(dead_code)]
 pub fn df_load_int() -> DfObsDataset {
     let uri = format!(
@@ -94,7 +94,7 @@ pub fn df_load_int() -> DfObsDataset {
 }
 
 /// Load the string-traj fixture via `ObsDataset::from_parquet_uri` (`file://`).
-#[cfg(feature = "datafusion")]
+#[cfg(all(feature = "datafusion", feature = "large-test-fixtures"))]
 #[allow(dead_code)]
 pub fn df_load_str() -> DfObsDataset {
     let uri = format!(
