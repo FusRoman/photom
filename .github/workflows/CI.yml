@@ -106,6 +106,29 @@ jobs:
       - name: cargo doc
         run: RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features
 
+  semver:
+    name: SemVer check
+    runs-on: ubuntu-latest
+    if: github.event_name != 'push'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+          key: semver
+
+      - name: Install cargo-semver-checks
+        uses: taiki-e/install-action@cargo-semver-checks
+
+      - name: cargo semver-checks
+        run: cargo semver-checks --all-features
+
   coverage:
     name: Coverage (all features)
     runs-on: ubuntu-latest
@@ -113,13 +136,15 @@ jobs:
       - fmt
       - ci
       - doc
+      - semver
     if: |
       always() && (
         (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
         (github.event_name != 'push' &&
           needs.fmt.result == 'success' &&
           needs.ci.result  == 'success' &&
-          needs.doc.result == 'success')
+          needs.doc.result == 'success' &&
+          needs.semver.result == 'success')
       )
     steps:
       - name: Checkout

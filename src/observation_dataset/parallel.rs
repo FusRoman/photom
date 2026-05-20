@@ -43,16 +43,19 @@
 //! [`ObsDataset`]: crate::observation_dataset::ObsDataset
 
 use itertools::Either;
-use rayon::iter::{IntoParallelIterator, IntoParallelRefIterator, ParallelIterator};
+use rayon::iter::{
+    IndexedParallelIterator, IntoParallelIterator, IntoParallelRefIterator, ParallelIterator,
+};
 
 use crate::{
     NightId, TrajId,
     observation_dataset::{
-        ObsDataset,
+        ObsDataset, ObsDatasetError,
         index::{ObsDatasetIndex, ObsIndex, ObsMapIndex},
         iter::MemLayoutObservations,
         observation::Observation,
     },
+    observer::{Observer, dataset::ObserverId},
 };
 
 impl ObsDatasetIndex {
@@ -389,6 +392,32 @@ impl ObsDataset {
                 &self.observations[*start..*end],
             )),
         }
+    }
+
+    /// Return a parallel iterator over all observers in the dataset, including both custom geodetic observers and MPC-coded observers.
+    /// The order of the yielded observers is unspecified.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(iterator)` where `iterator` yields `(ObserverId, &Observer)` pairs for each observer in the dataset, if the MPC observatory catalogue was successfully loaded;
+    /// `Err(ObsDatasetError::MpcCatalogueLoadError)` if the MPC observatory catalogue could not be loaded, which prevents access to MPC-coded observers.
+    pub fn par_iter_observer(
+        &self,
+    ) -> Result<impl ParallelIterator<Item = (ObserverId, &Observer)>, ObsDatasetError> {
+        let mpc_iter = self
+            .observer_dataset
+            .mpc_observers()?
+            .par_iter()
+            .map(|(code, obs)| (ObserverId::MpcCode(*code), obs));
+
+        let custom_observer_iter = self
+            .observer_dataset
+            .custom_observers
+            .par_iter()
+            .enumerate()
+            .map(|(idx, obs)| (ObserverId::IntId(idx), obs));
+
+        Ok(mpc_iter.chain(custom_observer_iter))
     }
 }
 
