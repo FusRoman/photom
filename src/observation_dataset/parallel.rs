@@ -77,7 +77,7 @@ impl ObsDatasetIndex {
     pub(crate) fn par_iter_night_obs_index(
         &self,
         night_id: &NightId,
-    ) -> Option<impl ParallelIterator<Item = ObsIndex> + '_> {
+    ) -> Option<impl IndexedParallelIterator<Item = ObsIndex> + '_> {
         self.get_by_night(night_id).map(|indices| match indices {
             ObsMapIndex::Contiguous { start, end } => Either::Left((*start..*end).into_par_iter()),
             ObsMapIndex::Split(vec) => Either::Right(vec.par_iter().copied()),
@@ -90,7 +90,9 @@ impl ObsDatasetIndex {
     ///
     /// `Some(iterator)` if a night index was built; `None` otherwise.
     /// The iteration order is unspecified (hash map key order).
-    pub(crate) fn par_iter_night_id(&self) -> Option<impl ParallelIterator<Item = &NightId>> {
+    pub(crate) fn par_iter_night_id(
+        &self,
+    ) -> Option<impl IndexedParallelIterator<Item = &NightId>> {
         self.obs_index_by_night
             .as_ref()
             .map(|night_map| night_map.keys().collect::<Vec<_>>().into_par_iter())
@@ -143,7 +145,7 @@ impl ObsDatasetIndex {
     pub(crate) fn par_iter_traj_obs_index(
         &self,
         traj_id: impl Into<TrajId>,
-    ) -> Option<impl ParallelIterator<Item = ObsIndex> + '_> {
+    ) -> Option<impl IndexedParallelIterator<Item = ObsIndex> + '_> {
         self.get_by_trajectory(traj_id)
             .map(|indices| match indices {
                 ObsMapIndex::Contiguous { start, end } => {
@@ -190,7 +192,7 @@ impl ObsDatasetIndex {
     ///
     /// `Some(iterator)` if a trajectory index was built; `None` otherwise.
     /// The iteration order is unspecified (hash map key order).
-    pub(crate) fn par_iter_traj_id(&self) -> Option<impl ParallelIterator<Item = &TrajId>> {
+    pub(crate) fn par_iter_traj_id(&self) -> Option<impl IndexedParallelIterator<Item = &TrajId>> {
         self.obs_index_by_trajectory
             .as_ref()
             .map(|traj_map| traj_map.keys().collect::<Vec<_>>().into_par_iter())
@@ -204,7 +206,7 @@ impl ObsDataset {
     ///
     /// `Some(iterator)` if the dataset was built with a night index; `None` otherwise.
     /// The iteration order is unspecified.
-    pub fn par_iter_night_id(&self) -> Option<impl ParallelIterator<Item = &NightId>> {
+    pub fn par_iter_night_id(&self) -> Option<impl IndexedParallelIterator<Item = &NightId>> {
         self.index.par_iter_night_id()
     }
 
@@ -221,7 +223,7 @@ impl ObsDataset {
     /// # Returns
     ///
     /// An iterator yielding `&Observation` for each observation in insertion order.
-    pub fn par_iter_observations(&self) -> impl ParallelIterator<Item = &Observation> {
+    pub fn par_iter_observations(&self) -> impl IndexedParallelIterator<Item = &Observation> {
         self.observations.par_iter()
     }
 
@@ -266,7 +268,7 @@ impl ObsDataset {
     pub fn par_iter_night_observations(
         &self,
         night_id: &NightId,
-    ) -> Option<impl ParallelIterator<Item = &Observation> + '_> {
+    ) -> Option<impl IndexedParallelIterator<Item = &Observation> + '_> {
         self.index
             .par_iter_night_obs_index(night_id)
             .map(|indices| indices.map(|idx| &self.observations[idx]))
@@ -310,7 +312,7 @@ impl ObsDataset {
     ///
     /// `Some(iterator)` if the dataset was built with a trajectory index; `None` otherwise.
     /// The iteration order is unspecified.
-    pub fn par_iter_traj_id(&self) -> Option<impl ParallelIterator<Item = &TrajId>> {
+    pub fn par_iter_traj_id(&self) -> Option<impl IndexedParallelIterator<Item = &TrajId>> {
         self.index.par_iter_traj_id()
     }
 
@@ -334,7 +336,7 @@ impl ObsDataset {
     pub fn par_iter_trajectory_observations(
         &self,
         traj_id: impl Into<TrajId>,
-    ) -> Option<impl ParallelIterator<Item = &Observation>> {
+    ) -> Option<impl IndexedParallelIterator<Item = &Observation>> {
         self.index
             .par_iter_traj_obs_index(traj_id)
             .map(|indices| indices.map(|idx| &self.observations[idx]))
@@ -406,21 +408,25 @@ impl ObsDataset {
     /// `Err(ObsDatasetError::MpcCatalogueLoadError)` if the MPC observatory catalogue could not be loaded, which prevents access to MPC-coded observers.
     pub fn par_iter_observer(
         &self,
-    ) -> Result<impl ParallelIterator<Item = (ObserverId, &Observer)>, ObsDatasetError> {
-        let mpc_iter = self
+    ) -> Result<impl IndexedParallelIterator<Item = (ObserverId, &Observer)>, ObsDatasetError> {
+        // Collect MPC observers into a Vec to get a stable, indexed iterator.
+        let mpc_vec: Vec<_> = self
             .observer_dataset
             .mpc_observers()?
-            .par_iter()
-            .map(|(code, obs)| (ObserverId::MpcCode(*code), obs));
+            .iter()
+            .map(|(code, obs)| (ObserverId::MpcCode(*code), obs))
+            .collect();
 
-        let custom_observer_iter = self
+        let mpc_iter = mpc_vec.into_par_iter();
+
+        let custom_iter = self
             .observer_dataset
             .custom_observers
             .par_iter()
             .enumerate()
             .map(|(idx, obs)| (ObserverId::IntId(idx), obs));
 
-        Ok(mpc_iter.chain(custom_observer_iter))
+        Ok(mpc_iter.chain(custom_iter))
     }
 }
 
