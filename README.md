@@ -201,6 +201,40 @@ let cov = a.to_cartesian_cov();
 let recovered = cov.to_equatorial();
 ```
 
+### Ecliptic coordinates
+
+`EclipticCoord` stores an ecliptic sky position $(\lambda, \beta)$ with
+marginal 1-σ uncertainties in **radians**. `EclipticCoordCov` additionally
+carries the full 2×2 covariance $\Sigma_{\lambda\beta}$, including the
+longitude–latitude cross-term. Covariance is propagated through the J2000.0
+obliquity rotation $\varepsilon = 23.4393°$ via first-order linearisation.
+
+```rust
+use photom::coordinates::equatorial::{EquCoord, EquCoordCov};
+use photom::coordinates::ecliptic::{EclipticCoord, EclipticCoordCov};
+
+// Position-only: uncertainties are discarded.
+let eq = EquCoord::from_degrees(83.82, 0.0, 22.01, 0.0); // near Crab Nebula
+let ecl = EclipticCoord::from(eq);
+let (lon_deg, lat_deg) = ecl.to_degrees();
+
+// Inverse conversion back to equatorial.
+let back: EquCoord = ecl.into();
+
+// Full covariance propagation (1 arcsec errors).
+let eq_with_err = EquCoord::from_degrees(83.82, 1.0 / 3600.0, 22.01, 1.0 / 3600.0);
+let eq_cov = EquCoordCov::from_equ(eq_with_err);
+let ecl_cov = EclipticCoordCov::from(eq_cov);
+
+// Marginal 1-σ errors and full 2×2 covariance in the ecliptic frame.
+let sigma_lon = ecl_cov.coord.lon_error;
+let sigma_lat = ecl_cov.coord.lat_error;
+let cov_lon_lat = ecl_cov.cov.xy; // off-diagonal correlation term
+
+// Round-trip back to equatorial covariance.
+let eq_cov2 = EquCoordCov::from(ecl_cov);
+```
+
 ### 2-D covariance on the tangent plane
 
 `Cov2` is a compact symmetric 2×2 covariance matrix for astrometric error
