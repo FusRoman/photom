@@ -1,11 +1,15 @@
 //! Celestial coordinate types and coordinate-system conversions.
 //!
-//! Four sub-modules cover the full chain from raw sky positions through
+//! Five sub-modules cover the full chain from raw sky positions through
 //! covariance propagation to tangent-plane projection:
 //!
 //! - [`equatorial`] — [`equatorial::EquCoord`]: equatorial sky position (RA, Dec) with
 //!   1-σ astrometric uncertainties, Vincenty angular separation, spherical midpoint,
 //!   and covariance propagation to Cartesian coordinates.
+//! - [`ecliptic`] — [`ecliptic::EclipticCoord`]: ecliptic sky position (λ, β) with
+//!   1-σ astrometric uncertainties; [`ecliptic::EclipticCoordCov`]: position bundled
+//!   with a 2×2 covariance matrix and full covariance-propagating conversions to and
+//!   from equatorial coordinates via $R_x(\varepsilon)$.
 //! - [`cartesian`] — [`cartesian::CartesianCoord`]: Cartesian unit-sphere position;
 //!   [`cartesian::CartesianCoordCov`]: position bundled with a full 3×3 covariance matrix
 //!   and inverse propagation back to equatorial coordinates.
@@ -24,14 +28,16 @@
 //! need to be preserved:
 //!
 //! - **Lossless (position only):** [`From`] impls convert between
-//!   [`equatorial::EquCoord`] and [`cartesian::CartesianCoord`] in either direction.
+//!   [`equatorial::EquCoord`] and [`cartesian::CartesianCoord`] in either direction,
+//!   and between [`equatorial::EquCoord`] and [`ecliptic::EclipticCoord`].
 //!   Uncertainties are discarded on the forward path and set to zero on the inverse
 //!   path.
-//! - **Covariance-propagating:** [`equatorial::EquCoordCov::to_cartesian_cov`] maps
-//!   equatorial coordinates with a full 2×2 covariance to [`cartesian::CartesianCoordCov`]
-//!   via a first-order Jacobian propagation. The reverse direction is provided by
-//!   [`cartesian::CartesianCoordCov::to_equatorial_cov`], which back-propagates the
-//!   full 3×3 covariance and returns an [`equatorial::EquCoordCov`].
+//! - **Covariance-propagating:** [`From`] impls between
+//!   [`equatorial::EquCoordCov`] and [`ecliptic::EclipticCoordCov`] propagate the
+//!   full 2×2 covariance via a first-order Jacobian through the obliquity rotation
+//!   $R_x(\varepsilon)$. [`equatorial::EquCoordCov::to_cartesian_cov`] maps equatorial
+//!   coordinates to [`cartesian::CartesianCoordCov`]; the reverse direction is provided
+//!   by [`cartesian::CartesianCoordCov::to_equatorial_cov`].
 //!
 //! ## Typical workflow
 //!
@@ -43,6 +49,10 @@
 //!    ▼                        ▼
 //! CartesianCoordCov  ◄──(From)── EquCoordCov
 //!
+//! EquCoord      ◄──(From)──►  EclipticCoord
+//!    │                              │
+//! EquCoordCov  ◄──(From)──►  EclipticCoordCov
+//!
 //! EquCoord  ──(TangentPlane::project)──►  TangentPoint
 //!    ▲                                         │
 //!    └──────────(TangentPoint::unproject)──────┘
@@ -51,6 +61,7 @@
 pub mod cartesian;
 pub mod cov2;
 pub mod cov3;
+pub mod ecliptic;
 pub mod equatorial;
 pub mod gnomonic_projection;
 
@@ -122,3 +133,22 @@ const NORM_MIN: f64 = 1e-16;
 ///
 /// This value is not physically meaningful; it's a **numerical safety floor**.
 const INV_COSC_MIN: f64 = 1e-12;
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+/// J2000.0 obliquity of the ecliptic in radians.
+///
+/// $\varepsilon = 23.439\,291\,1° \times \pi / 180$
+pub const OBLIQUITY_J2000: f64 = 23.439_291_1_f64 * std::f64::consts::PI / 180.0;
+
+/// Precomputed $\sin\varepsilon$ for J2000.0.
+const SIN_OBL: f64 = 0.397_777_155_931_913_7;
+
+/// Precomputed $\cos\varepsilon$ for J2000.0.
+const COS_OBL: f64 = 0.917_482_137_086_962_1;
+
+/// Numerical floor on $r_{xy} = \sqrt{x_e^2 + y_e^2}$ applied when computing
+/// the Jacobian near the ecliptic poles.
+const RXY_MIN: f64 = 1e-12;

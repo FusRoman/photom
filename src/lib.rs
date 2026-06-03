@@ -41,8 +41,10 @@
 //! |--------|-------------|
 //! | [`coordinates`] | Celestial coordinate types and coordinate-system conversions |
 //! | [`coordinates::equatorial`] | [`coordinates::equatorial::EquCoord`] — equatorial sky position (RA, Dec) with 1-σ uncertainties, Vincenty angular separation, spherical midpoint, and covariance propagation |
+//! | [`coordinates::ecliptic`] | [`coordinates::ecliptic::EclipticCoord`] / [`coordinates::ecliptic::EclipticCoordCov`] — ecliptic longitude/latitude with marginal 1-σ errors or full 2×2 covariance; `From` impls for round-trip conversion with equatorial types |
 //! | [`coordinates::cartesian`] | [`coordinates::cartesian::CartesianCoord`] / [`coordinates::cartesian::CartesianCoordCov`] — Cartesian unit-sphere position with optional 3×3 covariance and inverse propagation back to equatorial coordinates |
 //! | [`coordinates::cov2`] | [`coordinates::cov2::Cov2`] — symmetric 2×2 covariance matrix for tangent-plane error ellipses; eigenvalues, Mahalanobis distance, and isotropic inflation |
+//! | [`coordinates::cov3`] | [`coordinates::cov3::Cov3`] — symmetric 3×3 covariance matrix for Cartesian position uncertainty; bilinear forms and Jacobian propagation to 2D |
 //! | [`coordinates::gnomonic_projection`] | [`coordinates::gnomonic_projection::TangentPlane`] / [`coordinates::gnomonic_projection::TangentPoint`] / [`coordinates::gnomonic_projection::TangentVec`] — gnomonic (tangent-plane) projection between equatorial sky coordinates and a local 2-D Cartesian frame |
 //! | [`photometry`] | Photometric measurement types: apparent magnitude, uncertainty, and bandpass filter ([`photometry::Photometry`], [`photometry::Filter`]) |
 //! | [`observation_dataset`] | Core observation types ([`observation_dataset::observation::Observation`], [`observation_dataset::ObsDataset`]) |
@@ -297,6 +299,47 @@
 //! returns a [`coordinates::cartesian::CartesianCoordCov`] containing the full
 //! 3×3 covariance matrix. The inverse conversion is
 //! [`coordinates::cartesian::CartesianCoordCov::to_equatorial_cov`].
+//!
+//! ## Ecliptic coordinates
+//!
+//! [`coordinates::ecliptic::EclipticCoord`] stores an ecliptic sky position
+//! $(\lambda, \beta)$ with marginal 1-σ uncertainties, all in **radians**.
+//! [`coordinates::ecliptic::EclipticCoordCov`] additionally carries the full
+//! 2×2 covariance matrix $\Sigma_{\lambda\beta}$, including the
+//! longitude–latitude cross-term.
+//!
+//! Conversion to and from equatorial types is provided by `From` implementations.
+//! Covariance is propagated via first-order linearisation through the obliquity
+//! rotation $R_x(\varepsilon)$ at the J2000.0 value $\varepsilon = 23.4393°$.
+//!
+//! ```rust
+//! use photom::coordinates::equatorial::{EquCoord, EquCoordCov};
+//! use photom::coordinates::ecliptic::{EclipticCoord, EclipticCoordCov};
+//! use photom::coordinates::cov2::Cov2;
+//!
+//! // Position-only conversion (uncertainties discarded).
+//! let eq = EquCoord::from_degrees(83.82, 0.0, 22.01, 0.0); // near Crab Nebula
+//! let ecl = EclipticCoord::from(eq);
+//! let (lon_deg, lat_deg) = ecl.to_degrees();
+//!
+//! // Inverse conversion.
+//! let back: EquCoord = ecl.into();
+//!
+//! // Full covariance propagation.
+//! let eq_with_err = EquCoord::from_degrees(83.82, 1.0 / 3600.0, 22.01, 1.0 / 3600.0);
+//! let eq_cov = EquCoordCov::from_equ(eq_with_err);
+//! let ecl_cov = EclipticCoordCov::from(eq_cov);
+//!
+//! // Marginal 1-σ uncertainties in the ecliptic frame.
+//! let sigma_lon = ecl_cov.coord.lon_error;
+//! let sigma_lat = ecl_cov.coord.lat_error;
+//!
+//! // The full 2×2 covariance (includes the lon–lat correlation term).
+//! let cov: &Cov2 = &ecl_cov.cov;
+//!
+//! // Round-trip back to equatorial.
+//! let eq_cov2 = EquCoordCov::from(ecl_cov);
+//! ```
 //!
 //! ## 2-D covariance on the tangent plane
 //!
