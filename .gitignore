@@ -5,3 +5,4 @@ proptest-regressions/
 format_ztf_data.py
 ztf_cleaned.parquet
 ztf_dataset_2025.parquet
+run_semver.sh

@@ -546,6 +546,6 @@ mod mpc_80_col_tests {
 
         assert_eq!(obs.photometry.filter, Filter::String("V".to_string()));
         assert_relative_eq!(obs.mjd_tt, 55_089.235_096_018_51, max_relative = 1e-10);
-        assert_eq!(obs.observer, Some(ObserverId::MpcCode([b'G', b'9', b'6'])));
+        assert_eq!(obs.observer, Some(ObserverId::MpcCode(*b"G96")));
     }
 }
