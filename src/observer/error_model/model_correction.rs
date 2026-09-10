@@ -1,6 +1,6 @@
 use crate::{
     constants::ARCSEC_TO_RAD,
-    observation_dataset::ObsDataset,
+    observation_dataset::{ObsDataset, index::ObsMapIndex},
     observer::{
         dataset::ObserverId,
         error_model::{ObsErrorModel, get_bias_rms},
@@ -90,20 +90,44 @@ pub trait ModelCorrection {
 
     /// Apply a batch RMS correction to the astrometric uncertainties of each observation.
     ///
-    /// Observations from the same observer that are closely spaced in time are
-    /// grouped into batches. A scaling factor derived from the batch size is then
-    /// applied to the `ra_error` and `dec_error` of every observation in the batch.
+    /// Astrometric errors of several observations of the **same object** taken in
+    /// quick succession from the **same site** are strongly correlated: they
+    /// share the same field, the same astrometric plate solution and the same
+    /// reference stars. Treating such observations as statistically independent
+    /// overstates the amount of information they carry. This method compensates
+    /// for that by inflating the reported `ra_error` and `dec_error` of every
+    /// observation in a batch by a factor derived from the batch size.
     ///
     /// ### Grouping
     ///
-    /// Two observations belong to the same batch if and only if:
+    /// Batches are formed **within a single trajectory** — never across
+    /// trajectories. Two observations belong to the same batch if and only if
+    /// all of the following hold:
     ///
+    /// - they belong to the **same trajectory** (same key in the trajectory
+    ///   index), **and**
     /// - they share the same `observer` identity, **and**
-    /// - the time gap between consecutive observations (sorted by MJD) is strictly
-    ///   less than `gap_max`.
+    /// - once the trajectory's observations are ordered by epoch, the time gap
+    ///   between the two consecutive observations is not greater than `gap_max`.
     ///
-    /// Observations from different observers are **always** grouped independently,
-    /// even when their timestamps interleave in time.
+    /// The batch size `n` used in the correction factor is therefore the number
+    /// of observations *of that one object*, from one site, within one
+    /// `gap_max` window. It does **not** depend on how many unrelated
+    /// trajectories happen to be loaded in the same dataset, nor on how many
+    /// other observations the site recorded in the same night.
+    ///
+    /// An observation that is listed under more than one trajectory (for example
+    /// when trajectories are competing linkage hypotheses) is assigned to a
+    /// single batch and corrected exactly once.
+    ///
+    /// ### Fallback when no trajectory index is present
+    ///
+    /// The correction requires the trajectory index (`traj_id`) to know which
+    /// observations belong to the same object. When the dataset was built
+    /// without it, that information is unavailable and there is no safe way to
+    /// form batches: every observation is treated as its own batch of size 1,
+    /// which makes the correction a **no-op** (factor `sqrt(1) = 1`). Attach a
+    /// trajectory index at ingestion time to enable the correction.
     ///
     /// ### Correction factor
     ///
@@ -115,15 +139,22 @@ pub trait ModelCorrection {
     /// | `VFCC17` | $n \geq 5$| $\sqrt{n \times 0.25}$   |
     /// | `VFCC17` | $n < 5$   | $\sqrt{n}$               |
     ///
+    /// The `VFCC17` branch encodes the fact that the correlation saturates:
+    /// beyond a handful of observations, adding more does not keep reducing the
+    /// effective information proportionally.
+    ///
     /// Both `ra_error` and `dec_error` are multiplied by the same factor:
     ///
-    /// $$\sigma' = \sigma \times \sqrt{n}$$
+    /// $$\sigma' = \sigma \times \text{factor}(n)$$
+    ///
+    /// A batch of size 1 always yields factor 1 and leaves its observation
+    /// untouched.
     ///
     /// # Arguments
     ///
     /// - `gap_max` – Maximum time gap (days) between two consecutive observations
-    ///   of the same observer for them to be considered part of the same batch.
-    ///   A typical value is $8/24 \approx 0.333$ days (8 hours).
+    ///   of the same object and observer for them to be considered part of the
+    ///   same batch. A typical value is $8/24 \approx 0.333$ days (8 hours).
     ///
     /// # Returns
     ///
@@ -174,7 +205,7 @@ impl ModelCorrection for ObsDataset {
 
     fn apply_batch_rms_correction(mut self, gap_max: f64) -> Self {
         let error_model = match self.observer_dataset.mpc_error_model {
-            Some(ref em) => em,
+            Some(em) => em,
             None => return self,
         };
 
@@ -183,55 +214,88 @@ impl ModelCorrection for ObsDataset {
             return self;
         }
 
-        // Single allocation: sort indices by (observer, mjd_tt).
+        // The correction needs to know which observations belong to the same
+        // object. Without a trajectory index that information is missing, so
+        // batching cannot be done safely and the method degrades to a no-op.
+        let Some(traj_map) = self.index.obs_index_by_trajectory.as_ref() else {
+            return self;
+        };
+
+        // ── Assign every observation to a correlation group ──────────────────
+        //
+        // A "group" is the set of observations that are *allowed* to share a
+        // batch, i.e. the observations of one trajectory. Batches are then
+        // formed strictly inside a group by the (observer, gap_max) rule; they
+        // never straddle a group boundary.
+        //
+        // Group ids in `[0, n_obs)` are singleton groups (one per observation);
+        // an observation keeps its singleton id unless the trajectory index
+        // places it in a shared group. Shared group ids start at `n_obs` so
+        // they can never collide with a singleton id. An observation listed
+        // under several trajectories keeps the last shared id written and is
+        // consequently corrected exactly once.
+        let mut group_of: Vec<usize> = (0..n_obs).collect();
+        for (traj_rank, entry) in traj_map.values().enumerate() {
+            let group_id = n_obs + traj_rank;
+            match entry {
+                ObsMapIndex::Contiguous { start, end } => {
+                    for slot in &mut group_of[*start..*end] {
+                        *slot = group_id;
+                    }
+                }
+                ObsMapIndex::Split(indices) => {
+                    for &idx in indices {
+                        group_of[idx] = group_id;
+                    }
+                }
+            }
+        }
+
+        // Single allocation: sort indices by (group, observer, mjd_tt) so that
+        // every batch is a contiguous slice of `sorted_indices`.
         let mut sorted_indices: Vec<usize> = (0..n_obs).collect();
         sorted_indices.sort_unstable_by(|&a, &b| {
             let oa = &self.observations[a];
             let ob = &self.observations[b];
-            oa.observer
-                .cmp(&ob.observer)
+            group_of[a]
+                .cmp(&group_of[b])
+                .then_with(|| oa.observer.cmp(&ob.observer))
                 .then_with(|| oa.mjd_tt.partial_cmp(&ob.mjd_tt).unwrap())
         });
 
-        let mut i = 0;
-        while i < n_obs {
-            let current_observer = self.observations[sorted_indices[i]].observer;
-            let mut batch_start = i;
-            let mut j = i + 1;
+        // ── Walk the sorted indices, flushing one batch at a time ────────────
+        //
+        // A batch ends at `j` when the run of observations that started at
+        // `batch_start` cannot be extended: end of data, a change of group, a
+        // change of observer, or a time gap greater than `gap_max`.
+        let mut batch_start = 0usize;
+        for j in 1..=n_obs {
+            let boundary = j == n_obs || {
+                let prev = &self.observations[sorted_indices[j - 1]];
+                let curr = &self.observations[sorted_indices[j]];
+                group_of[sorted_indices[j - 1]] != group_of[sorted_indices[j]]
+                    || prev.observer != curr.observer
+                    || (curr.mjd_tt - prev.mjd_tt) > gap_max
+            };
 
-            // Walk all observations belonging to current_observer.
-            loop {
-                let end_of_observer =
-                    j == n_obs || self.observations[sorted_indices[j]].observer != current_observer;
-
-                let end_of_batch = !end_of_observer && {
-                    let prev_time = self.observations[sorted_indices[j - 1]].mjd_tt;
-                    let curr_time = self.observations[sorted_indices[j]].mjd_tt;
-                    (curr_time - prev_time) > gap_max
-                };
-
-                if end_of_observer || end_of_batch {
-                    // Flush batch [batch_start, j).
-                    let n = j - batch_start;
-                    let factor = match error_model {
-                        ObsErrorModel::VFCC17 if n >= 5 => (n as f64 * 0.25).sqrt(),
-                        _ => (n as f64).sqrt(),
-                    };
-                    for &idx in sorted_indices[batch_start..j].iter() {
-                        self.observations[idx].equ_coord.ra_error *= factor;
-                        self.observations[idx].equ_coord.dec_error *= factor;
-                    }
-                    batch_start = j;
-                }
-
-                if end_of_observer {
-                    break;
-                }
-
-                j += 1;
+            if !boundary {
+                continue;
             }
 
-            i = j;
+            let n = j - batch_start;
+            let factor = match error_model {
+                ObsErrorModel::VFCC17 if n >= 5 => (n as f64 * 0.25).sqrt(),
+                _ => (n as f64).sqrt(),
+            };
+            // Skip the write-back for size-1 batches (factor == 1.0), which are
+            // the overwhelming majority once grouping is per-object.
+            if factor != 1.0 {
+                for &idx in &sorted_indices[batch_start..j] {
+                    self.observations[idx].equ_coord.ra_error *= factor;
+                    self.observations[idx].equ_coord.dec_error *= factor;
+                }
+            }
+            batch_start = j;
         }
 
         self
@@ -245,8 +309,13 @@ mod test_batch_rms_correction {
 
     use super::*;
     use crate::{
+        TrajId,
         coordinates::equatorial::EquCoord,
-        observation_dataset::{ObsDataset, observation::ObservationInput},
+        observation_dataset::{
+            ObsDataset,
+            index::{ObsMapIndex, TrajIndexMap},
+            observation::ObservationInput,
+        },
         observer::{dataset::ObserverId, error_model::ObsErrorModel},
         photometry::{Filter, Photometry},
     };
@@ -272,9 +341,39 @@ mod test_batch_rms_correction {
         }
     }
 
-    /// Wrap a `Vec<ObservationInput>` into an owned `ObsDataset` (no error model, no index).
+    /// Wrap a `Vec<ObservationInput>` into an owned `ObsDataset` in which **all**
+    /// observations belong to a single trajectory.
+    ///
+    /// `apply_batch_rms_correction` only forms batches inside a trajectory, so a
+    /// trajectory index is required for it to do anything. Placing every
+    /// observation in one trajectory isolates the observer/`gap_max` batching
+    /// logic, which is what most tests in this module exercise.
     fn dataset(observations: Vec<ObservationInput>) -> ObsDataset {
+        let all_indices: Vec<usize> = (0..observations.len()).collect();
+        let mut traj_map = TrajIndexMap::new();
+        traj_map.insert(TrajId::Int(0), ObsMapIndex::Split(all_indices));
+        ObsDataset::new(observations, vec![], None, None, Some(traj_map))
+    }
+
+    /// Wrap a `Vec<ObservationInput>` into an `ObsDataset` **without** a
+    /// trajectory index, used to exercise the documented no-op fallback.
+    fn dataset_no_traj_index(observations: Vec<ObservationInput>) -> ObsDataset {
         ObsDataset::new(observations, vec![], None, None, None)
+    }
+
+    /// Wrap a `Vec<ObservationInput>` into an `ObsDataset` whose trajectory index
+    /// is built from an explicit `(TrajId, observation positions)` mapping.
+    ///
+    /// Positions are zero-based indices into `observations`.
+    fn dataset_with_trajectories(
+        observations: Vec<ObservationInput>,
+        trajectories: &[(u32, &[usize])],
+    ) -> ObsDataset {
+        let mut traj_map = TrajIndexMap::new();
+        for (traj_id, indices) in trajectories {
+            traj_map.insert(TrajId::Int(*traj_id), ObsMapIndex::Split(indices.to_vec()));
+        }
+        ObsDataset::new(observations, vec![], None, None, Some(traj_map))
     }
 
     #[test]
@@ -372,6 +471,226 @@ mod test_batch_rms_correction {
 
         let corrected = ds
             .with_error_model(ObsErrorModel::FCCT14)
+            .apply_batch_rms_correction(8.0 / 24.0);
+
+        for ob in corrected.iter_observations() {
+            assert_ulps_eq!(ob.equ_coord().ra_error, 1e-6, max_ulps = 2);
+            assert_ulps_eq!(ob.equ_coord().dec_error, 2e-6, max_ulps = 2);
+        }
+    }
+
+    // ── per-object grouping (regression tests for the batch-size bug) ─────────
+
+    /// Return the `ra_error` of every observation, keyed by observation id.
+    fn ra_errors_by_id(ds: &ObsDataset) -> std::collections::HashMap<u64, f64> {
+        ds.iter_observations()
+            .map(|ob| (*ob.id(), ob.equ_coord().ra_error))
+            .collect()
+    }
+
+    /// The inflation factor applied to a trajectory must depend only on that
+    /// trajectory's own observations, never on how many unrelated trajectories
+    /// share the dataset.
+    ///
+    /// The same object is corrected first on its own, then buried among 200
+    /// other trajectories all observed by the same site on the same night. Its
+    /// corrected errors must come out identical in both runs.
+    #[test]
+    fn batch_inflation_does_not_depend_on_dataset_size() {
+        let observer = Some(ObserverId::MpcCode(*b"Z01"));
+        let base = 59000.0;
+
+        // Target object: 3 observations, one night, one site.
+        let target = || {
+            vec![
+                obs(0, observer, base),
+                obs(1, observer, base + 0.01),
+                obs(2, observer, base + 0.02),
+            ]
+        };
+
+        // Run 1: the object alone.
+        let small = dataset_with_trajectories(target(), &[(0, &[0, 1, 2])])
+            .with_error_model(ObsErrorModel::VFCC17)
+            .apply_batch_rms_correction(8.0 / 24.0);
+
+        // Run 2: the same object plus 200 other trajectories, 4 observations
+        // each, interleaved in time and all from the same site and night.
+        let n_other = 200;
+        let mut all = target();
+        let mut trajectories: Vec<(u32, Vec<usize>)> = vec![(0, vec![0, 1, 2])];
+        let mut next_id = 3u64;
+        for t in 0..n_other {
+            let mut idx = Vec::new();
+            for k in 0..4 {
+                idx.push(all.len());
+                all.push(obs(
+                    next_id,
+                    observer,
+                    base + 0.001 * (t as f64) + 0.0001 * (k as f64),
+                ));
+                next_id += 1;
+            }
+            trajectories.push((t as u32 + 1, idx));
+        }
+        let traj_refs: Vec<(u32, &[usize])> = trajectories
+            .iter()
+            .map(|(id, v)| (*id, v.as_slice()))
+            .collect();
+        let large = dataset_with_trajectories(all, &traj_refs)
+            .with_error_model(ObsErrorModel::VFCC17)
+            .apply_batch_rms_correction(8.0 / 24.0);
+
+        let small_err = ra_errors_by_id(&small);
+        let large_err = ra_errors_by_id(&large);
+
+        // n = 3 < 5 → factor sqrt(3) in both runs.
+        let expected = 1e-6 * (3.0_f64).sqrt();
+        for id in [0, 1, 2] {
+            assert_ulps_eq!(small_err[&id], expected, max_ulps = 2);
+            assert_ulps_eq!(large_err[&id], expected, max_ulps = 2);
+            assert_ulps_eq!(small_err[&id], large_err[&id], max_ulps = 2);
+        }
+    }
+
+    /// For an object observed `n` times from one site within one night, the
+    /// factor must be exactly `sqrt(n)` (n < 5) or `sqrt(n / 4)` (n >= 5, under
+    /// VFCC17), independent of the rest of the dataset.
+    #[test]
+    fn factor_equals_sqrt_of_same_object_count() {
+        let observer = Some(ObserverId::MpcCode(*b"Z02"));
+        let base = 59000.0;
+
+        for n in 1usize..=8 {
+            // The object under test.
+            let mut observations: Vec<ObservationInput> = (0..n)
+                .map(|k| obs(k as u64, observer, base + 0.005 * k as f64))
+                .collect();
+            let target_idx: Vec<usize> = (0..n).collect();
+
+            // A second, unrelated object with many observations the same night.
+            let other_start = observations.len();
+            for k in 0..20 {
+                observations.push(obs(1000 + k as u64, observer, base + 0.005 * k as f64));
+            }
+            let other_idx: Vec<usize> = (other_start..observations.len()).collect();
+
+            let corrected =
+                dataset_with_trajectories(observations, &[(0, &target_idx), (1, &other_idx)])
+                    .with_error_model(ObsErrorModel::VFCC17)
+                    .apply_batch_rms_correction(8.0 / 24.0);
+
+            let expected_factor = if n >= 5 {
+                (n as f64 * 0.25).sqrt()
+            } else {
+                (n as f64).sqrt()
+            };
+            let err = ra_errors_by_id(&corrected);
+            for k in 0..n as u64 {
+                assert_ulps_eq!(err[&k], 1e-6 * expected_factor, max_ulps = 2);
+            }
+        }
+    }
+
+    /// Two observations of the *same* object from the same site, but far apart
+    /// in time, must not share a batch: the `gap_max` split still applies inside
+    /// a trajectory.
+    #[test]
+    fn gap_split_applies_within_a_trajectory() {
+        let observer = Some(ObserverId::MpcCode(*b"Z03"));
+        let ds = dataset_with_trajectories(
+            vec![
+                obs(0, observer, 59000.0),
+                obs(1, observer, 59000.1), // same night → batch with id 0
+                obs(2, observer, 59002.0), // > gap_max later → its own batch
+            ],
+            &[(0, &[0, 1, 2])],
+        );
+
+        let corrected = ds
+            .with_error_model(ObsErrorModel::FCCT14)
+            .apply_batch_rms_correction(8.0 / 24.0);
+
+        let err = ra_errors_by_id(&corrected);
+        assert_ulps_eq!(err[&0], 1e-6 * (2.0_f64).sqrt(), max_ulps = 2);
+        assert_ulps_eq!(err[&1], 1e-6 * (2.0_f64).sqrt(), max_ulps = 2);
+        assert_ulps_eq!(err[&2], 1e-6, max_ulps = 2);
+    }
+
+    /// Observations of one object taken from two different sites in the same
+    /// night are batched per site, not merged.
+    #[test]
+    fn distinct_observers_within_a_trajectory_are_not_merged() {
+        let obs_a = Some(ObserverId::MpcCode(*b"Z04"));
+        let obs_b = Some(ObserverId::MpcCode(*b"Z05"));
+        let ds = dataset_with_trajectories(
+            vec![
+                obs(0, obs_a, 59000.00),
+                obs(1, obs_a, 59000.01),
+                obs(2, obs_a, 59000.02), // site A: batch of 3
+                obs(3, obs_b, 59000.03),
+                obs(4, obs_b, 59000.04), // site B: batch of 2
+            ],
+            &[(0, &[0, 1, 2, 3, 4])],
+        );
+
+        let corrected = ds
+            .with_error_model(ObsErrorModel::FCCT14)
+            .apply_batch_rms_correction(8.0 / 24.0);
+
+        let err = ra_errors_by_id(&corrected);
+        for id in [0, 1, 2] {
+            assert_ulps_eq!(err[&id], 1e-6 * (3.0_f64).sqrt(), max_ulps = 2);
+        }
+        for id in [3, 4] {
+            assert_ulps_eq!(err[&id], 1e-6 * (2.0_f64).sqrt(), max_ulps = 2);
+        }
+    }
+
+    /// An observation listed under two trajectories is corrected exactly once
+    /// (single multiplication by the factor of one batch, not both).
+    #[test]
+    fn observation_in_two_trajectories_is_corrected_once() {
+        let observer = Some(ObserverId::MpcCode(*b"Z06"));
+        // Observation 2 is shared between trajectory 0 and trajectory 1.
+        let ds = dataset_with_trajectories(
+            vec![
+                obs(0, observer, 59000.00),
+                obs(1, observer, 59000.01),
+                obs(2, observer, 59000.02), // shared
+                obs(3, observer, 59000.03),
+            ],
+            &[(0, &[0, 1, 2]), (1, &[2, 3])],
+        );
+
+        let corrected = ds
+            .with_error_model(ObsErrorModel::FCCT14)
+            .apply_batch_rms_correction(8.0 / 24.0);
+
+        let err = ra_errors_by_id(&corrected);
+        // Whichever single group obs 2 lands in, its error is 1e-6 times the
+        // sqrt of that group's size (2 or 3): never the product of both.
+        let f2 = (2.0_f64).sqrt();
+        let f3 = (3.0_f64).sqrt();
+        assert!(
+            (err[&2] - 1e-6 * f2).abs() < 1e-14 || (err[&2] - 1e-6 * f3).abs() < 1e-14,
+            "obs 2 corrected more than once: {}",
+            err[&2]
+        );
+    }
+
+    /// Without a trajectory index the correction cannot identify same-object
+    /// batches and must degrade to a no-op, even for many same-site
+    /// observations packed into one night.
+    #[test]
+    fn no_trajectory_index_is_a_noop() {
+        let observer = Some(ObserverId::MpcCode(*b"Z07"));
+        let observations: Vec<ObservationInput> = (0..50)
+            .map(|k| obs(k, observer, 59000.0 + 0.001 * k as f64))
+            .collect();
+
+        let corrected = dataset_no_traj_index(observations)
+            .with_error_model(ObsErrorModel::VFCC17)
             .apply_batch_rms_correction(8.0 / 24.0);
 
         for ob in corrected.iter_observations() {
