@@ -292,6 +292,30 @@ let v = TangentVec { dx: 1e-3, dy: -1e-3 };
 let shifted = tp + v;
 ```
 
+## Examples
+
+The [`examples/`](examples/) directory contains a set of small, self-contained, runnable programs, each focused on a single use case. They are meant to be read in order and are a good starting point for learning how to interact with the crate hands-on:
+
+| Example | What it shows |
+|---------|----------------|
+| [`01_basic_dataset`](examples/01_basic_dataset.rs) | Building an `ObsDataset` by hand: `Observer`, `ObservationInput`, `push_observer`/`push_observation`, basic lookups |
+| [`02_load_mpc80col`](examples/02_load_mpc80col.rs) | Loading observations from MPC 80-column files (`from_mpc_80_col`, `from_mpc_80_col_files`, `extend_from_mpc_80_col`) |
+| [`03_load_ades`](examples/03_load_ades.rs) | Loading observations from ADES XML files, and combining sources with `ObsDatasetBuilder` |
+| [`04_night_and_trajectory_grouping`](examples/04_night_and_trajectory_grouping.rs) | Grouping observations by trajectory, resolving alternate designations with `resolve_alias`, and why the night index is format-dependent |
+| [`05_merge_datasets`](examples/05_merge_datasets.rs) | `merge_from`, the `ObsId` collision pitfall of loading files independently, and how to avoid it |
+| [`06_observers_basics`](examples/06_observers_basics.rs) | Building custom `Observer`s (geodetic vs. parallax constructors), geodetic/geocentric readouts |
+| [`07_mpc_observer_resolution`](examples/07_mpc_observer_resolution.rs) | Lazy resolution of MPC-coded observers from the Minor Planet Center website (network + on-disk cache) |
+| [`08_coordinates_equatorial_cartesian`](examples/08_coordinates_equatorial_cartesian.rs) | `EquCoord`/`CartesianCoord`: angular separation, spherical midpoint, covariance propagation |
+| [`09_coordinates_ecliptic_and_projection`](examples/09_coordinates_ecliptic_and_projection.rs) | Ecliptic coordinates, gnomonic (tangent-plane) projection, and reading a `Cov2` as a confidence ellipse |
+| [`10_photometry_error_models`](examples/10_photometry_error_models.rs) | `Photometry`, and the two astrometric error-correction mechanisms (`apply_model_errors`, `apply_batch_rms_correction`) |
+| [`11_load_polars`](examples/11_load_polars.rs) | Loading observations from an in-memory `DataFrame`/`LazyFrame` (`from_polars`, `from_lazy`), mixed MPC-coded/custom observer resolution, and the night index the Polars backend builds automatically |
+
+Most examples need no optional feature; a few require `ades`, `mpc_80_col`, and/or `polars` to load their fixture data, as declared in `Cargo.toml`. Run any of them with:
+
+```sh
+cargo run --example 02_load_mpc80col --features mpc_80_col
+```
+
 ## DataFrame / Parquet Schema
 
 All column values for `ra`, `ra_err`, `dec`, `dec_err`, `obs_lon`, `obs_lat`, `obs_ra_acc`, and `obs_dec_acc` must be supplied in **radians**. No unit conversion is performed during ingestion.
