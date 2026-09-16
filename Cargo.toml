@@ -140,3 +140,11 @@ required-features = ["mpc_80_col"]
 [[example]]
 name = "11_load_polars"
 required-features = ["polars"]
+
+[[example]]
+name = "12_parallel_iteration"
+required-features = ["parallel", "mpc_80_col"]
+
+[[example]]
+name = "13_serde_roundtrip"
+required-features = ["serde", "mpc_80_col"]

@@ -309,8 +309,10 @@ The [`examples/`](examples/) directory contains a set of small, self-contained, 
 | [`09_coordinates_ecliptic_and_projection`](examples/09_coordinates_ecliptic_and_projection.rs) | Ecliptic coordinates, gnomonic (tangent-plane) projection, and reading a `Cov2` as a confidence ellipse |
 | [`10_photometry_error_models`](examples/10_photometry_error_models.rs) | `Photometry`, and the two astrometric error-correction mechanisms (`apply_model_errors`, `apply_batch_rms_correction`) |
 | [`11_load_polars`](examples/11_load_polars.rs) | Loading observations from an in-memory `DataFrame`/`LazyFrame` (`from_polars`, `from_lazy`), mixed MPC-coded/custom observer resolution, and the night index the Polars backend builds automatically |
+| [`12_parallel_iteration`](examples/12_parallel_iteration.rs) | The `par_iter_*`/`materialize_*_par` counterparts of the sequential accessors, via `rayon` |
+| [`13_serde_roundtrip`](examples/13_serde_roundtrip.rs) | Serialising/deserialising an `ObsDataset` with `serde_json`, and choosing the rebuilt index layout via `ObsDatasetSeed` |
 
-Most examples need no optional feature; a few require `ades`, `mpc_80_col`, and/or `polars` to load their fixture data, as declared in `Cargo.toml`. Run any of them with:
+Most examples need no optional feature; a few require `ades`, `mpc_80_col`, `polars`, `parallel`, and/or `serde` to load their fixture data, as declared in `Cargo.toml`. Run any of them with:
 
 ```sh
 cargo run --example 02_load_mpc80col --features mpc_80_col

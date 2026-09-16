@@ -105,7 +105,7 @@ jobs:
           key: examples
 
       - name: Build all examples
-        run: cargo build --examples --features ades,mpc_80_col,polars
+        run: cargo build --examples --features ades,mpc_80_col,polars,parallel,serde
 
       - name: Run examples (no optional feature required)
         run: |
@@ -127,6 +127,12 @@ jobs:
 
       - name: Run example (polars, in-memory DataFrame)
         run: cargo run --example 11_load_polars --features polars
+
+      - name: Run example (parallel iteration)
+        run: cargo run --example 12_parallel_iteration --features parallel,mpc_80_col
+
+      - name: Run example (serde round-trip)
+        run: cargo run --example 13_serde_roundtrip --features serde,mpc_80_col
 
       - name: Run example (MPC website resolution, network-dependent)
         # This example fetches the live MPC observatory table on its first
