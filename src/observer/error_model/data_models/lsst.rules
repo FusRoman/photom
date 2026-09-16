@@ -1,0 +1,143 @@
+! ============================================================================
+! LSST (Vera C. Rubin Observatory, MPC station X05) astrometric error model
+! ============================================================================
+!
+! PURPOSE
+!
+! FCCT14, CBM10 and VFCC17 (the three other models bundled with this crate)
+! all predate Rubin Observatory first light and therefore carry no entry for
+! station X05. Looking up X05 astrometric weights against any of those
+! tables falls back to their generic "ALL" catalog-default rule (e.g.
+! FCCT14's `ALL: c=cd @ 0.51, 0.40`), which overstates LSST's true
+! astrometric uncertainty by roughly an order of magnitude and makes
+! `apply_model_errors`'s `max(reported, model)` correction override LSST's
+! own (far more precise) reported uncertainties. This file provides a
+! dedicated, empirically-derived entry for X05 instead of forcing that
+! mismatch onto a literature table sourced from other instruments.
+!
+! DATA SOURCE
+!
+! Alerts were pulled from the Fink broker's `diaSource` stream (the LSST
+! Alert Production `diaSource` table, as redistributed by Fink), restricted
+! to the following fields:
+!
+!   diaSource.diaSourceId, diaSource.diaObjectId, diaSource.ra,
+!   diaSource.dec, diaSource.raErr, diaSource.decErr,
+!   diaSource.midpointMjdTai
+!
+! Coverage: 2025-10-25 to 2026-09-15 (full Fink LSST stream history at the
+! time of this analysis). Volume: 16,379,145 diaSource rows, 5,155,306
+! distinct diaObjectId, stored as ~163k Spark-partitioned Parquet shards.
+!
+! METHODOLOGY
+!
+! `diaObjectId` associates repeated `diaSource` detections that fall within a
+! fixed spatial radius of one another on the sky; it carries no information
+! on whether the underlying source is static (star, galaxy, AGN, ...) or a
+! moving solar-system object, and this dataset has no independent flag to
+! tell the two apart — known and as-yet-unrecognised moving objects can both
+! be present under some `diaObjectId` groups. In practice a moving object
+! rarely re-lands within the association radius across visits separated by
+! more than a night or two, so grouping by `diaObjectId` over the full
+! ~11-month baseline used here is expected to be dominated by genuinely
+! static sources, with a residual minority of contaminated groups. The
+! robust rejection step below (point 3) is precisely what keeps such
+! contamination from biasing the final RMS: since the true sky position of a
+! static source does not change, the scatter of its repeated detections
+! around a per-object reference position is a direct empirical measurement
+! of the LSST astrometric pipeline's positional error, without requiring any
+! external reference catalog or orbit determination — provided groups
+! dominated by real motion are identified and excluded rather than averaged
+! in.
+!
+! For every diaObjectId with at least 3 detections:
+!
+!   1. Two candidate models are fit per axis (RA, projected by cos(dec), and
+!      Dec independently), in closed form: a constant-position model (one
+!      parameter) and a linear-in-time model (position + rate, two
+!      parameters). The linear model absorbs genuine stellar proper motion
+!      or systematic centroid drift; it is adopted only when a one-degree-
+!      of-freedom F-test rejects the constant model at alpha = 0.01 (and
+!      only for objects with >= 4 detections, below which a slope cannot be
+!      trusted). 2.4% / 1.9% of eligible objects triggered the linear model
+!      on RA / Dec respectively.
+!   2. Per-point residuals (observed minus model-predicted position, in
+!      arcsec) are computed for every retained detection.
+!   3. A robust (MAD-based) 5-sigma iterative clip removes residuals
+!      inconsistent with a well-behaved single-source measurement (crowded-
+!      field blends, mismatched associations, genuine photometric/
+!      astrometric outliers). This removed 23.9% of candidate points —
+!      notably higher than a clean single-Gaussian population, indicating a
+!      non-negligible fraction of `diaObjectId` groups are not cleanly
+!      single, static point sources over a ~1 year baseline (see LIMITATIONS
+!      below).
+!   4. The final RMS per axis is the root-mean-square of the retained
+!      residuals — this is the value recorded below.
+!
+! RESULTS (arcsec, 2 significant decimals as used throughout this table)
+!
+!   objects eligible (>=3 detections): 797,114 / 5,155,306 total
+!   detections used after clipping: 8,504,533 (2,672,963 clipped, 23.9%)
+!   empirical RMS:            ra = 0.0898   dec = 0.0556
+!   self-reported (raErr/decErr) median: ra = 0.0350   dec = 0.0350
+!   pull (= residual / reported error) robust scale (MAD-sigma):
+!                              ra = 3.80     dec = 2.42
+!
+! The empirical RMS is 2-3x the self-reported median error and the pull
+! scale confirms LSST's per-alert `raErr`/`decErr` fields underestimate the
+! true positional scatter by a similar factor — so this table intentionally
+! does NOT simply reuse the self-reported median, and is far tighter than
+! the pre-Rubin literature fallback (FCCT14 ALL: 0.51, 0.40).
+!
+! LIMITATIONS
+!
+!   - `diaObjectId` is not a verified-static catalog: known or unrecognised
+!     solar-system objects may be present among the groups used here (see
+!     METHODOLOGY). Where a moving object's apparent motion across its
+!     brief window inside the association radius happens to be well fit by
+!     the linear-in-time model, it contributes to the RMS the same way a
+!     genuine proper-motion star would — which is harmless for this
+!     analysis, since the quantity being measured is the LSST centroiding
+!     pipeline's positional *precision*, not the true position of any
+!     specific source. This entry was not cross-checked against an
+!     independent, confirmed asteroid astrometry sample.
+!   - No reference-catalog breakdown is available in the source data. The
+!     entry below is keyed on catalog code "c" (rather than a specific
+!     catalog letter) because that is the fixed default `apply_model_errors`
+!     and `parse_mpc_obs_result` currently query with for every observatory
+!     (see the per-site catalog-code TODOs in `model_correction.rs` and
+!     `mpc.rs`) — a `c=*` entry would silently never be reached by either
+!     call site, since "*" is only ever queried explicitly by VFCC17-style
+!     lookups, not by the FCCT14-style cascade this file shares.
+!   - The relatively high clipped fraction (23.9%) suggests a meaningful
+!     share of `diaObjectId` associations are not clean single static
+!     sources (blending, variability, mismatched crossmatch) over the ~1
+!     year baseline; the RMS below reflects the population that remains
+!     after robust rejection of those cases.
+!   - Valid for the data collection period stated above; LSST's astrometric
+!     pipeline is expected to improve over the survey's lifetime, so this
+!     entry should be periodically re-derived from more recent data.
+!
+! REPRODUCIBILITY
+!
+! The `diaSource` fields listed under DATA SOURCE can be retrieved for any
+! date range through the Fink broker's datatransfer service
+! (https://lsst.fink-portal.org/, "Data Transfer" / API), which exports matching
+! alerts as Parquet. To re-derive this entry from a fresh export covering a
+! later period:
+!
+!   1. Request `diaSource.{diaSourceId, diaObjectId, ra, dec, raErr, decErr,
+!      midpointMjdTai}` for the desired date range via datatransfer.
+!   2. Drop rows with a null or non-positive `raErr`/`decErr`.
+!   3. Group by `diaObjectId`, keep groups with >= 3 detections.
+!   4. Per group and per axis (RA projected by cos(dec), Dec), fit the
+!      constant- and linear-in-time models in closed form and select between
+!      them with a one-degree-of-freedom F-test (alpha = 0.01, linear model
+!      only considered for groups with >= 4 detections).
+!   5. Compute per-point residuals against the selected model, apply an
+!      iterative 5-sigma MAD-based clip across all retained residuals.
+!   6. The RMS of the surviving residuals, per axis, is the new entry.
+!
+! ============================================================================
+
+X05:  c=c    @ 0.09, 0.06
