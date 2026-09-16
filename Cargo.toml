@@ -1,6 +1,6 @@
 [package]
 name = "photom"
-version = "0.4.2"
+version = "1.0.0"
 edition = "2024"
 license-file = "LICENSE"
 rust-version = "1.94.0"
@@ -100,3 +100,51 @@ large-test-fixtures = []
 [package.metadata.docs.rs]
 features = ["polars", "parallel", "ades", "mpc_80_col", "datafusion", "serde"]
 rustdoc-args = ["--cfg", "docsrs"]
+
+[[example]]
+name = "01_basic_dataset"
+
+[[example]]
+name = "02_load_mpc80col"
+required-features = ["mpc_80_col"]
+
+[[example]]
+name = "03_load_ades"
+required-features = ["ades"]
+
+[[example]]
+name = "04_night_and_trajectory_grouping"
+required-features = ["mpc_80_col"]
+
+[[example]]
+name = "05_merge_datasets"
+required-features = ["mpc_80_col"]
+
+[[example]]
+name = "06_observers_basics"
+
+[[example]]
+name = "07_mpc_observer_resolution"
+required-features = ["mpc_80_col"]
+
+[[example]]
+name = "08_coordinates_equatorial_cartesian"
+
+[[example]]
+name = "09_coordinates_ecliptic_and_projection"
+
+[[example]]
+name = "10_photometry_error_models"
+required-features = ["mpc_80_col"]
+
+[[example]]
+name = "11_load_polars"
+required-features = ["polars"]
+
+[[example]]
+name = "12_parallel_iteration"
+required-features = ["parallel", "mpc_80_col"]
+
+[[example]]
+name = "13_serde_roundtrip"
+required-features = ["serde", "mpc_80_col"]

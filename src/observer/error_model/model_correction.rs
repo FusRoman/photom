@@ -1,6 +1,6 @@
 use crate::{
     constants::ARCSEC_TO_RAD,
-    observation_dataset::{ObsDataset, index::ObsMapIndex},
+    observation_dataset::{ObsDataset, index::ObsMapIndex, observation::Observation},
     observer::{
         dataset::ObserverId,
         error_model::{ObsErrorModel, get_bias_rms},
@@ -120,6 +120,18 @@ pub trait ModelCorrection {
     /// when trajectories are competing linkage hypotheses) is assigned to a
     /// single batch and corrected exactly once.
     ///
+    /// ### Duplicate detections
+    ///
+    /// Upstream linkage pipelines sometimes materialize the *same* physical
+    /// detection as several distinct rows — for example one row per competing
+    /// trajectory hypothesis, instead of one row referenced by several
+    /// trajectories. Such rows are bit-identical on `observer`, `mjd_tt`, and
+    /// the reported RA/Dec and errors. The batch size `n` counts these as a
+    /// **single** detection, so the correction factor reflects the number of
+    /// genuinely independent measurements rather than how many times the same
+    /// detection happens to appear in the input. Every row of a duplicated
+    /// detection is still corrected — all of them receive the same factor.
+    ///
     /// ### Fallback when no trajectory index is present
     ///
     /// The correction requires the trajectory index (`traj_id`) to know which
@@ -171,6 +183,31 @@ pub trait ModelCorrection {
     /// - Time comparisons are based on Modified Julian Date in Terrestrial Time
     ///   (`MJD TT`). Uncertainties are expressed in **radians**.
     fn apply_batch_rms_correction(self, gap_max: f64) -> ObsDataset;
+}
+
+/// Bit-exact identity key for detecting duplicate observation rows that
+/// represent the same physical detection (e.g. the same alert re-ingested
+/// once per competing trajectory hypothesis), as opposed to genuinely
+/// distinct observations that happen to share an epoch.
+///
+/// # Arguments
+///
+/// - `obs` — the observation to derive a key for.
+///
+/// # Returns
+///
+/// A hashable, orderable key equal for two observations if and only if
+/// their `observer`, `mjd_tt`, RA, Dec, and RA/Dec errors are identical
+/// bit-for-bit.
+fn detection_identity(obs: &Observation) -> (Option<ObserverId>, u64, u64, u64, u64, u64) {
+    (
+        obs.observer,
+        obs.mjd_tt.to_bits(),
+        obs.equ_coord.ra.to_bits(),
+        obs.equ_coord.dec.to_bits(),
+        obs.equ_coord.ra_error.to_bits(),
+        obs.equ_coord.dec_error.to_bits(),
+    )
 }
 
 impl ModelCorrection for ObsDataset {
@@ -282,7 +319,18 @@ impl ModelCorrection for ObsDataset {
                 continue;
             }
 
-            let n = j - batch_start;
+            // Count distinct physical detections, not raw rows: the same
+            // detection may appear more than once in this slice (see
+            // "Duplicate detections" above), and must not inflate `n`.
+            let n = {
+                let mut keys: Vec<_> = sorted_indices[batch_start..j]
+                    .iter()
+                    .map(|&idx| detection_identity(&self.observations[idx]))
+                    .collect();
+                keys.sort_unstable();
+                keys.dedup();
+                keys.len()
+            };
             let factor = match error_model {
                 ObsErrorModel::VFCC17 if n >= 5 => (n as f64 * 0.25).sqrt(),
                 _ => (n as f64).sqrt(),
@@ -699,6 +747,117 @@ mod test_batch_rms_correction {
         }
     }
 
+    // ── duplicate-detection deduplication (regression tests) ──────────────────
+
+    /// A batch containing duplicate rows of the same detection must be sized
+    /// by distinct detections, not raw rows: observation 0 duplicated 5 times
+    /// (bit-identical, distinct ids) plus 2 genuinely distinct observations is
+    /// 3 detections (0 and its 5 copies count as one), not 8 rows.
+    ///
+    /// Every row derived from the duplicated detection — the original and all
+    /// 5 copies — must still receive the exact same corrected error, since
+    /// each one feeds its own downstream trajectory hypothesis.
+    #[test]
+    fn duplicate_rows_are_counted_once_in_batch_size() {
+        let observer = Some(ObserverId::MpcCode(*b"K01"));
+        let base = 59000.0;
+
+        // Observation 0, duplicated 5 times with distinct ids (ids 10..=14),
+        // bit-identical to observation 0 otherwise.
+        let mut observations = vec![
+            obs(0, observer, base),
+            obs(1, observer, base + 0.01),
+            obs(2, observer, base + 0.02),
+        ];
+        let duplicate_ids: Vec<u64> = (10..15).collect();
+        for &id in &duplicate_ids {
+            observations.push(obs(id, observer, base));
+        }
+
+        let corrected = dataset(observations)
+            .with_error_model(ObsErrorModel::FCCT14)
+            .apply_batch_rms_correction(8.0 / 24.0);
+
+        // 3 distinct detections: {0, 10..=14} counted once, plus 1, plus 2.
+        let expected = 1e-6 * (3.0_f64).sqrt();
+        let err = ra_errors_by_id(&corrected);
+        for id in [0u64, 1, 2] {
+            assert_ulps_eq!(err[&id], expected, max_ulps = 2);
+        }
+        for &id in &duplicate_ids {
+            assert_ulps_eq!(err[&id], expected, max_ulps = 2);
+            assert_ulps_eq!(err[&id], err[&0], max_ulps = 2);
+        }
+    }
+
+    /// Two observations sharing the exact same `mjd_tt` (e.g. two distinct
+    /// sources detected in the same visit) but different RA/Dec must NOT be
+    /// treated as duplicates of one detection: `mjd_tt` equality alone is not
+    /// sufficient grounds for deduplication.
+    #[test]
+    fn same_epoch_different_position_is_not_a_duplicate() {
+        let observer = Some(ObserverId::MpcCode(*b"K02"));
+        let time = 59000.0;
+
+        let observations = vec![
+            obs_with_errors(0, observer, time, 0.5, 1e-6, 0.3, 2e-6),
+            obs_with_errors(1, observer, time, 0.6, 1e-6, 0.3, 2e-6), // same time, different ra
+        ];
+
+        let corrected = dataset(observations)
+            .with_error_model(ObsErrorModel::FCCT14)
+            .apply_batch_rms_correction(8.0 / 24.0);
+
+        // n = 2 distinct detections sharing an epoch, factor sqrt(2).
+        let expected = 1e-6 * (2.0_f64).sqrt();
+        let err = ra_errors_by_id(&corrected);
+        assert_ulps_eq!(err[&0], expected, max_ulps = 2);
+        assert_ulps_eq!(err[&1], expected, max_ulps = 2);
+    }
+
+    /// `detection_identity` is the pure function backing the deduplication:
+    /// identical content (ignoring `id`) must produce the same key, and a
+    /// difference on any single field (observer, time, ra, dec, or either
+    /// error) must change it.
+    #[test]
+    fn detection_identity_ignores_id_but_distinguishes_content() {
+        let observer_a = Some(ObserverId::MpcCode(*b"K03"));
+        let observer_b = Some(ObserverId::MpcCode(*b"K04"));
+        let base = obs_with_errors(0, observer_a, 59000.0, 0.5, 1e-6, 0.3, 2e-6);
+        let same_content_other_id = obs_with_errors(99, observer_a, 59000.0, 0.5, 1e-6, 0.3, 2e-6);
+
+        let ds = dataset(vec![base.clone(), same_content_other_id.clone()]);
+        let mut iter = ds.iter_observations();
+        let obs_a = iter.next().unwrap();
+        let obs_b = iter.next().unwrap();
+
+        let key_a = detection_identity(obs_a);
+        let key_b = detection_identity(obs_b);
+        assert_eq!(
+            key_a, key_b,
+            "identical content with different id must share a key"
+        );
+
+        let variants: Vec<ObservationInput> = vec![
+            obs_with_errors(1, observer_b, 59000.0, 0.5, 1e-6, 0.3, 2e-6), // observer differs
+            obs_with_errors(2, observer_a, 59000.1, 0.5, 1e-6, 0.3, 2e-6), // time differs
+            obs_with_errors(3, observer_a, 59000.0, 0.51, 1e-6, 0.3, 2e-6), // ra differs
+            obs_with_errors(4, observer_a, 59000.0, 0.5, 1e-6, 0.31, 2e-6), // dec differs
+            obs_with_errors(5, observer_a, 59000.0, 0.5, 1.1e-6, 0.3, 2e-6), // ra_error differs
+            obs_with_errors(6, observer_a, 59000.0, 0.5, 1e-6, 0.3, 2.1e-6), // dec_error differs
+        ];
+        for variant in variants {
+            let ds = dataset(vec![base.clone(), variant]);
+            let mut iter = ds.iter_observations();
+            let a = detection_identity(iter.next().unwrap());
+            let b = detection_identity(iter.next().unwrap());
+            assert_ne!(
+                a, b,
+                "a single differing field must change the identity key"
+            );
+        }
+    }
+
     // ── proptest helpers ─────────────────────────────────────────────────────
 
     /// Build an `Observation` with explicit coordinate errors from proptest inputs.
@@ -937,6 +1096,74 @@ mod test_batch_rms_correction {
                     n,
                     v.equ_coord().dec_error,
                     f.equ_coord().dec_error
+                );
+            }
+        }
+    }
+
+    // ── proptest: duplicating a detection does not inflate the batch size ────
+
+    proptest! {
+        /// Padding a batch with exact duplicates of one of its detections (same
+        /// content, fresh ids) must not change the correction factor applied to
+        /// the batch's genuinely distinct detections: `n` counts detections, not
+        /// rows, so it must be invariant under this kind of duplication.
+        #[test]
+        fn prop_duplicating_a_detection_does_not_change_the_factor(
+            ra_error in 1e-9..1e-3f64,
+            dec_error in 1e-9..1e-3f64,
+            base_time in 59000.0..60000.0f64,
+            n_distinct in 1usize..=6usize,
+            n_duplicates in 0usize..=10usize,
+        ) {
+            let observer = Some(ObserverId::MpcCode(*b"L01"));
+            let make_distinct = || -> Vec<ObservationInput> {
+                (0..n_distinct)
+                    .map(|i| obs_with_errors(
+                        i as u64,
+                        observer,
+                        base_time + i as f64 * 0.01,
+                        0.5 + i as f64, // distinct ra per observation
+                        ra_error,
+                        0.3,
+                        dec_error,
+                    ))
+                    .collect()
+            };
+
+            let baseline = dataset(make_distinct())
+                .with_error_model(ObsErrorModel::FCCT14)
+                .apply_batch_rms_correction(8.0 / 24.0);
+
+            // Duplicate observation 0 (bit-identical content, fresh ids).
+            let mut padded = make_distinct();
+            for k in 0..n_duplicates {
+                let mut dup = padded[0].clone();
+                dup.id = 1000 + k as u64;
+                padded.push(dup);
+            }
+            let padded_corrected = dataset(padded)
+                .with_error_model(ObsErrorModel::FCCT14)
+                .apply_batch_rms_correction(8.0 / 24.0);
+
+            let baseline_err = ra_errors_by_id(&baseline);
+            let padded_err = ra_errors_by_id(&padded_corrected);
+
+            for id in 0..n_distinct as u64 {
+                prop_assert!(
+                    (baseline_err[&id] - padded_err[&id]).abs() < f64::EPSILON * baseline_err[&id].max(1e-300),
+                    "factor changed after padding with duplicates: {} vs {} (id={})",
+                    baseline_err[&id],
+                    padded_err[&id],
+                    id
+                );
+            }
+            // Every duplicate row must match observation 0's corrected error.
+            for k in 0..n_duplicates as u64 {
+                prop_assert!(
+                    (padded_err[&(1000 + k)] - padded_err[&0]).abs()
+                        < f64::EPSILON * padded_err[&0].max(1e-300),
+                    "duplicate row corrected differently from its original"
                 );
             }
         }

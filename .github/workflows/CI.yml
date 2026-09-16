@@ -87,6 +87,61 @@ jobs:
         if: matrix.command == 'check'
         run: cargo check --all-targets ${{ matrix.cargo_flags }}
 
+  examples:
+    name: Examples (build & run)
+    runs-on: ubuntu-latest
+    if: github.event_name != 'push'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+          key: examples
+
+      - name: Build all examples
+        run: cargo build --examples --features ades,mpc_80_col,polars,parallel,serde
+
+      - name: Run examples (no optional feature required)
+        run: |
+          set -euo pipefail
+          for example in 01_basic_dataset 06_observers_basics 08_coordinates_equatorial_cartesian 09_coordinates_ecliptic_and_projection; do
+            echo "::group::cargo run --example $example"
+            cargo run --example "$example"
+            echo "::endgroup::"
+          done
+
+      - name: Run examples (ades / mpc_80_col fixtures, no network)
+        run: |
+          set -euo pipefail
+          for example in 02_load_mpc80col 03_load_ades 04_night_and_trajectory_grouping 05_merge_datasets 10_photometry_error_models; do
+            echo "::group::cargo run --example $example --features ades,mpc_80_col"
+            cargo run --example "$example" --features ades,mpc_80_col
+            echo "::endgroup::"
+          done
+
+      - name: Run example (polars, in-memory DataFrame)
+        run: cargo run --example 11_load_polars --features polars
+
+      - name: Run example (parallel iteration)
+        run: cargo run --example 12_parallel_iteration --features parallel,mpc_80_col
+
+      - name: Run example (serde round-trip)
+        run: cargo run --example 13_serde_roundtrip --features serde,mpc_80_col
+
+      - name: Run example (MPC website resolution, network-dependent)
+        # This example fetches the live MPC observatory table on its first
+        # request; treat a transient network/availability issue as
+        # non-fatal so the job stays green when minorplanetcenter.net is
+        # unreachable from the runner.
+        continue-on-error: true
+        run: cargo run --example 07_mpc_observer_resolution --features mpc_80_col
+
   doc:
     name: doc (all-features)
     runs-on: ubuntu-latest

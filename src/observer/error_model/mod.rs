@@ -6,11 +6,13 @@
 //! RMS values `(rms_ra, rms_dec)` in arcseconds, as recommended in the
 //! literature.
 //!
-//! Three models are supported, selectable via [`ObsErrorModel`]:
+//! Four models are supported, selectable via [`ObsErrorModel`]:
 //!
 //! - `ObsErrorModel::FCCT14` — Farnocchia, Chesley, Chamberlin & Tholen (2014)
 //! - `ObsErrorModel::CBM10` — Chesley, Baer & Monet (2010)
 //! - `ObsErrorModel::VFCC17` — Vereš, Farnocchia, Chesley & Chamberlin (2017)
+//! - `ObsErrorModel::LSST` — empirical Vera C. Rubin Observatory (X05) model,
+//!   derived in-house from Fink broker alert data (see `lsst.rules`)
 //!
 //! ## Typical usage
 //!
@@ -35,6 +37,8 @@
 //! - Farnocchia, D., Chesley, S. R., Chamberlin, A. B., & Tholen, D. J. (2014)
 //! - Chesley, S. R., Baer, J., & Monet, D. G. (2010)
 //! - Vereš, P., Farnocchia, D., Chesley, S. R., & Chamberlin, A. B. (2017)
+//! - `lsst.rules` header (this crate) — in-house empirical derivation from
+//!   the Fink broker `diaSource` alert stream, not an external publication
 pub mod model_correction;
 mod vfcc17;
 pub use model_correction::ModelCorrection;
@@ -82,6 +86,9 @@ pub enum ObsErrorModel {
     CBM10,
     /// Vereš, Farnocchia, Chesley & Chamberlin (2017).
     VFCC17,
+    /// Empirical Vera C. Rubin Observatory (X05) model, derived in-house
+    /// from Fink broker `diaSource` alert data (see `lsst.rules`).
+    LSST,
 }
 
 impl fmt::Display for ObsErrorModel {
@@ -90,6 +97,7 @@ impl fmt::Display for ObsErrorModel {
             ObsErrorModel::FCCT14 => "FCCT14 (Farnocchia et al. 2014)",
             ObsErrorModel::CBM10 => "CBM10  (Chesley, Baer & Monet 2010)",
             ObsErrorModel::VFCC17 => "VFCC17 (Vereš et al. 2017)",
+            ObsErrorModel::LSST => "LSST   (empirical, Fink diaSource alert stream)",
         };
         write!(f, "{s}")
     }
@@ -101,6 +109,8 @@ static FCCT14_RULES: &str = include_str!("data_models/fcct14.rules");
 static CBM10_RULES: &str = include_str!("data_models/cbm10.rules");
 /// Bundled VFCC17 rules file, included at compile time.
 static VFCC17_RULES: &str = include_str!("data_models/vfcc17.rules");
+/// Bundled LSST rules file, included at compile time.
+static LSST_RULES: &str = include_str!("data_models/lsst.rules");
 
 /// Internal parse result: a list of `((station_str, catalog_code), (rms_ra, rms_dec))`.
 /// Station codes are kept as `String` here and converted to `MpcCode` ([u8; 3]) in
@@ -323,13 +333,14 @@ impl ObsErrorModel {
             ObsErrorModel::FCCT14 => parse_full_file(FCCT14_RULES, parse_full_line),
             ObsErrorModel::CBM10 => parse_full_file(CBM10_RULES, parse_full_line),
             ObsErrorModel::VFCC17 => parse_full_file(VFCC17_RULES, parse_vfcc17_line),
+            ObsErrorModel::LSST => parse_full_file(LSST_RULES, parse_full_line),
         }
     }
 }
 
 /// Parse an [`ObsErrorModel`] from its canonical string name.
 ///
-/// Recognised names (case-sensitive): `"FCCT14"`, `"CBM10"`, `"VFCC17"`.
+/// Recognised names (case-sensitive): `"FCCT14"`, `"CBM10"`, `"VFCC17"`, `"LSST"`.
 ///
 /// # Arguments
 ///
@@ -351,6 +362,7 @@ impl FromStr for ObsErrorModel {
             "FCCT14" => Ok(ObsErrorModel::FCCT14),
             "CBM10" => Ok(ObsErrorModel::CBM10),
             "VFCC17" => Ok(ObsErrorModel::VFCC17),
+            "LSST" => Ok(ObsErrorModel::LSST),
             _ => Err(ErrorModelParseError::NomParsingError(format!(
                 "Unknown error model: {s}"
             ))),
@@ -360,7 +372,7 @@ impl FromStr for ObsErrorModel {
 
 /// Infallible conversion from `&str` to [`ObsErrorModel`] by delegating to [`FromStr`].
 ///
-/// Recognised names (case-sensitive): `"FCCT14"`, `"CBM10"`, `"VFCC17"`.
+/// Recognised names (case-sensitive): `"FCCT14"`, `"CBM10"`, `"VFCC17"`, `"LSST"`.
 ///
 /// # Arguments
 ///
@@ -473,7 +485,11 @@ mod test_error_model {
     }
 
     /// Verifies that `read_error_model_file` succeeds and returns a non-empty map
-    /// for all three bundled model variants (FCCT14, CBM10, and VFCC17).
+    /// for all four bundled model variants (FCCT14, CBM10, VFCC17, and LSST).
+    ///
+    /// For LSST in particular, this also exercises `parse_full_file`'s handling
+    /// of a large leading block of `!`-only documentation lines ahead of the
+    /// actual data line in `lsst.rules`.
     #[test]
     fn test_read_error_model_file() {
         let result = ObsErrorModel::FCCT14.read_error_model_file();
@@ -485,6 +501,10 @@ mod test_error_model {
         assert!(!result.unwrap().is_empty());
 
         let result = ObsErrorModel::VFCC17.read_error_model_file();
+        assert!(result.is_ok());
+        assert!(!result.unwrap().is_empty());
+
+        let result = ObsErrorModel::LSST.read_error_model_file();
         assert!(result.is_ok());
         assert!(!result.unwrap().is_empty());
     }
@@ -520,5 +540,19 @@ mod test_error_model {
         let (rmsa, rmsd) = get_bias_rms(&model, *b"699", "*").unwrap();
         assert_eq!(rmsa, 0.8);
         assert_eq!(rmsd, 0.8);
+
+        let model = ObsErrorModel::LSST.read_error_model_file().unwrap();
+        let (rmsa, rmsd) = get_bias_rms(&model, *b"X05", "c").unwrap();
+        assert_eq!(rmsa, 0.09);
+        assert_eq!(rmsd, 0.06);
+    }
+
+    /// Verifies that `ObsErrorModel::LSST` round-trips through `FromStr`/`Display`
+    /// the same way the other three variants do.
+    #[test]
+    fn test_lsst_variant_from_str_and_display() {
+        let model: ObsErrorModel = "LSST".parse().unwrap();
+        assert_eq!(model, ObsErrorModel::LSST);
+        assert!(model.to_string().contains("LSST"));
     }
 }
