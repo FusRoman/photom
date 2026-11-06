@@ -2,6 +2,23 @@
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2026-11-06
+
+### Added
+- `lsst_alert` feature (no extra dependency): module `io::lsst_alert`, a pure conversion of Rubin/LSST `DiaSource` alert fields into an `ObservationInput` ready for `ObsDataset::push_observation`.
+  - `DiaSourceRecord` (APDB field names and units: deg, nJy, MJD TAI), `LsstConversionParams` (on-sky astrometric floor added in quadrature, `0` by default) and `LsstObservation` (the input plus its `NightId` and Rubin `visit`).
+  - `dia_source_to_observation`: `psfFlux` → AB magnitude (zero point 31.4), first-order magnitude error, TAI → TT (+32.184 s), band `u g r i z y` → `Filter::Int(0..=5)`, observer `X05`, and on-sky `raErr` (σ_α·cos δ) → error on the α coordinate (`/ cos δ`), consistent with `EquCoord::ra_error`.
+  - Night key `NightId` = MJD of the `dayObs` date encoded in `visit` (`dayObs × 100000 + seqNum`), cross-checked against `⌊midpointMjdTai − 0.5⌋`.
+  - `LsstAlertError` for unconvertible sources only; science selection is a separate optional policy, `LsstQualityCuts` (strict SNR = `psfFlux / psfFluxErr`, `raErr` / `decErr` ceilings), which cuts nothing by default.
+  - Reusable pure building blocks in `io::lsst_alert::units` and `io::lsst_alert::night` (integer civil-date → MJD conversion).
+  - Example `14_lsst_alert`.
+
+### Fixed
+- `ObsDataset::push_observation` now rejects ids repeated **within** the pushed batch with `ObsDatasetError::DuplicateObsIds`. Previously both copies were stored while the id index silently kept only the last one.
+- `ObsDataset::push_observation` no longer copies the `IntId` observers referenced by the batch and no longer shifts their ids. An `IntId` designates an observer already registered in the dataset (e.g. through `push_observer`). The previous behaviour duplicated the observer and could produce an out-of-bounds `IntId`. `merge_from` is unchanged.
+- Documentation of the Polars base columns (`io::polars::base_field`): `ra`, `ra_err`, `dec` and `dec_err` are expected in **radians** (they were documented in degrees; the ingestion performs no conversion, as stated in the crate-level schema).
+- The 1.0.0 changelog entry wrongly listed an `Observation::new` constructor; `Observation` has no public constructor and observations are built through `ObservationInput::new`.
+
 ## [1.0.0] - 2026-09-16
 
 First major release of `photom`, a Rust library for loading, structuring, and querying astronomical observation datasets, with trajectory grouping, multi-observer support, and efficient lookups. This release consolidates all development since the project's inception.
@@ -10,7 +27,7 @@ First major release of `photom`, a Rust library for loading, structuring, and qu
 
 #### Core data model
 - `ObsDataset`, the central structure for storing and indexing astronomical observations, with a `new` constructor, an empty constructor, and a `push` method to append individual observations.
-- `Observation` type with `new` constructor, ordering (`PartialEq`, `PartialOrd`, `Ord`), and display support.
+- `Observation` type (built through `ObservationInput::new` and placed by `ObsDataset`), with ordering (`PartialEq`, `PartialOrd`, `Ord`), and display support.
 - Night grouping: observations can be grouped by observation night.
 - Trajectory grouping: observations can be grouped by a `traj_id` column, supporting both `UInt32` and `String` identifiers. `TrajId` supports conversion from common integer/string types and a stable hashing method.
 - Multi-observer support via the `Observer` type and `ObserverId`, covering three kinds of observer: MPC observatory codes (resolved lazily and cached from the MPC website), custom geodetic sites (interned and deduplicated), and an "unknown observer" fallback.

@@ -1,6 +1,6 @@
 [package]
 name = "photom"
-version = "1.0.0"
+version = "1.1.0"
 edition = "2024"
 license-file = "LICENSE"
 rust-version = "1.94.0"
@@ -93,12 +93,13 @@ datafusion = [
     "dep:arrow-array",
     "ordered-float/serde",
 ]
+lsst_alert = []
 
 # fixture using the large parquet file. Not included in the crate.io package to avoid bloating it, but can be used for local testing.
 large-test-fixtures = []
 
 [package.metadata.docs.rs]
-features = ["polars", "parallel", "ades", "mpc_80_col", "datafusion", "serde"]
+features = ["polars", "parallel", "ades", "mpc_80_col", "datafusion", "serde", "lsst_alert"]
 rustdoc-args = ["--cfg", "docsrs"]
 
 [[example]]
@@ -148,3 +149,7 @@ required-features = ["parallel", "mpc_80_col"]
 [[example]]
 name = "13_serde_roundtrip"
 required-features = ["serde", "mpc_80_col"]
+
+[[example]]
+name = "14_lsst_alert"
+required-features = ["lsst_alert"]

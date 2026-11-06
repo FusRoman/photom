@@ -8,6 +8,7 @@
 //! | `ades` | [`ades`] | Parse ADES (Astrometry Data Exchange Standard) files |
 //! | `mpc_80_col` | [`mpc_80_col`] | Parse MPC 80-column observation records |
 //! | `datafusion` | [`datafusion`] | Load from a Parquet URI via DataFusion + object_store |
+//! | `lsst_alert` | [`lsst_alert`] | Convert Rubin/LSST `DiaSource` alerts into observations (pure, no extra dependency) |
 //!
 //! Without any feature enabled this module is empty and invisible to the compiler.
 
@@ -22,6 +23,9 @@ pub mod mpc_80_col;
 
 #[cfg(feature = "datafusion")]
 pub mod datafusion;
+
+#[cfg(feature = "lsst_alert")]
+pub mod lsst_alert;
 
 #[cfg(feature = "serde")]
 pub mod serde;
