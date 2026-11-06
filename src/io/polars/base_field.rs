@@ -6,10 +6,10 @@
 //! | Column | Type | Description |
 //! |-------------|------------------------|----------------------------------------------|
 //! | `id` | `UInt64` | Unique observation identifier |
-//! | `ra` | `Float64` | Right ascension (degrees) |
-//! | `ra_err` | `Float64` | Right ascension uncertainty (degrees) |
-//! | `dec` | `Float64` | Declination (degrees) |
-//! | `dec_err` | `Float64` | Declination uncertainty (degrees) |
+//! | `ra` | `Float64` | Right ascension (radians) |
+//! | `ra_err` | `Float64` | Right ascension uncertainty (radians) |
+//! | `dec` | `Float64` | Declination (radians) |
+//! | `dec_err` | `Float64` | Declination uncertainty (radians) |
 //! | `magnitude` | `Float64` | Apparent magnitude |
 //! | `mag_err` | `Float64` | Magnitude uncertainty |
 //! | `filter` | `String`, `UInt8`, `UInt16`, or `UInt32` | Photometric filter label or integer code |
@@ -125,13 +125,13 @@ enum FilterData {
 pub(crate) struct BaseFields<'a> {
     /// Unique observation identifiers (`id` column).
     pub(crate) ids: &'a [u64],
-    /// Right ascension values in degrees (`ra` column).
+    /// Right ascension values in radians (`ra` column).
     pub(crate) ra: &'a [f64],
-    /// Right ascension uncertainties in degrees (`ra_err` column).
+    /// Right ascension uncertainties in radians (`ra_err` column).
     pub(crate) ra_err: &'a [f64],
-    /// Declination values in degrees (`dec` column).
+    /// Declination values in radians (`dec` column).
     pub(crate) dec: &'a [f64],
-    /// Declination uncertainties in degrees (`dec_err` column).
+    /// Declination uncertainties in radians (`dec_err` column).
     pub(crate) dec_err: &'a [f64],
     /// Apparent magnitudes (`magnitude` column).
     pub(crate) magnitude: &'a [f64],

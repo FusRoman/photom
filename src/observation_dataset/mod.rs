@@ -270,64 +270,47 @@ impl ObsDataset {
     /// `index` field set atomically to its actual position in the storage
     /// vector.  The caller does not need to — and cannot — pre-assign indices.
     ///
+    /// # Observer references
+    ///
+    /// Observer references are stored **as given**:
+    ///
+    /// - an [`ObserverId::IntId`] designates an observer already registered in
+    ///   `self` (typically returned by [`ObsDataset::push_observer`]); it is
+    ///   neither copied nor shifted;
+    /// - an [`ObserverId::MpcCode`] is resolved lazily on first access.
+    ///
+    /// Neither kind is validated at insertion time: an unknown reference
+    /// surfaces as `None` from [`ObsDataset::get_observer`].
+    ///
     /// # Arguments
     /// - `new_obs` — a vector of [`ObservationInput`] instances to add to the dataset.
     ///
     /// # Returns
     /// The `ObsIndex` of each newly added observation, in the same order as `new_obs`.
+    ///
+    /// # Errors
+    /// [`ObsDatasetError::DuplicateObsIds`] if an id of `new_obs` already exists
+    /// in `self` **or** appears more than once inside `new_obs`.  `self` is
+    /// consumed but left unmodified in that case.
     pub fn push_observation(
         mut self,
         new_obs: Vec<ObservationInput>,
     ) -> Result<(Self, Vec<ObsIndex>), ObsDatasetError> {
-        let mut obs_index_result = Vec::with_capacity(new_obs.len());
-
-        // ── Phase 1: validate — no mutation of self until this passes ──────
+        // ── Validate — no mutation of self until this passes ───────────────
         let duplicates = self.find_duplicate_obs_ids(&new_obs);
         if !duplicates.is_empty() {
             return Err(ObsDatasetError::DuplicateObsIds(duplicates));
         }
 
-        // ── Phase 2: build new observer dataset from the Observer contained in new_obs ──────
-        let new_observer_dataset = ObserverDataset::new(
-            new_obs
-                .iter()
-                .filter_map(|o| o.observer)
-                .collect::<AHashSet<_>>()
-                .into_iter()
-                .filter_map(|id| match id {
-                    // MPC codes are resolved lazily — no custom entry to carry over.
-                    ObserverId::MpcCode(_) => None,
-                    // IntId observers live in custom_observers and must be merged.
-                    ObserverId::IntId(_) => self.observer_dataset.get(&id).cloned(),
-                })
-                .collect(),
-            None,
-        );
-
         let offset = self.observations.len();
-
-        // ── Merge observers, obtain IntId shift ────────────────────────────
-        let custom_offset = self
-            .observer_dataset
-            .merge_custom_observers(new_observer_dataset);
+        let obs_index_result: Vec<ObsIndex> = (offset..offset + new_obs.len()).collect();
 
         // ── Place inputs (assign indices) and update the id→index map ──────
-        let placed: Vec<Observation> = new_obs
-            .into_iter()
-            .enumerate()
-            .map(|(local_idx, mut input)| {
-                let abs_idx = offset + local_idx;
-                obs_index_result.push(abs_idx);
-                self.index.obs_index_by_id.insert(input.id, abs_idx);
-                // Shift any IntId observer reference by the custom offset.
-                if let Some(ObserverId::IntId(ref mut i)) = input.observer {
-                    *i += custom_offset;
-                }
-                Observation::place(input, abs_idx)
-            })
-            .collect();
-
-        self.observations.extend(placed);
+        self.observations.reserve(new_obs.len());
+        for (abs_idx, input) in obs_index_result.iter().copied().zip(new_obs) {
+            self.index.obs_index_by_id.insert(input.id, abs_idx);
+            self.observations.push(Observation::place(input, abs_idx));
+        }
 
         Ok((self, obs_index_result))
     }
@@ -669,19 +652,18 @@ impl ObsDataset {
         Ok(merged)
     }
 
-    /// Return the list of [`ObsId`] values in `other` that already exist in `self`.
+    /// Return the [`ObsId`] values of `other` that would collide once inserted.
     ///
-    /// An empty `Vec` means no collision; the merge can proceed safely.
+    /// An id collides when it already exists in `self`, or when it appears
+    /// more than once inside `other` (every repetition after the first is
+    /// reported).  An empty `Vec` means no collision; the insertion can
+    /// proceed safely.
     fn find_duplicate_obs_ids(&self, other: &[ObservationInput]) -> Vec<ObsId> {
+        let mut seen = AHashSet::with_capacity(other.len());
         other
             .iter()
-            .filter_map(|obs| {
-                if self.index.get_by_id(&obs.id).is_some() {
-                    Some(obs.id)
-                } else {
-                    None
-                }
-            })
+            .filter(|obs| self.index.get_by_id(&obs.id).is_some() || !seen.insert(obs.id))
+            .map(|obs| obs.id)
             .collect()
     }
 
@@ -1443,6 +1425,73 @@ mod observation_tests {
                     .expect("push_observation must succeed for unique ids");
                 assert_index_consistency(&ds);
             }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // push_observation — regression tests
+    // -----------------------------------------------------------------------
+
+    mod push_observation_regression {
+        use super::*;
+
+        /// An id repeated inside the pushed batch must be rejected, not
+        /// silently stored twice with a single (overwritten) index entry.
+        #[test]
+        fn rejects_duplicate_ids_within_batch() {
+            let ds = make_dataset(vec![make_observation(0, None)], vec![]);
+            let batch = vec![
+                make_observation(1, None),
+                make_observation(2, None),
+                make_observation(1, None),
+            ];
+            match ds.push_observation(batch) {
+                Err(ObsDatasetError::DuplicateObsIds(ids)) => assert_eq!(ids, vec![1]),
+                other => panic!("expected DuplicateObsIds([1]), got {other:?}"),
+            }
+        }
+
+        /// Collisions with `self` and inside the batch are both reported.
+        #[test]
+        fn reports_existing_and_intra_batch_duplicates() {
+            let ds = make_dataset(vec![make_observation(0, None)], vec![]);
+            let batch = vec![
+                make_observation(0, None),
+                make_observation(5, None),
+                make_observation(5, None),
+            ];
+            match ds.push_observation(batch) {
+                Err(ObsDatasetError::DuplicateObsIds(ids)) => assert_eq!(ids, vec![0, 5]),
+                other => panic!("expected DuplicateObsIds([0, 5]), got {other:?}"),
+            }
+        }
+
+        /// An `IntId` referencing an observer already in `self` must keep
+        /// pointing at that observer: no copy of the observer, no id shift.
+        #[test]
+        fn int_id_observer_is_not_duplicated_nor_shifted() {
+            let ds = make_dataset(vec![], vec![]);
+            let (ds, id_a) = ds.push_observer(make_custom_observer());
+            let other = Observer::from_parallax(
+                -70.7,
+                0.865,
+                -0.501,
+                Some("Other".to_string()),
+                None,
+                None,
+            )
+            .unwrap(); // safe: finite, non-NaN inputs
+            let (ds, id_b) = ds.push_observer(other.clone());
+            assert_eq!(id_b, ObserverId::IntId(1));
+
+            let (ds, _) = ds
+                .push_observation(vec![make_observation(10, Some(id_b))])
+                .expect("unique ids must be accepted");
+
+            assert_eq!(ds.observer_dataset.custom_observers.len(), 2);
+            assert_eq!(ds.get_observation(10).unwrap().observer, Some(id_b));
+            assert_eq!(ds.get_observer(10), Some(&other));
+            assert_ne!(ds.get_observer(10), ds.observer_dataset.get(&id_a));
         }
     }
 

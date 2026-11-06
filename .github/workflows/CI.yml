@@ -41,7 +41,8 @@ jobs:
           - mpc_80_col
           - datafusion-large-test-fixtures
           - serde
-          - polars-parallel-ades-mpc_80_col-datafusion-large-test-fixtures-serde
+          - lsst_alert
+          - polars-parallel-ades-mpc_80_col-datafusion-large-test-fixtures-serde-lsst_alert
         command: [clippy, check]
         include:
           - features: no-features
@@ -58,8 +59,10 @@ jobs:
             cargo_flags: --no-default-features --features datafusion,large-test-fixtures
           - features: serde
             cargo_flags: --no-default-features --features serde
-          - features: polars-parallel-ades-mpc_80_col-datafusion-large-test-fixtures-serde
-            cargo_flags: --no-default-features --features polars,parallel,ades,mpc_80_col,datafusion,large-test-fixtures,serde
+          - features: lsst_alert
+            cargo_flags: --no-default-features --features lsst_alert
+          - features: polars-parallel-ades-mpc_80_col-datafusion-large-test-fixtures-serde-lsst_alert
+            cargo_flags: --no-default-features --features polars,parallel,ades,mpc_80_col,datafusion,large-test-fixtures,serde,lsst_alert
           - command: clippy
             components: clippy
           - command: check
@@ -105,7 +108,7 @@ jobs:
           key: examples
 
       - name: Build all examples
-        run: cargo build --examples --features ades,mpc_80_col,polars,parallel,serde
+        run: cargo build --examples --features ades,mpc_80_col,polars,parallel,serde,lsst_alert
 
       - name: Run examples (no optional feature required)
         run: |
@@ -133,6 +136,9 @@ jobs:
 
       - name: Run example (serde round-trip)
         run: cargo run --example 13_serde_roundtrip --features serde,mpc_80_col
+
+      - name: Run example (LSST alert conversion)
+        run: cargo run --example 14_lsst_alert --features lsst_alert
 
       - name: Run example (MPC website resolution, network-dependent)
         # This example fetches the live MPC observatory table on its first

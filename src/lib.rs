@@ -23,6 +23,11 @@
 //!   any Parquet file reachable by URI (`file://`, `http://`, `https://`, `hdfs://`) using
 //!   Apache Arrow / DataFusion ([`observation_dataset::ObsDataset::from_parquet_uri`] and
 //!   its async counterpart), with automatic contiguous index optimisation.
+//! - **LSST alert conversion** (`lsst_alert` feature) — pure conversion of Rubin
+//!   `DiaSource` alert fields (nJy fluxes, MJD TAI, on-sky RA errors, `visit`-encoded
+//!   night) into observations ready for
+//!   [`observation_dataset::ObsDataset::push_observation`], with an optional, separate
+//!   quality-cut policy.  No Avro or Kafka dependency.
 //! - **Serialisation / deserialisation** (`serde` feature) — persist and restore an
 //!   [`observation_dataset::ObsDataset`] (and all constituent types) via
 //!   [serde](https://docs.rs/serde).  Runtime-only state — the
@@ -66,6 +71,10 @@
 #![cfg_attr(
     feature = "datafusion",
     doc = "| [`io::datafusion`] | DataFusion/Arrow Parquet ingestion backend ([`io::datafusion`]) |"
+)]
+#![cfg_attr(
+    feature = "lsst_alert",
+    doc = "| [`io::lsst_alert`] | Rubin/LSST `DiaSource` alert → observation conversion ([`io::lsst_alert`]) |"
 )]
 //!
 //! # Type Aliases

@@ -19,6 +19,7 @@ Rust library for loading, structuring, and querying astronomical observation dat
 - **ADES ingestion** (`ades` feature) — load observations directly from MPC ADES XML files, with automatic MPC observer resolution.
 - **MPC 80-column ingestion** (`mpc_80_col` feature) — load observations from the classic MPC fixed-width 80-column ASCII format.
 - **Parquet ingestion via DataFusion** (`datafusion` feature) — load observations from any Parquet file reachable by URI (`file://`, `http://`, `https://`, `hdfs://`) using Apache Arrow / DataFusion.
+- **LSST alert conversion** (`lsst_alert` feature) — pure conversion of Rubin/LSST `DiaSource` alert fields (nJy fluxes, MJD TAI, on-sky RA errors, `visit`-encoded night) into observations ready for `push_observation`, with an optional, separate quality-cut policy. No extra dependency.
 - **Multi-observer support** — MPC observatory codes (resolved lazily from the MPC website), custom geodetic sites (interned and deduplicated), or unknown observer.
 - **Trajectory grouping** — group observations by a `traj_id` column; supports both integer (`UInt32`) and string (`String`) identifiers.
 - **Three astrometric error models** — FCCT14, CBM10, and VFCC17, used to assign measurement accuracies to MPC-coded observatories.
@@ -29,14 +30,14 @@ Add `photom` to your `Cargo.toml`. Without any optional features:
 
 ```toml
 [dependencies]
-photom = "0.1"
+photom = "1.1"
 ```
 
 Enable individual features as needed:
 
 ```toml
 [dependencies]
-photom = { version = "0.1", features = ["polars", "parallel", "ades", "mpc_80_col", "datafusion", "serde"] }
+photom = { version = "1.1", features = ["polars", "parallel", "ades", "mpc_80_col", "datafusion", "serde", "lsst_alert"] }
 ```
 
 All features are independent and can be combined freely.
@@ -311,6 +312,7 @@ The [`examples/`](examples/) directory contains a set of small, self-contained, 
 | [`11_load_polars`](examples/11_load_polars.rs) | Loading observations from an in-memory `DataFrame`/`LazyFrame` (`from_polars`, `from_lazy`), mixed MPC-coded/custom observer resolution, and the night index the Polars backend builds automatically |
 | [`12_parallel_iteration`](examples/12_parallel_iteration.rs) | The `par_iter_*`/`materialize_*_par` counterparts of the sequential accessors, via `rayon` |
 | [`13_serde_roundtrip`](examples/13_serde_roundtrip.rs) | Serialising/deserialising an `ObsDataset` with `serde_json`, and choosing the rebuilt index layout via `ObsDatasetSeed` |
+| [`14_lsst_alert`](examples/14_lsst_alert.rs) | Converting Rubin/LSST `DiaSource` alert fields into observations, applying an optional quality-cut policy, and pushing them into a live `ObsDataset` (`lsst_alert` feature) |
 
 Most examples need no optional feature; a few require `ades`, `mpc_80_col`, `polars`, `parallel`, and/or `serde` to load their fixture data, as declared in `Cargo.toml`. Run any of them with:
 

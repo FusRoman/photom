@@ -890,13 +890,14 @@ mod polars_reader_tests {
     // ── helpers ───────────────────────────────────────────────────────────────
 
     /// Build the nine mandatory base columns as [`Column`] values for a
-    /// single-row [`DataFrame`].  All values are arbitrary but valid.
+    /// single-row [`DataFrame`].  All values are arbitrary and stored as-is
+    /// (angles are interpreted as radians; no unit conversion is applied).
     ///
     /// * `id`        – 42
-    /// * `ra`        – 10.5 degrees
-    /// * `ra_err`    – 0.001 degrees
-    /// * `dec`       – -5.0 degrees
-    /// * `dec_err`   – 0.001 degrees
+    /// * `ra`        – 10.5
+    /// * `ra_err`    – 0.001
+    /// * `dec`       – -5.0
+    /// * `dec_err`   – 0.001
     /// * `magnitude` – 15.2
     /// * `mag_err`   – 0.05
     /// * `filter`    – "G"
