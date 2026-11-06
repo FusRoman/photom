@@ -429,3 +429,9 @@ All other tests are gated behind their associated features and do not require th
 ## License
 
 This project is licensed under the [CeCILL-C Free Software License Agreement](LICENSE).
+
+## AI Disclosure
+
+D3 — [daliascale.org](https://daliascale.org)
+
+D3: Human and AI act as creative partners. AI shapes ideas or output in meaningful ways, but humans retain authorial control.
